@@ -20,7 +20,7 @@ try:
     if r.returncode:
         print(r.stdout + r.stderr); sys.exit(1)
     print("PASS firmware glue compiles as C++ (-Wall -Wextra -Werror) against host stubs")
-    for flag in ("-DVD_TRACE", "-DVD_ALLOC_HEAP"):
+    for flag in ("-DVD_TRACE", "-DVD_NO_TRACE", "-DVD_ALLOC_HEAP"):
         r = subprocess.run(["c++", "-std=gnu++17", "-Wall", "-Wextra", "-Wno-unused-parameter", "-Werror", flag, "-I", str(tmp / "vdrive"),
                             "-fsyntax-only", str(tmp / "main.cpp")], capture_output=True, text=True)
         if r.returncode:

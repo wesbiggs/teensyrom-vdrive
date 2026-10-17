@@ -46,7 +46,7 @@ index 88bc75b..21ffdb5 100644
        
 diff --git a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c
 new file mode 100644
-index 0000000..c6f503a
+index 0000000..a6fe63e
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c
 @@ -0,0 +1,274 @@
@@ -61,7 +61,7 @@ index 0000000..c6f503a
 +
 +// Bring-up phase: log every mailbox command on the USB serial port. Define VD_NO_TRACE (e.g. at the top of this
 +// file) to silence it once things work: the printing slows the polling loop.
-+#ifndef VD_NO_TRACE
++#if !defined(VD_NO_TRACE) && !defined(VD_TRACE)
 +#define VD_TRACE
 +#endif
 +

@@ -9,7 +9,7 @@
 
 // Bring-up phase: log every mailbox command on the USB serial port. Define VD_NO_TRACE (e.g. at the top of this
 // file) to silence it once things work: the printing slows the polling loop.
-#ifndef VD_NO_TRACE
+#if !defined(VD_NO_TRACE) && !defined(VD_TRACE)
 #define VD_TRACE
 #endif
 
