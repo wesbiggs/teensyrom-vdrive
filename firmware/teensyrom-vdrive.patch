@@ -1,0 +1,1824 @@
+diff --git a/Source/Teensy/MinimalBoot/Common/Common_Defs.h b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
+index 7feae53..ed20fac 100644
+--- a/Source/Teensy/MinimalBoot/Common/Common_Defs.h
++++ b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
+@@ -14,6 +14,7 @@
+    #define Fab04_REU                  //include REU  Special IO
+    #define Fab04_Freezers             //include Freezer cart support
+    #define Fab04_KernalReplace        //include Kernal Replacement support
++   #define Fab04_VDrive               //virtual IEC drive for the replacement KERNAL (needs Fab04_KernalReplace)
+    //#define Fab04_GlobalKernalReplace  //force kernal enable on all PRG launches, regardless of Special IO settings
+    #define Fab04_DebugSignals         //For debug only
+ #endif
+@@ -132,7 +133,8 @@ enum InternalEEPROMmap
+    eepAdMIDISettings2 = 4233, // (1:uint8_t)    MIDI Settings reg#2, see RegMIDISettingsMasks2
+    eepAdPwrUpDefaults3= 4234, // (1:uint8_t)    power up default reg3, see bit mask defs RegPowerUpDefaultMasks3
+    
+-   eepAdNext          = 4235, // Next address to be used
++   eepAdVDriveDevs    = 4235, // (2:uint8_t x2)  VDrive KERNAL device numbers of the SD / USB units, 0 = default (VD_DEV0/1)
++   eepAdNext          = 4237, // Next address to be used
+    eepAdUnused        = eepAdNext, // Reserved for future use, initialized to 0
+    eepAdUnusedSize    = (4284-eepAdUnused), //Max size = 4284 (emulated in flash)
+ };
+diff --git a/Source/Teensy/MinimalBoot/Common/IOHandlers.h b/Source/Teensy/MinimalBoot/Common/IOHandlers.h
+index 88bc75b..21ffdb5 100644
+--- a/Source/Teensy/MinimalBoot/Common/IOHandlers.h
++++ b/Source/Teensy/MinimalBoot/Common/IOHandlers.h
+@@ -114,6 +114,9 @@ struct stcIOHandlers
+    #endif 
+    #ifdef Fab04_KernalReplace
+       #include "IO_Handlers/IOH_KernalReplace.c"
++   #endif    
++   #ifdef Fab04_VDrive
++      #include "IO_Handlers/IOH_VDrive.c"
+    #endif    
+       #include "IO_Handlers/IOH_TeensyROM.c" 
+    #ifdef Fab04_Freezers
+@@ -156,6 +159,9 @@ stcIOHandlers* IOHandler[] =  //Synch order/qty with enum enumIOHandlers
+    #endif  
+    #ifdef Fab04_KernalReplace
+       &IOHndlr_KernalReplace,      //IOH_KernalReplace,
++   #endif  
++   #ifdef Fab04_VDrive
++      &IOHndlr_VDrive,             //IOH_VDrive,
+    #endif  
+       &IOHndlr_Debug,              //IOH_Debug, 
+       
+diff --git a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c
+new file mode 100644
+index 0000000..7ec43eb
+--- /dev/null
++++ b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c
+@@ -0,0 +1,259 @@
++// "VDrive" Special IO for TeensyROM+: replacement KERNAL + virtual IEC drive.
++//   unit 0 = SD card, unit 1 = USB drive. Device numbers default to 8/9 and are kept in EEPROM; change them from
++//   BASIC with  OPEN15,8,15,"U0>"+CHR$(10):CLOSE15  (this drive becomes device 10; CHR$(0) restores the default); each serves a mounted .d64 (or lists the host
++//   directory so one can be picked with  OPEN15,8,15,"CD:GAME.D64"  /  "CD:_" to unmount).
++// Includes the KERNAL bus hook from IOH_KernalReplace.c (select the patched 8K image with
++// <Shift-K> as usual) and adds the IO1/IO2 mailbox the patched KERNAL talks to.
++//
++// This file is included from IOHandlers.h like the other handlers (unity build, compiled as C++).
++
++#define VD_COLD FLASHMEM          // everything except the bus-ISR register accessors lives in flash
++#include "../vdrive/d64.c"
++#include "../vdrive/vdrive.c"
++#include "../vdrive/vdrive_io.c"
++
++void InitHndlr_VDrive();
++void PollingHndlr_VDrive();
++void IO1Hndlr_VDrive(uint8_t Address, bool R_Wn);
++void IO2Hndlr_VDrive(uint8_t Address, bool R_Wn);
++
++stcIOHandlers IOHndlr_VDrive =
++{
++  "VDrive KERNAL",          //Name of handler (IOHNameLength max)
++  &InitHndlr_VDrive,        //Called once at handler startup
++  &IO1Hndlr_VDrive,         //IO1 R/W handler: mailbox registers
++  &IO2Hndlr_VDrive,         //IO2 R/W handler: 256-byte data window
++  NULL,                     //ROML Read handler, in addition to any ROM data sent
++  NULL,                     //ROMH Read handler, in addition to any ROM data sent
++  &PollingHndlr_VDrive,     //Polled in main routine: does all file system work
++  NULL,                     //called at the end of EVERY c64 cycle
++};
++
++#define VD_CwdLen      96
++#define VD_FlushIdleMs 250   // write the image back this long after the last sector write
++
++struct stcVDUnit
++{
++   FS      *fs;              // SD or USB file system
++   File     img;             // mounted .d64
++   File     dir;             // host directory being listed
++   d64_t    d;
++   bool     mounted;
++   bool     dirty;
++   uint32_t lastWriteMs;
++   char     cwd[VD_CwdLen];  // "" = root
++};
++
++// The drive state (~4.6 KB, see VIO_RAM_BUDGET in tests/test_vio.py) lives in RAM2 by default so RAM1 is
++// untouched; define VD_ALLOC_HEAP to take it from the malloc heap instead.
++#ifndef VD_ALLOC_HEAP
++DMAMEM static vio_t vioStore;
++#endif
++static vio_t     *vio = NULL;
++static stcVDUnit  vdUnit[2];
++
++// ---- PETSCII <-> ASCII (names are uppercase on the C64 side) -------------------------------
++FLASHMEM static char VD_ToAscii(uint8_t c)
++{
++   if (c >= 0x41 && c <= 0x5a) return c + 0x20;   // unshifted PETSCII letters -> lower case
++   if (c >= 0xc1 && c <= 0xda) return c - 0x80;   // shifted -> upper case
++   return c;
++}
++FLASHMEM static uint8_t VD_ToPetscii(char c) { return (c >= 'a' && c <= 'z') ? c - 0x20 : c; }
++
++FLASHMEM static void VD_PathFor(stcVDUnit *u, const char *name, char *out, size_t cap)
++{
++   size_t n = snprintf(out, cap, "%s/", u->cwd);
++   for (; *name && n + 1 < cap; name++) out[n++] = VD_ToAscii((uint8_t)*name);
++   out[n] = 0;
++}
++
++// ---- d64 sector backend ---------------------------------------------------------------------
++static int VD_ReadSector(void *ctx, uint8_t t, uint8_t s, uint8_t *buf)
++{
++   stcVDUnit *u = (stcVDUnit *)ctx;
++   long off = d64_sector_offset(&u->d, t, s);
++   if (off < 0 || !u->img.seek((uint32_t)off)) return -1;
++   return u->img.read(buf, D64_SECTOR) == D64_SECTOR ? 0 : -1;
++}
++
++static int VD_WriteSector(void *ctx, uint8_t t, uint8_t s, const uint8_t *buf)
++{
++   stcVDUnit *u = (stcVDUnit *)ctx;
++   long off = d64_sector_offset(&u->d, t, s);
++   if (off < 0 || !u->img.seek((uint32_t)off)) return -1;
++   if (u->img.write(buf, D64_SECTOR) != D64_SECTOR) return -1;
++   u->dirty = true; u->lastWriteMs = millis();
++   return 0;
++}
++
++FLASHMEM static void VD_Flush(stcVDUnit *u)
++{
++   if (u->mounted && u->dirty) { u->img.flush(); u->dirty = false; }
++}
++
++// ---- host services for vdrive.c (CD:, host directory listing) --------------------------------
++FLASHMEM static void VD_Unmount(void *ctx, int unit)
++{
++   stcVDUnit *u = &vdUnit[unit];
++   VD_Flush(u);
++   if (u->mounted) u->img.close();
++   u->mounted = false;
++}
++
++FLASHMEM static int VD_Mount(void *ctx, int unit, const char *name, d64_t **out)
++{
++   stcVDUnit *u = &vdUnit[unit];
++   char path[VD_CwdLen + 20];
++   VD_PathFor(u, name, path, sizeof path);
++   VD_Unmount(ctx, unit);
++   bool writable = true;
++   u->img = u->fs->open(path, FILE_WRITE);
++   if (!u->img) { writable = false; u->img = u->fs->open(path, FILE_READ); }
++   if (!u->img || u->img.isDirectory()) { if (u->img) u->img.close(); return 62; }  // FILE NOT FOUND
++   uint32_t size = u->img.size();
++   if (size < 174848) { u->img.close(); return 74; }
++   d64_open(&u->d, VD_ReadSector, u, size >= 196608 ? 40 : 35);
++   u->d.write = writable ? VD_WriteSector : NULL;
++   u->mounted = true; u->dirty = false;
++   *out = &u->d;
++   Printf_dbg("VDrive %d: mounted %s%s\n", unit + 8, path, writable ? "" : " (read-only)");
++   return 0;
++}
++
++FLASHMEM static int VD_ChDir(void *ctx, int unit, const char *name)
++{
++   stcVDUnit *u = &vdUnit[unit];
++   if (strcmp(name, "..") == 0 || strcmp(name, "_") == 0)
++   {
++      char *slash = strrchr(u->cwd, '/');
++      if (slash) *slash = 0; else u->cwd[0] = 0;
++      return 0;
++   }
++   char path[VD_CwdLen + 20];
++   VD_PathFor(u, name, path, sizeof path);
++   size_t l = strlen(path); if (l > 1 && path[l - 1] == '/') path[l - 1] = 0;   // drop trailing '/'
++   File d = u->fs->open(path);
++   if (!d || !d.isDirectory()) { if (d) d.close(); return 62; }
++   d.close();
++   if (strlen(path) >= VD_CwdLen) return 74;
++   strcpy(u->cwd, path);
++   return 0;
++}
++
++FLASHMEM static int VD_DirOpen(void *ctx, int unit, char title[17])
++{
++   stcVDUnit *u = &vdUnit[unit];
++   if (u->dir) u->dir.close();
++   u->dir = u->fs->open(u->cwd[0] ? u->cwd : "/");
++   if (!u->dir) return 1;
++   snprintf(title, 17, "%s:%s", unit == 0 ? "SD" : "USB", u->cwd[0] ? u->cwd : "/");
++   for (char *p = title; *p; p++) *p = VD_ToPetscii(*p);
++   return 0;
++}
++
++FLASHMEM static int VD_DirNext(void *ctx, int unit, char name[17], uint32_t *size, int *is_dir)
++{
++   stcVDUnit *u = &vdUnit[unit];
++   while (File e = u->dir.openNextFile())
++   {
++      const char *n = e.name();
++      if (IsDotfile(n) || strlen(n) > 16) { e.close(); continue; }   // names the 16-char C64 listing can't hold
++      size_t i = 0;
++      for (; n[i]; i++) name[i] = VD_ToPetscii(n[i]);
++      name[i] = 0;
++      *is_dir = e.isDirectory();
++      *size = *is_dir ? 0 : e.size();
++      e.close();
++      return 1;
++   }
++   u->dir.close();
++   return 0;
++}
++
++// ---- device numbers in EEPROM (0 / out of range = default VD_DEV0/VD_DEV1) --------------------------
++FLASHMEM static void VD_SaveDevices(void *ctx, uint8_t dev0, uint8_t dev1)
++{
++   EEPROM.write(eepAdVDriveDevs, dev0);        // written by "U0>"+CHR$(n) on the drive's command channel
++   EEPROM.write(eepAdVDriveDevs + 1, dev1);
++}
++
++FLASHMEM static void VD_LoadDevices()
++{
++   uint8_t d0 = EEPROM.read(eepAdVDriveDevs), d1 = EEPROM.read(eepAdVDriveDevs + 1);
++   if (d0 < 8 || d0 > 30) d0 = VD_DEV0;        // 0 (unset) or garbage -> default
++   if (d1 < 8 || d1 > 30) d1 = VD_DEV1;
++   if (d0 == d1) { d0 = VD_DEV0; d1 = VD_DEV1; }
++   vdrive_set_devices(&vio->vd, d0, d1);
++}
++
++// ---- handler ---------------------------------------------------------------------------------
++extern bool SDFullInit();
++extern bool USBFileSystemWait();
++void InitHndlr_KernalReplace();   // re-stages the KERNAL bus hook (IOH_KernalReplace.c)
++
++FLASHMEM void InitHndlr_VDrive()
++{
++   InitHndlr_KernalReplace();
++#ifdef VD_ALLOC_HEAP
++   if (vio == NULL) vio = (vio_t *)malloc(sizeof(vio_t));
++#else
++   vio = &vioStore;                 // DMAMEM is not zero-initialised: vio_init() clears it
++#endif
++   if (vio == NULL) { Serial.println("VDrive: out of memory"); return; }
++   vio_init(vio);
++
++   vd_host_t host;
++   memset(&host, 0, sizeof host);
++   host.mount = VD_Mount;  host.unmount = VD_Unmount;  host.chdir = VD_ChDir;
++   host.dir_open = VD_DirOpen;  host.dir_next = VD_DirNext;  host.save_devices = VD_SaveDevices;
++   vdrive_set_host(&vio->vd, &host);
++   VD_LoadDevices();
++
++   for (int i = 0; i < 2; i++) { vdUnit[i].mounted = false; vdUnit[i].dirty = false; vdUnit[i].cwd[0] = 0; }
++   vdUnit[0].fs = &SD;
++   vdUnit[1].fs = &firstPartition;
++   vdrive_attach(&vio->vd, 0, NULL, SDFullInit());
++   vdrive_attach(&vio->vd, 1, NULL, USBFileSystemWait());
++   Serial.printf("VDrive: dev %d (SD) %s, dev %d (USB) %s\n",
++                 vio->vd.dev[0], vio->vd.unit[0].present ? "ready" : "absent",
++                 vio->vd.dev[1], vio->vd.unit[1].present ? "ready" : "absent");
++}
++
++FLASHMEM void PollingHndlr_VDrive()
++{
++   if (vio == NULL) return;
++   if (vio_poll(vio))
++   {
++#ifdef VD_TRACE   // bring-up aid: one line per mailbox command on the USB serial port (see docs/BRINGUP.md)
++      Serial.printf("vd cmd=%u arg=%02x len=%u -> stat=%02x data=%02x st=%02x\n",
++                    vio->cmd, vio->arg, vio->len, vio->stat, vio->data, vio->st);
++#endif
++   }
++   for (int i = 0; i < 2; i++)
++      if (vdUnit[i].dirty && millis() - vdUnit[i].lastWriteMs > VD_FlushIdleMs) VD_Flush(&vdUnit[i]);
++}
++
++FASTRUN void IO1Hndlr_VDrive(uint8_t Address, bool R_Wn)
++{
++   if (vio == NULL || Address >= VIO_NREGS) return;       // not mapped: open bus
++   if (R_Wn) DataPortWriteWaitLog(vio_io1_read(vio, Address));
++   else
++   {
++      uint8_t Data = DataPortWaitRead();
++      TraceLogAddValidData(Data);
++      vio_io1_write(vio, Address, Data);
++   }
++}
++
++FASTRUN void IO2Hndlr_VDrive(uint8_t Address, bool R_Wn)
++{
++   if (vio == NULL) return;
++   if (R_Wn) DataPortWriteWaitLog(vio_io2_read(vio, Address));
++   else
++   {
++      uint8_t Data = DataPortWaitRead();
++      TraceLogAddValidData(Data);
++      vio_io2_write(vio, Address, Data);
++   }
++}
+diff --git a/Source/Teensy/MinimalBoot/Common/IO_Handlers/StatusFunctions.c b/Source/Teensy/MinimalBoot/Common/IO_Handlers/StatusFunctions.c
+index 17a1fc5..b83d33a 100644
+--- a/Source/Teensy/MinimalBoot/Common/IO_Handlers/StatusFunctions.c
++++ b/Source/Teensy/MinimalBoot/Common/IO_Handlers/StatusFunctions.c
+@@ -552,7 +552,11 @@ FLASHMEM void KERNALPreStart()
+       NextIOHndlr = MenuSource[SelItemFullIdx].IOHndlrAssoc;
+    }
+ 
+-   if (NextIOHndlr == IOH_KernalReplace)
++   if (NextIOHndlr == IOH_KernalReplace
++#ifdef Fab04_VDrive
++       || NextIOHndlr == IOH_VDrive
++#endif
++      )
+    {
+       InitHndlr_KERNALReplace_PreStart(); //separate function so it doesn't get called twice
+       //Serial.println("Bye from KERNALPreStart");
+diff --git a/Source/Teensy/MinimalBoot/Common/Menu_Regs.h b/Source/Teensy/MinimalBoot/Common/Menu_Regs.h
+index 166ecfe..08fbac5 100644
+--- a/Source/Teensy/MinimalBoot/Common/Menu_Regs.h
++++ b/Source/Teensy/MinimalBoot/Common/Menu_Regs.h
+@@ -436,6 +436,9 @@ enum enumIOHandlers //Synch order/qty with IOHandler[] (IOHandlers.h)
+    #endif 
+    #ifdef Fab04_KernalReplace
+       IOH_KernalReplace,
++   #endif  
++   #ifdef Fab04_VDrive
++      IOH_VDrive,
+    #endif  
+       IOH_Debug, //last manually selectable, see LastSelectableIOH
+ 
+diff --git a/Source/Teensy/MinimalBoot/Common/vdrive/d64.c b/Source/Teensy/MinimalBoot/Common/vdrive/d64.c
+new file mode 100644
+index 0000000..710cada
+--- /dev/null
++++ b/Source/Teensy/MinimalBoot/Common/vdrive/d64.c
+@@ -0,0 +1,544 @@
++#include "d64.h"
++#include "vd_cfg.h"
++#include <string.h>
++
++VD_COLD static int spt(uint8_t t)
++{
++    if (t >= 1 && t <= 17)  return 21;
++    if (t >= 18 && t <= 24) return 19;
++    if (t >= 25 && t <= 30) return 18;
++    if (t >= 31 && t <= 40) return 17;
++    return 0;
++}
++VD_COLD int d64_sectors_in_track(uint8_t t) { return spt(t); }
++
++VD_COLD long d64_sector_offset(const d64_t *d, uint8_t t, uint8_t s)
++{
++    if (t < 1 || t > d->tracks || s >= spt(t)) return -1;
++    long off = 0;
++    for (uint8_t i = 1; i < t; i++) off += spt(i);
++    return (off + s) * D64_SECTOR;
++}
++
++VD_COLD static int mem_write(void *ctx, uint8_t t, uint8_t s, const uint8_t *buf)
++{
++    d64_mem_t *m = (d64_mem_t *)ctx;
++    uint8_t tracks = (m->len >= 196608) ? 40 : 35;
++    d64_t tmp = { 0, 0, 0, tracks };
++    long off = d64_sector_offset(&tmp, t, s);
++    if (off < 0 || (size_t)off + D64_SECTOR > m->len) return -1;
++    memcpy(m->data + off, buf, D64_SECTOR);
++    return 0;
++}
++
++VD_COLD static int mem_read(void *ctx, uint8_t t, uint8_t s, uint8_t *buf)
++{
++    d64_mem_t *m = (d64_mem_t *)ctx;
++    uint8_t tracks = (m->len >= 196608) ? 40 : 35;
++    d64_t tmp = { 0, 0, 0, tracks };
++    long off = d64_sector_offset(&tmp, t, s);
++    if (off < 0 || (size_t)off + D64_SECTOR > m->len) return -1;
++    memcpy(buf, m->data + off, D64_SECTOR);
++    return 0;
++}
++VD_COLD void d64_mem_init(d64_mem_t *m, uint8_t *data, size_t len) { m->data = data; m->len = len; }
++VD_COLD int d64_open(d64_t *d, d64_read_fn rd, void *ctx, uint8_t tracks)
++{
++    d->read = rd; d->write = NULL; d->ctx = ctx; d->tracks = (tracks == 40) ? 40 : 35;
++    return 0;
++}
++VD_COLD int d64_open_mem(d64_t *d, d64_mem_t *m)
++{
++    if (m->len < 174848) return -1;
++    int r = d64_open(d, mem_read, m, m->len >= 196608 ? 40 : 35);
++    d->write = mem_write;
++    return r;
++}
++
++VD_COLD static int rd(d64_t *d, uint8_t t, uint8_t s, uint8_t *b)
++{
++    if (d64_sector_offset(d, t, s) < 0) return D64_E_IO;
++    return d->read(d->ctx, t, s, b) ? D64_E_IO : 0;
++}
++VD_COLD static int wr(d64_t *d, uint8_t t, uint8_t s, const uint8_t *b)
++{
++    if (!d->write) return D64_E_RO;
++    if (d64_sector_offset(d, t, s) < 0) return D64_E_IO;
++    return d->write(d->ctx, t, s, b) ? D64_E_IO : 0;
++}
++
++VD_COLD static void strip(char *dst, const uint8_t *src, int n)
++{
++    int len = n;
++    while (len > 0 && src[len - 1] == 0xA0) len--;
++    memcpy(dst, src, len);
++    dst[len] = 0;
++}
++
++VD_COLD int d64_header(d64_t *d, char name[17], char id[3], char dos[3])
++{
++    uint8_t b[D64_SECTOR];
++    if (rd(d, 18, 0, b)) return -1;
++    strip(name, b + 0x90, 16);
++    id[0] = b[0xA2]; id[1] = b[0xA3]; id[2] = 0;
++    dos[0] = b[0xA5]; dos[1] = b[0xA6]; dos[2] = 0;
++    return 0;
++}
++
++VD_COLD int d64_blocks_free(d64_t *d)
++{
++    uint8_t b[D64_SECTOR];
++    if (rd(d, 18, 0, b)) return -1;
++    int free_ = 0;
++    for (int t = 1; t <= 35; t++) if (t != 18) free_ += b[4 * t];
++    return free_;
++}
++
++VD_COLD int d64_dir_first(d64_t *d, d64_dir_t *it)
++{
++    uint8_t b[D64_SECTOR];
++    if (rd(d, 18, 0, b)) return -1;
++    it->track = b[0] ? b[0] : 18;
++    it->sector = b[0] ? b[1] : 1;
++    it->slot = 8;               /* force load on first next() */
++    it->guard = 0;
++    return 0;
++}
++
++VD_COLD int d64_dir_next(d64_t *d, d64_dir_t *it, d64_entry_t *e)
++{
++    for (;;) {
++        if (it->slot >= 8) {
++            if (it->track == 0) return 0;
++            if (++it->guard > 40) return -2;               /* loop in chain */
++            if (rd(d, it->track, it->sector, it->buf)) return -1;
++            it->cur_t = it->track; it->cur_s = it->sector;
++            it->track = it->buf[0]; it->sector = it->buf[1];   /* next sector in chain */
++            it->slot = 0;
++        }
++        const uint8_t *p = it->buf + it->slot * 32;
++        it->slot++;
++        if (p[2] == 0) continue;                           /* scratched / empty */
++        e->type = p[2];
++        e->track = p[3]; e->sector = p[4];
++        e->blocks = p[30] | (p[31] << 8);
++        strip(e->name, p + 5, 16);
++        e->dir_t = it->cur_t; e->dir_s = it->cur_s; e->dir_slot = (uint8_t)(it->slot - 1);
++        return 1;
++    }
++}
++
++VD_COLD int d64_match(const char *name, const char *pat)
++{
++    for (;; name++, pat++) {
++        if (*pat == '*') return 1;
++        if (*pat == 0) return *name == 0;
++        if (*name == 0) return 0;
++        if (*pat != '?' && *pat != *name) return 0;
++    }
++}
++
++VD_COLD int d64_find(d64_t *d, const char *pat, d64_entry_t *e)
++{
++    d64_dir_t it;
++    int r = d64_dir_first(d, &it);
++    if (r) return r;
++    while ((r = d64_dir_next(d, &it, e)) > 0)
++        if ((e->type & 7) != 0 || (e->type & 0x80)) if (d64_match(e->name, pat)) return 1;
++    return r;
++}
++
++VD_COLD int d64_file_open(d64_t *d, const d64_entry_t *e, d64_file_t *f)
++{
++    (void)d;
++    f->next_t = e->track; f->next_s = e->sector;
++    f->loaded = 0; f->pos = f->end = 0; f->guard = 0;
++    return 0;
++}
++
++VD_COLD int d64_file_eof(const d64_file_t *f)
++{
++    return f->pos >= f->end && f->next_t == 0;
++}
++
++VD_COLD int d64_file_read(d64_t *d, d64_file_t *f, uint8_t *out, size_t n)
++{
++    size_t got = 0;
++    while (got < n) {
++        if (f->pos >= f->end) {
++            if (f->next_t == 0) break;                       /* EOF (or empty file) */
++            if (++f->guard > 800) return -2;                 /* chain loop */
++            if (rd(d, f->next_t, f->next_s, f->buf)) return -1;
++            uint8_t lt = f->buf[0], ls = f->buf[1];
++            f->pos = 2;
++            f->end = lt ? 256 : (uint16_t)(ls < 1 ? 2 : ls + 1);   /* last sector: ls = index of last used byte */
++            f->next_t = lt; f->next_s = ls;
++            f->loaded = 1;
++            continue;
++        }
++        size_t c = (size_t)(f->end - f->pos);
++        if (c > n - got) c = n - got;
++        memcpy(out + got, f->buf + f->pos, c);
++        f->pos = (uint16_t)(f->pos + c); got += c;
++    }
++    return (int)got;
++}
++
++/* ---- write support ------------------------------------------------------ */
++
++VD_COLD static int next_data_track(uint8_t t)
++{   /* allocation order: 17..1 then 19..35 (nearest the directory first); 0 = exhausted */
++    if (t == 0) return 17;
++    if (t >= 2 && t <= 17) return t - 1;
++    if (t == 1) return 19;
++    if (t >= 19 && t <= 34) return t + 1;
++    return 0;
++}
++
++/* Allocate one sector. In: *t,*s = hint (t==0: none). dirmode: track 18 only, never sector 0. */
++VD_COLD static int alloc_sector(d64_t *d, uint8_t *t, uint8_t *s, int interleave, int dirmode)
++{
++    uint8_t bam[D64_SECTOR];
++    int r = rd(d, 18, 0, bam);
++    if (r) return r;
++    uint8_t tr; int hint;
++    if (dirmode)   { tr = 18; hint = (*t == 18) ? *s + interleave : 1; }
++    else if (*t)   { tr = *t; hint = *s + interleave; }
++    else           { tr = next_data_track(0); hint = 0; }
++    for (;;) {
++        if (tr == 0 || tr > 35) return D64_E_FULL;
++        if ((tr != 18 || dirmode) && bam[4 * tr] > 0) {
++            int n = spt(tr);
++            for (int i = 0; i < n; i++) {
++                int sec = (hint + i) % n;
++                if (dirmode && sec == 0) continue;
++                if (bam[4 * tr + 1 + sec / 8] & (1 << (sec % 8))) {
++                    bam[4 * tr + 1 + sec / 8] &= (uint8_t)~(1 << (sec % 8));
++                    bam[4 * tr]--;
++                    r = wr(d, 18, 0, bam);
++                    if (r) return r;
++                    *t = tr; *s = (uint8_t)sec;
++                    return 0;
++                }
++            }
++        }
++        if (dirmode) return D64_E_FULL;
++        tr = (uint8_t)next_data_track(tr);
++        hint = 0;
++    }
++}
++
++VD_COLD static int free_sector(d64_t *d, uint8_t t, uint8_t s)
++{
++    uint8_t bam[D64_SECTOR];
++    if (t < 1 || t > 35 || s >= spt(t)) return D64_E_IO;
++    int r = rd(d, 18, 0, bam);
++    if (r) return r;
++    uint8_t bit = (uint8_t)(1 << (s % 8)), *p = &bam[4 * t + 1 + s / 8];
++    if (!(*p & bit)) { *p |= bit; bam[4 * t]++; }
++    return wr(d, 18, 0, bam);
++}
++
++VD_COLD static int valid_name(const char *n)
++{
++    size_t l = strlen(n);
++    if (l < 1 || l > 16) return 0;
++    for (; *n; n++) if (*n == '*' || *n == '?' || *n == ',' || *n == ':' || *n == '=' || *n == '"') return 0;
++    return 1;
++}
++
++/* Update directory entry bytes in place. */
++VD_COLD static int dir_update(d64_t *d, uint8_t dt, uint8_t ds, uint8_t slot, const uint8_t *entry30 /* NULL: leave */,
++                      int type, int blocks)
++{
++    uint8_t b[D64_SECTOR];
++    int r = rd(d, dt, ds, b);
++    if (r) return r;
++    uint8_t *p = b + slot * 32;
++    if (entry30) memcpy(p + 2, entry30, 30);
++    if (type >= 0) p[2] = (uint8_t)type;
++    if (blocks >= 0) { p[30] = (uint8_t)blocks; p[31] = (uint8_t)(blocks >> 8); }
++    return wr(d, dt, ds, b);
++}
++
++VD_COLD int d64_scratch_entry(d64_t *d, const d64_entry_t *e)
++{
++    if (!d->write) return D64_E_RO;
++    if (e->type & 0x40) return D64_E_LOCKED;
++    uint8_t t = e->track, s = e->sector, b[D64_SECTOR];
++    for (int guard = 0; t && guard < 800; guard++) {
++        int r = rd(d, t, s, b);
++        if (r) break;                       /* broken chain: free what we can */
++        uint8_t nt = b[0], ns = b[1];
++        if ((r = free_sector(d, t, s))) return r;
++        t = nt; s = ns;
++    }
++    return dir_update(d, e->dir_t, e->dir_s, e->dir_slot, NULL, 0, -1);
++}
++
++VD_COLD int d64_scratch(d64_t *d, const char *pat)
++{
++    d64_dir_t it; d64_entry_t e;
++    int r = d64_dir_first(d, &it), n = 0;
++    if (r) return r;
++    while ((r = d64_dir_next(d, &it, &e)) > 0) {
++        if (!d64_match(e.name, pat)) continue;
++        r = d64_scratch_entry(d, &e);
++        if (r == D64_E_LOCKED) continue;
++        if (r) return r;
++        n++;
++    }
++    return r < 0 ? r : n;
++}
++
++VD_COLD int d64_rename(d64_t *d, const char *oldn, const char *newn)
++{
++    d64_entry_t e, x;
++    if (!valid_name(newn)) return D64_E_NAME;
++    if (!d->write) return D64_E_RO;
++    int r = d64_find(d, oldn, &e);
++    if (r < 0) return r;
++    if (r == 0) return D64_E_NOTFOUND;
++    if ((r = d64_find(d, newn, &x)) < 0) return r;
++    if (r == 1) return D64_E_EXISTS;
++    uint8_t b[D64_SECTOR];
++    if ((r = rd(d, e.dir_t, e.dir_s, b))) return r;
++    uint8_t *p = b + e.dir_slot * 32 + 5;
++    size_t l = strlen(newn);
++    memset(p, 0xA0, 16); memcpy(p, newn, l);
++    return wr(d, e.dir_t, e.dir_s, b);
++}
++
++/* Find a free directory slot, extending the directory if necessary. */
++VD_COLD static int dir_slot_alloc(d64_t *d, uint8_t *dt, uint8_t *ds, uint8_t *slot)
++{
++    uint8_t b[D64_SECTOR], t, s;
++    int r = rd(d, 18, 0, b);
++    if (r) return r;
++    t = b[0] ? b[0] : 18; s = b[0] ? b[1] : 1;
++    for (int guard = 0; guard < 40; guard++) {
++        if ((r = rd(d, t, s, b))) return r;
++        for (int i = 0; i < 8; i++)
++            if (b[i * 32 + 2] == 0) { *dt = t; *ds = s; *slot = (uint8_t)i; return 0; }
++        if (b[0] == 0) {                       /* last dir sector, full: extend */
++            uint8_t nt = t, ns = s;
++            if ((r = alloc_sector(d, &nt, &ns, 3, 1))) return r;
++            b[0] = nt; b[1] = ns;
++            if ((r = wr(d, t, s, b))) return r;
++            memset(b, 0, sizeof b); b[1] = 0xFF;
++            if ((r = wr(d, nt, ns, b))) return r;
++            *dt = nt; *ds = ns; *slot = 0;
++            return 0;
++        }
++        t = b[0]; s = b[1];
++    }
++    return D64_E_LOOP;
++}
++
++VD_COLD int d64_create(d64_t *d, const char *name, uint8_t type, int replace, d64_wfile_t *w)
++{
++    d64_entry_t e;
++    if (!d->write) return D64_E_RO;
++    if (!valid_name(name)) return D64_E_NAME;
++    int r = d64_find(d, name, &e);
++    if (r < 0) return r;
++    if (r == 1) {
++        if (!replace) return D64_E_EXISTS;
++        if ((r = d64_scratch_entry(d, &e))) return r;
++    }
++    uint8_t ft = 0, fs = 0, dt, ds, slot;
++    if ((r = alloc_sector(d, &ft, &fs, 10, 0))) return r;
++    if ((r = dir_slot_alloc(d, &dt, &ds, &slot))) { free_sector(d, ft, fs); return r; }
++
++    uint8_t ent[30];
++    memset(ent, 0, sizeof ent);
++    ent[0] = type & 7;                         /* unclosed until close */
++    ent[1] = ft; ent[2] = fs;
++    memset(ent + 3, 0xA0, 16); memcpy(ent + 3, name, strlen(name));
++    if ((r = dir_update(d, dt, ds, slot, ent, -1, -1))) { free_sector(d, ft, fs); return r; }
++
++    w->type = type & 7; w->dir_t = dt; w->dir_s = ds; w->dir_slot = slot;
++    w->first_t = w->cur_t = ft; w->first_s = w->cur_s = fs;
++    w->pos = 2; w->blocks = 1;
++    memset(w->buf, 0, sizeof w->buf);
++    return 0;
++}
++
++VD_COLD static void abort_write(d64_t *d, d64_wfile_t *w)
++{   /* free exactly the sectors we allocated, then drop the directory entry */
++    uint8_t t = w->first_t, s = w->first_s, b[D64_SECTOR];
++    for (int i = 0; i < w->blocks; i++) {
++        uint8_t nt = 0, ns = 0;
++        if (i + 1 < w->blocks && rd(d, t, s, b) == 0) { nt = b[0]; ns = b[1]; }
++        free_sector(d, t, s);
++        if (!nt) break;
++        t = nt; s = ns;
++    }
++    dir_update(d, w->dir_t, w->dir_s, w->dir_slot, NULL, 0, -1);
++}
++
++VD_COLD int d64_write(d64_t *d, d64_wfile_t *w, const uint8_t *data, size_t n)
++{
++    for (size_t i = 0; i < n; i++) {
++        if (w->pos == D64_SECTOR) {
++            uint8_t nt = w->cur_t, ns = w->cur_s;
++            int r = alloc_sector(d, &nt, &ns, 10, 0);
++            if (r == 0) {
++                w->buf[0] = nt; w->buf[1] = ns;
++                r = wr(d, w->cur_t, w->cur_s, w->buf);
++                if (r) free_sector(d, nt, ns);       /* don't leak the sector we just took */
++            }
++            if (r) { abort_write(d, w); return r; }
++            w->cur_t = nt; w->cur_s = ns; w->blocks++;
++            memset(w->buf, 0, sizeof w->buf);
++            w->pos = 2;
++        }
++        w->buf[w->pos++] = data[i];
++    }
++    return (int)n;
++}
++
++VD_COLD int d64_close_write(d64_t *d, d64_wfile_t *w)
++{
++    w->buf[0] = 0; w->buf[1] = (uint8_t)(w->pos - 1);   /* index of last used byte */
++    int r = wr(d, w->cur_t, w->cur_s, w->buf);
++    if (r) return r;
++    return dir_update(d, w->dir_t, w->dir_s, w->dir_slot, NULL, 0x80 | w->type, w->blocks);
++}
++
++VD_COLD int d64_format(d64_t *d, const char *name, const char *id)
++{
++    uint8_t b[D64_SECTOR];
++    uint8_t idb[2];
++    if (!d->write) return D64_E_RO;
++    if (!valid_name(name)) return D64_E_NAME;
++    if (id) {
++        if (strlen(id) != 2) return D64_E_NAME;
++        idb[0] = (uint8_t)id[0]; idb[1] = (uint8_t)id[1];
++        memset(b, 0, sizeof b);
++        for (uint8_t t = 1; t <= d->tracks; t++)
++            for (int sct = 0; sct < spt(t); sct++)
++                if ((t != 18 || sct > 1)) { int r = wr(d, t, (uint8_t)sct, b); if (r) return r; }
++    } else {
++        int r = rd(d, 18, 0, b);
++        if (r) return r;
++        idb[0] = b[0xA2]; idb[1] = b[0xA3];
++    }
++    memset(b, 0, sizeof b);
++    b[0] = 18; b[1] = 1; b[2] = 'A';
++    for (int t = 1; t <= 35; t++) {
++        int n = spt(t);
++        uint8_t *p = &b[4 * t];
++        p[0] = (uint8_t)n;
++        for (int sct = 0; sct < n; sct++) p[1 + sct / 8] |= (uint8_t)(1 << (sct % 8));
++    }
++    b[4 * 18] -= 2; b[4 * 18 + 1] &= 0xFC;                  /* 18/0 and 18/1 in use */
++    memset(b + 0x90, 0xA0, 16); memcpy(b + 0x90, name, strlen(name));
++    b[0xA0] = b[0xA1] = 0xA0;
++    b[0xA2] = idb[0]; b[0xA3] = idb[1];
++    b[0xA4] = 0xA0; b[0xA5] = '2'; b[0xA6] = 'A';
++    b[0xA7] = b[0xA8] = b[0xA9] = b[0xAA] = 0xA0;
++    int r = wr(d, 18, 0, b);
++    if (r) return r;
++    memset(b, 0, sizeof b); b[1] = 0xFF;
++    return wr(d, 18, 1, b);
++}
++
++/* ---- BASIC listing ------------------------------------------------------ */
++VD_COLD static void put(d64_bas_t *b, uint8_t c)
++{
++    if (b->len >= b->cap) { b->ok = 0; return; }
++    b->p[b->len++] = c;
++}
++VD_COLD static void line_begin(d64_bas_t *b, uint16_t num)
++{
++    b->link_at = (uint16_t)b->len;
++    put(b, 0); put(b, 0);                              /* link patched in line_end */
++    put(b, num & 0xFF); put(b, num >> 8);
++}
++VD_COLD static void line_end(d64_bas_t *b)
++{
++    put(b, 0);
++    uint16_t next = (uint16_t)(0x0401 + b->base + b->len - 2);   /* -2: load address bytes come first */
++    if (b->ok) { b->p[b->link_at] = next & 0xFF; b->p[b->link_at + 1] = next >> 8; }
++}
++VD_COLD static void puts_(d64_bas_t *b, const char *s) { while (*s) put(b, (uint8_t)*s++); }
++
++VD_COLD void d64_bas_begin_at(d64_bas_t *b, uint8_t *out, size_t cap, size_t base)
++{
++    b->p = out; b->cap = cap; b->len = 0; b->base = base; b->ok = 1; b->link_at = 0;
++    if (base == 0) { put(b, 0x01); put(b, 0x04); }      /* load address $0401 */
++}
++
++VD_COLD void d64_bas_begin(d64_bas_t *b, uint8_t *out, size_t cap) { d64_bas_begin_at(b, out, cap, 0); }
++
++VD_COLD void d64_bas_header(d64_bas_t *b, const char *name, const char *id, const char *dos)
++{
++    line_begin(b, 0);
++    put(b, 0x12); put(b, '"');                         /* reverse video */
++    int n = (int)strlen(name);
++    for (int i = 0; i < 16; i++) put(b, i < n ? (uint8_t)name[i] : 0x20);
++    put(b, '"'); put(b, ' '); puts_(b, id); put(b, ' '); puts_(b, dos);
++    line_end(b);
++}
++
++VD_COLD void d64_bas_entry(d64_bas_t *b, uint16_t blocks, const char *name, const char *type3, int closed, int locked)
++{
++    line_begin(b, blocks);
++    int pad = blocks < 10 ? 3 : blocks < 100 ? 2 : blocks < 1000 ? 1 : 0;
++    for (int i = 0; i < pad; i++) put(b, ' ');
++    put(b, '"');
++    int l = (int)strlen(name);
++    for (int i = 0; i < l; i++) put(b, (uint8_t)name[i]);
++    put(b, '"');
++    for (int i = l; i < 16; i++) put(b, ' ');
++    put(b, closed ? ' ' : '*');
++    puts_(b, type3);
++    put(b, locked ? '<' : ' ');
++    line_end(b);
++}
++
++VD_COLD void d64_bas_footer(d64_bas_t *b, uint16_t free_blocks)
++{
++    line_begin(b, free_blocks);
++    puts_(b, "BLOCKS FREE.             ");
++    line_end(b);
++}
++
++VD_COLD size_t d64_bas_end(d64_bas_t *b)
++{
++    put(b, 0); put(b, 0);                              /* end of program */
++    return b->ok ? b->len : 0;
++}
++
++static const char *const TYPES[8] = { "DEL", "SEQ", "PRG", "USR", "REL", "???", "???", "???" };
++
++VD_COLD size_t d64_build_dir(d64_t *d, const char *pattern, uint8_t *out, size_t cap)
++{
++    d64_bas_t b;
++    char name[17], id[3], dos[3];
++    d64_bas_begin(&b, out, cap);
++    if (d64_header(d, name, id, dos)) return 0;
++    d64_bas_header(&b, name, id, dos);
++
++    d64_dir_t it; d64_entry_t e;
++    if (d64_dir_first(d, &it)) return 0;
++    int r;
++    while ((r = d64_dir_next(d, &it, &e)) > 0) {
++        if (pattern && !d64_match(e.name, pattern)) continue;
++        d64_bas_entry(&b, e.blocks, e.name, TYPES[e.type & 7], (e.type & 0x80) != 0, (e.type & 0x40) != 0);
++    }
++    if (r < 0) return 0;
++
++    int fr = d64_blocks_free(d);
++    if (fr < 0) return 0;
++    d64_bas_footer(&b, (uint16_t)fr);
++    return d64_bas_end(&b);
++}
++
++VD_COLD size_t d64_sizeof_d64(void)   { return sizeof(d64_t); }
++VD_COLD size_t d64_sizeof_mem(void)   { return sizeof(d64_mem_t); }
++VD_COLD size_t d64_sizeof_dir(void)   { return sizeof(d64_dir_t); }
++VD_COLD size_t d64_sizeof_wfile(void) { return sizeof(d64_wfile_t); }
++VD_COLD size_t d64_sizeof_file(void)  { return sizeof(d64_file_t); }
++VD_COLD size_t d64_sizeof_entry(void) { return sizeof(d64_entry_t); }
+diff --git a/Source/Teensy/MinimalBoot/Common/vdrive/d64.h b/Source/Teensy/MinimalBoot/Common/vdrive/d64.h
+new file mode 100644
+index 0000000..435801d
+--- /dev/null
++++ b/Source/Teensy/MinimalBoot/Common/vdrive/d64.h
+@@ -0,0 +1,131 @@
++/* D64 engine (read + write). Portable C99, no malloc: all state lives in caller
++ * structs and sectors are fetched through a callback, so the same code runs
++ * on the Teensy (SD/USB file backend) and on the host (tests, VICE mock). */
++#ifndef D64_H
++#define D64_H
++#include <stddef.h>
++#include <stdint.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++#define D64_SECTOR 256
++
++/* Fetch one 256-byte sector. Return 0 on success. */
++typedef int (*d64_read_fn)(void *ctx, uint8_t track, uint8_t sector, uint8_t *buf);
++
++/* Store one 256-byte sector. Return 0 on success. NULL = read-only disk. */
++typedef int (*d64_write_fn)(void *ctx, uint8_t track, uint8_t sector, const uint8_t *buf);
++
++enum {
++    D64_OK = 0,
++    D64_E_IO = -1,       /* sector read/write failed or link out of range */
++    D64_E_LOOP = -2,     /* chain loop */
++    D64_E_FULL = -3,     /* disk (or directory) full   -> DOS 72 */
++    D64_E_EXISTS = -4,   /* file exists                -> DOS 63 */
++    D64_E_NAME = -5,     /* bad file name              -> DOS 33 */
++    D64_E_RO = -6,       /* read-only disk             -> DOS 26 */
++    D64_E_LOCKED = -7,   /* file is locked             -> DOS 26 */
++    D64_E_NOTFOUND = -8  /* file not found             -> DOS 62 */
++};
++
++typedef struct {
++    d64_read_fn  read;
++    d64_write_fn write;
++    void       *ctx;
++    uint8_t     tracks;          /* 35 or 40 */
++} d64_t;
++
++typedef struct {
++    uint8_t  type;               /* raw type byte: bit7 closed, bit6 locked, low 3 = DEL/SEQ/PRG/USR/REL */
++    uint8_t  track, sector;      /* first data sector */
++    uint16_t blocks;
++    char     name[17];           /* PETSCII, $A0 padding stripped, NUL terminated */
++    uint8_t  dir_t, dir_s, dir_slot;   /* where this entry lives (for update/scratch) */
++} d64_entry_t;
++
++typedef struct {
++    uint8_t track, sector;       /* next directory sector in chain */
++    uint8_t cur_t, cur_s;        /* sector held in buf */
++    uint8_t slot;                /* next entry (0-7) in buf */
++    uint8_t guard;
++    uint8_t buf[D64_SECTOR];
++} d64_dir_t;
++
++typedef struct {
++    uint8_t  next_t, next_s;     /* next sector in chain (0,x = none) */
++    uint8_t  loaded;             /* buf holds a sector */
++    uint16_t pos, end;           /* read cursor / one past last valid byte in buf */
++    uint16_t guard;
++    uint8_t  buf[D64_SECTOR];
++} d64_file_t;
++
++typedef struct {
++    uint8_t  type;               /* DEL/SEQ/PRG/USR (low 3 bits) */
++    uint8_t  dir_t, dir_s, dir_slot;
++    uint8_t  first_t, first_s;
++    uint8_t  cur_t, cur_s;       /* sector being filled */
++    uint16_t pos;                /* next free index in buf (2..256) */
++    uint16_t blocks;             /* sectors allocated so far */
++    uint8_t  buf[D64_SECTOR];
++} d64_wfile_t;
++
++/* Memory-image backend (host tests / mock). Writable if data is. */
++typedef struct { uint8_t *data; size_t len; } d64_mem_t;
++void d64_mem_init(d64_mem_t *m, uint8_t *data, size_t len);
++int  d64_open_mem(d64_t *d, d64_mem_t *m);          /* image size selects 35/40 tracks */
++int  d64_open(d64_t *d, d64_read_fn rd, void *ctx, uint8_t tracks);
++
++int  d64_sectors_in_track(uint8_t track);           /* 0 if invalid */
++long d64_sector_offset(const d64_t *d, uint8_t track, uint8_t sector); /* byte offset in image, -1 if invalid */
++
++/* Disk header: name (16 PETSCII, stripped), id (2), dos type (2), NUL terminated. */
++int  d64_header(d64_t *d, char name[17], char id[3], char dos[3]);
++int  d64_blocks_free(d64_t *d);                     /* 1541 convention: track 18 not counted */
++
++int  d64_dir_first(d64_t *d, d64_dir_t *it);
++int  d64_dir_next(d64_t *d, d64_dir_t *it, d64_entry_t *e);   /* 1 entry, 0 end, <0 error */
++
++/* CBM wildcard match: '?' any one char, '*' rest of name. */
++int  d64_match(const char *name, const char *pattern);
++int  d64_find(d64_t *d, const char *pattern, d64_entry_t *e); /* 1 found, 0 not found, <0 error */
++
++int  d64_file_open(d64_t *d, const d64_entry_t *e, d64_file_t *f);
++int  d64_file_read(d64_t *d, d64_file_t *f, uint8_t *out, size_t n); /* bytes read; 0 = EOF; <0 error */
++int  d64_file_eof(const d64_file_t *f);             /* 1 when no more bytes will follow */
++
++/* BASIC directory listing (load address $0401), optional name pattern (NULL = all).
++ * Returns length written, or 0 if cap is too small. */
++size_t d64_build_dir(d64_t *d, const char *pattern, uint8_t *out, size_t cap);
++
++/* ---- write support ----
++ * d64_create allocates the first sector and a directory slot (file shows as
++ * unclosed "splat" until d64_close_write). replace!=0 scratches an existing
++ * file of that name first (DOS "@:"). */
++int  d64_create(d64_t *d, const char *name, uint8_t type, int replace, d64_wfile_t *w);
++int  d64_write(d64_t *d, d64_wfile_t *w, const uint8_t *data, size_t n); /* n or <0; on D64_E_FULL the file is removed */
++int  d64_close_write(d64_t *d, d64_wfile_t *w);
++int  d64_scratch_entry(d64_t *d, const d64_entry_t *e);          /* frees chain, marks entry deleted */
++int  d64_scratch(d64_t *d, const char *pattern);                 /* returns files scratched or <0 */
++int  d64_rename(d64_t *d, const char *oldname, const char *newname);
++int  d64_format(d64_t *d, const char *name, const char *id);     /* id==NULL: quick (BAM + directory only) */
++
++/* Generic BASIC-listing builder (also used for host directory listings). */
++typedef struct { uint8_t *p; size_t cap, len, base; uint16_t link_at; int ok; } d64_bas_t;
++void   d64_bas_begin(d64_bas_t *b, uint8_t *out, size_t cap);
++/* Incremental form: build one line at a time into a small buffer. base = bytes already emitted
++ * (load address included) so the line link pointers stay right; base==0 also emits the load address. */
++void   d64_bas_begin_at(d64_bas_t *b, uint8_t *out, size_t cap, size_t base);
++void   d64_bas_header(d64_bas_t *b, const char *name, const char *id, const char *dos);
++void   d64_bas_entry(d64_bas_t *b, uint16_t blocks, const char *name, const char *type3, int closed, int locked);
++void   d64_bas_footer(d64_bas_t *b, uint16_t free_blocks);
++size_t d64_bas_end(d64_bas_t *b);                    /* length, or 0 if the buffer overflowed */
++
++size_t d64_sizeof_d64(void);  size_t d64_sizeof_mem(void);
++size_t d64_sizeof_dir(void);  size_t d64_sizeof_wfile(void);  size_t d64_sizeof_file(void);  size_t d64_sizeof_entry(void);
++
++#ifdef __cplusplus
++}
++#endif
++#endif
+diff --git a/Source/Teensy/MinimalBoot/Common/vdrive/vd_cfg.h b/Source/Teensy/MinimalBoot/Common/vdrive/vd_cfg.h
+new file mode 100644
+index 0000000..20f3ecc
+--- /dev/null
++++ b/Source/Teensy/MinimalBoot/Common/vdrive/vd_cfg.h
+@@ -0,0 +1,25 @@
++/* Build-time knobs shared by d64.c / vdrive.c / vdrive_io.c. */
++#ifndef VD_CFG_H
++#define VD_CFG_H
++/* Placement for code that is NOT reachable from the bus interrupt. The firmware
++ * glue defines this as FLASHMEM so only the O(1) register accessors stay in RAM1. */
++#ifndef VD_COLD
++#define VD_COLD
++#endif
++
++/* IEC device numbers of the two virtual drives (unit 0 = SD, unit 1 = USB). Any other device number
++ * keeps using the real serial bus, so e.g. -DVD_DEV0=10 -DVD_DEV1=11 leaves physical drives 8 and 9
++ * alone. The KERNAL image contains no device numbers: change them here and rebuild the firmware only. */
++#ifndef VD_DEV0
++#define VD_DEV0 8
++#endif
++#ifndef VD_DEV1
++#define VD_DEV1 9
++#endif
++
++/* Simultaneously open data channels per unit. Real 1541s have 5; the pool is shared by
++ * LOAD (channel 0), SAVE (1), and OPENs 2-14. Each slot costs ~290 bytes. */
++#ifndef VD_NSLOT
++#define VD_NSLOT 6
++#endif
++#endif
+diff --git a/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.c b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.c
+new file mode 100644
+index 0000000..e64d306
+--- /dev/null
++++ b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.c
+@@ -0,0 +1,435 @@
++#include "vdrive.h"
++#include "vd_cfg.h"
++#include <string.h>
++
++#define ST_TIMEOUT 0x02
++#define ST_EOI     0x40
++#define ST_NODEV   0x80
++
++/* ---- status channel ---------------------------------------------------- */
++static const struct { uint8_t code; const char *msg; } MSGS[] = {
++    {0, " OK"}, {1, "FILES SCRATCHED"}, {26, "WRITE PROTECT ON"}, {30, "SYNTAX ERROR"},
++    {31, "SYNTAX ERROR"}, {33, "SYNTAX ERROR"}, {62, "FILE NOT FOUND"}, {63, "FILE EXISTS"},
++    {70, "NO CHANNEL"}, {72, "DISK FULL"}, {74, "DRIVE NOT READY"},
++};
++
++VD_COLD static void set_err(vd_unit_t *u, uint8_t code, uint8_t t, uint8_t s)
++{ u->err = code; u->err_t = t; u->err_s = s; }
++
++static uint8_t *put2(uint8_t *p, unsigned n) { *p++ = (uint8_t)('0' + n / 10 % 10); *p++ = (uint8_t)('0' + n % 10); return p; }
++
++/* Render "NN,MESSAGE,TT,SS\r" into statbuf and clear the error. */
++VD_COLD static uint16_t status_text(vd_unit_t *u)
++{
++    uint8_t *p = u->statbuf;
++    const char *m = "";
++    for (unsigned i = 0; i < sizeof MSGS / sizeof MSGS[0]; i++) if (MSGS[i].code == u->err) m = MSGS[i].msg;
++    p = put2(p, u->err); *p++ = ',';
++    while (*m) *p++ = (uint8_t)*m++;
++    *p++ = ','; p = put2(p, u->err_t); *p++ = ','; p = put2(p, u->err_s); *p++ = '\r';
++    uint16_t n = (uint16_t)(p - u->statbuf);
++    set_err(u, 0, 0, 0);
++    u->stat_len = (uint8_t)n; u->stat_pos = 0;
++    return n;
++}
++
++VD_COLD static void err_from(vd_unit_t *u, int r)
++{
++    switch (r) {
++    case D64_E_FULL:    set_err(u, 72, 0, 0); break;
++    case D64_E_EXISTS:  set_err(u, 63, 0, 0); break;
++    case D64_E_NAME:    set_err(u, 33, 0, 0); break;
++    case D64_E_RO:
++    case D64_E_LOCKED:  set_err(u, 26, 0, 0); break;
++    case D64_E_NOTFOUND:set_err(u, 62, 0, 0); break;
++    default:            set_err(u, 74, 0, 0); break;
++    }
++}
++
++/* ---- channels ---------------------------------------------------------- */
++VD_COLD static vd_chan_t *chan_find(vd_unit_t *u, int ch)
++{
++    uint8_t i = u->slot_of[ch];
++    return i ? &u->slot[i - 1] : NULL;
++}
++
++VD_COLD static void chan_close(vd_unit_t *u, int ch)
++{
++    vd_chan_t *c = chan_find(u, ch);
++    if (!c) return;
++    if (c->mode == 3 && u->disk) {
++        int r = d64_close_write(u->disk, &c->u.w);
++        if (r) err_from(u, r);
++    }
++    c->mode = 0;
++    u->slot_of[ch] = 0;
++}
++
++VD_COLD static vd_chan_t *chan_alloc(vd_unit_t *u, int ch)
++{
++    chan_close(u, ch);
++    for (int i = 0; i < VD_NSLOT; i++) {
++        int used = 0;
++        for (int k = 0; k < 16; k++) if (u->slot_of[k] == i + 1) used = 1;
++        if (!used) { u->slot_of[ch] = (uint8_t)(i + 1); u->slot[i].mode = 0; return &u->slot[i]; }
++    }
++    set_err(u, 70, 0, 0);                              /* NO CHANNEL */
++    return NULL;
++}
++
++VD_COLD static void close_all(vd_unit_t *u) { for (int i = 0; i < 16; i++) chan_close(u, i); }
++
++/* name[0..len) -> split off a leading "0:" style drive prefix; returns pointer to name proper. */
++VD_COLD static const char *strip_prefix(const char *p, const char *end)
++{
++    for (const char *q = p; q < end && q < p + 3; q++) if (*q == ':') return q + 1;
++    return p;
++}
++
++typedef struct { char name[17]; int has_name; uint8_t type; char mode; int replace; int ok; } open_spec_t;
++
++VD_COLD static open_spec_t parse_open(const uint8_t *raw, uint8_t len)
++{
++    open_spec_t o; memset(&o, 0, sizeof o);
++    char buf[VD_CMDBUF + 1];
++    memcpy(buf, raw, len); buf[len] = 0;
++    const char *p = buf, *end = buf + len;
++    if (*p == '@') { o.replace = 1; p++; }
++    p = strip_prefix(p, end);
++    const char *comma = p;
++    while (comma < end && *comma != ',') comma++;
++    size_t nl = (size_t)(comma - p);
++    if (nl > 16) { o.ok = 0; return o; }
++    memcpy(o.name, p, nl); o.name[nl] = 0; o.has_name = nl > 0;
++    o.ok = 1;
++    while (comma < end) {
++        const char *f = comma + 1;
++        switch (*f) {
++        case 'P': o.type = 2; break;
++        case 'S': o.type = 1; break;
++        case 'U': o.type = 3; break;
++        case 'L': o.type = 4; break;
++        case 'R': case 'W': case 'A': o.mode = *f; break;
++        default: break;
++        }
++        comma = f;
++        while (comma < end && *comma != ',') comma++;
++    }
++    return o;
++}
++
++static const char *const DIRTYPES[8] = { "DEL", "SEQ", "PRG", "USR", "REL", "???", "???", "???" };
++
++VD_COLD static int has_d64_suffix(const char *s)
++{
++    size_t l = strlen(s);
++    if (l < 4) return 0;
++    const char *e = s + l - 4;
++    return e[0] == '.' && (e[1] | 0x20) == 'd' && e[2] == '6' && e[3] == '4';
++}
++
++/* One line of the directory per call into d->line; sets d->phase = 3 and llen = 0 when finished. */
++VD_COLD static void dir_gen(vdrive_t *v, int unit, vd_unit_t *u, vd_dirstream_t *d)
++{
++    d64_bas_t b;
++    char name[17], id[3], dos[3];
++    d->lpos = 0; d->llen = 0;
++    while (d->phase != 3) {
++        d64_bas_begin_at(&b, d->line, sizeof d->line, d->off);
++        if (d->phase == 0) {
++            if (d->host) {
++                char title[17];
++                if (v->host.dir_open(v->host.ctx, unit, title)) { d->phase = 3; return; }
++                { char idn[3] = { (char)('0' + v->dev[unit] / 10 % 10), (char)('0' + v->dev[unit] % 10), 0 };   /* shows the device number */
++                  d64_bas_header(&b, title, idn, "2A"); }
++            } else {
++                if (d64_header(u->disk, name, id, dos) || d64_dir_first(u->disk, &d->it)) { d->phase = 3; return; }
++                d64_bas_header(&b, name, id, dos);
++            }
++            d->phase = 1;
++        } else if (d->phase == 1) {
++            int got = 0;
++            for (;;) {
++                if (d->host) {
++                    uint32_t size; int is_dir;
++                    if (v->host.dir_next(v->host.ctx, unit, name, &size, &is_dir) <= 0) break;
++                    if (d->has_pat && !d64_match(name, d->pat)) continue;
++                    uint32_t blocks = is_dir ? 0 : (size + 253) / 254;
++                    d64_bas_entry(&b, (uint16_t)(blocks > 65535 ? 65535 : blocks), name,
++                                  is_dir ? "DIR" : has_d64_suffix(name) ? "D64" : "PRG", 1, 0);
++                    got = 1; break;
++                } else {
++                    d64_entry_t e;
++                    int r = d64_dir_next(u->disk, &d->it, &e);
++                    if (r < 0) { d->phase = 3; return; }       /* damaged directory: stop listing */
++                    if (r == 0) break;
++                    if (d->has_pat && !d64_match(e.name, d->pat)) continue;
++                    d64_bas_entry(&b, e.blocks, e.name, DIRTYPES[e.type & 7], (e.type & 0x80) != 0, (e.type & 0x40) != 0);
++                    got = 1; break;
++                }
++            }
++            if (!got) { d->phase = 2; continue; }
++        } else {
++            int fr = d->host ? 0 : d64_blocks_free(u->disk);
++            if (fr < 0) fr = 0;
++            d64_bas_footer(&b, (uint16_t)fr);
++            d64_bas_end(&b);
++            d->phase = 3;
++        }
++        d->llen = (uint8_t)b.len;
++        d->off = (uint16_t)(d->off + b.len);
++        return;
++    }
++}
++
++VD_COLD static void open_dir(vdrive_t *v, int unit, vd_unit_t *u, int ch, const uint8_t *raw, uint8_t len)
++{
++    vd_chan_t *c = chan_alloc(u, ch);
++    if (!c) return;
++    vd_dirstream_t *d = &c->u.d;
++    memset(d, 0, sizeof *d);
++    d->host = u->disk == NULL;
++    size_t n = 0;
++    uint8_t i = 1;
++    while (i < len && raw[i] >= '0' && raw[i] <= '9') i++;
++    if (i < len && raw[i] == ':') i++;
++    while (i < len && raw[i] != ',' && n < 16) d->pat[n++] = (char)raw[i++];
++    d->pat[n] = 0; d->has_pat = n != 0;
++    c->mode = 4;
++    dir_gen(v, unit, u, d);                            /* first line now, so failures report at OPEN time */
++    if (d->llen == 0) { chan_close(u, ch); set_err(u, 74, 0, 0); }
++}
++
++VD_COLD static void chan_open(vdrive_t *v, int unit, vd_unit_t *u, int ch, const uint8_t *raw, uint8_t len)
++{
++    chan_close(u, ch);
++    if (len && raw[0] == '$' && (u->disk || (v->host.dir_open && v->host.dir_next))) { open_dir(v, unit, u, ch, raw, len); return; }
++    if (!u->disk) { set_err(u, 74, 0, 0); return; }
++    open_spec_t o = parse_open(raw, len);
++    if (!o.ok || !o.has_name) { set_err(u, 33, 0, 0); return; }
++    char mode = o.mode ? o.mode : (ch == 1 ? 'W' : 'R');
++    if (mode != 'R' && mode != 'W') { set_err(u, 33, 0, 0); return; }   /* append not supported */
++    vd_chan_t *c = chan_alloc(u, ch);
++    if (!c) return;
++    if (mode == 'R') {
++        d64_entry_t e;
++        int r = d64_find(u->disk, o.name, &e);
++        if (r < 0) { err_from(u, r); chan_close(u, ch); return; }
++        if (r == 0) { set_err(u, 62, 0, 0); chan_close(u, ch); return; }
++        d64_file_open(u->disk, &e, &c->u.r);
++        c->mode = 1;
++    } else {
++        uint8_t type = o.type ? o.type : (ch == 1 ? 2 : 1);
++        int r = d64_create(u->disk, o.name, type, o.replace, &c->u.w);
++        if (r) { err_from(u, r); chan_close(u, ch); return; }
++        c->mode = 3;
++    }
++}
++
++/* ---- command channel ---------------------------------------------------- */
++VD_COLD static void cmd_cd(vdrive_t *v, int unit, vd_unit_t *u, const char *p, const char *end)
++{
++    if (p < end && *p == ':') p++;
++    char name[VD_CMDBUF]; size_t n = (size_t)(end - p);
++    memcpy(name, p, n); name[n] = 0;
++    const vd_host_t *h = &v->host;
++    int up = (!strcmp(name, "..") || !strcmp(name, "_") || (n == 1 && (uint8_t)name[0] == 0x5F));
++    if (u->disk && up) {
++        close_all(u); u->disk = NULL;
++        if (h->unmount) h->unmount(h->ctx, unit);
++    } else if (n && has_d64_suffix(name)) {
++        d64_t *d = NULL;
++        if (!h->mount) { set_err(u, 33, 0, 0); return; }
++        int r = h->mount(h->ctx, unit, name, &d);
++        if (r) set_err(u, (uint8_t)r, 0, 0);
++        else { close_all(u); u->disk = d; }
++    } else {
++        if (!h->chdir) { set_err(u, 33, 0, 0); return; }
++        int r = h->chdir(h->ctx, unit, name);
++        if (r) set_err(u, (uint8_t)r, 0, 0);
++    }
++}
++
++/* "U0>"+CHR$(n): this drive answers as device n from now on (n = 0 restores the default). Persisted via the host. */
++VD_COLD static void cmd_renumber(vdrive_t *v, int unit, vd_unit_t *u, uint8_t n)
++{
++    uint8_t def[2] = { VD_DEV0, VD_DEV1 };
++    uint8_t eff = n ? n : def[unit];
++    if (eff < 8 || eff > 30 || eff == v->dev[1 - unit]) { set_err(u, 33, 0, 0); return; }
++    v->dev[unit] = eff;
++    if (v->host.save_devices)
++        v->host.save_devices(v->host.ctx, v->dev[0] == def[0] ? 0 : v->dev[0], v->dev[1] == def[1] ? 0 : v->dev[1]);
++}
++
++VD_COLD static void exec_command(vdrive_t *v, int unit, vd_unit_t *u, uint8_t *cmd, uint8_t len)
++{
++    if (len == 4 && cmd[0] == 'U' && cmd[1] == '0' && cmd[2] == '>') { cmd_renumber(v, unit, u, cmd[3]); return; }
++    while (len && (cmd[len - 1] == '\r' || cmd[len - 1] == '\n')) len--;
++    if (!len) return;
++    cmd[len] = 0;
++    if (len >= 2 && cmd[0] == 'C' && cmd[1] == 'D') { cmd_cd(v, unit, u, (const char *)cmd + 2, (const char *)cmd + len); return; }
++    if (!u->disk) { set_err(u, 74, 0, 0); return; }
++    const char *p = (const char *)cmd + 1, *end = (const char *)cmd + len;
++    while (p < end && *p >= '0' && *p <= '9') p++;       /* optional drive number */
++    switch (cmd[0]) {
++    case 'S': {
++        if (p < end && *p == ':') p++;
++        int total = 0;
++        while (p <= end) {
++            const char *q = p;
++            while (q < end && *q != ',') q++;
++            char pat[18]; size_t n = (size_t)(q - p);
++            if (n && n <= 16) {
++                memcpy(pat, p, n); pat[n] = 0;
++                int r = d64_scratch(u->disk, pat);
++                if (r < 0) { err_from(u, r); return; }
++                total += r;
++            }
++            p = q + 1;
++        }
++        set_err(u, 1, (uint8_t)total, 0);
++        break; }
++    case 'N': {
++        if (p < end && *p == ':') p++;
++        const char *comma = p;
++        while (comma < end && *comma != ',') comma++;
++        char name[17], id[3];
++        size_t n = (size_t)(comma - p);
++        if (n < 1 || n > 16) { set_err(u, 33, 0, 0); break; }
++        memcpy(name, p, n); name[n] = 0;
++        int r;
++        if (comma < end && end - comma - 1 == 2) { id[0] = comma[1]; id[1] = comma[2]; id[2] = 0; r = d64_format(u->disk, name, id); }
++        else if (comma == end) r = d64_format(u->disk, name, NULL);
++        else { set_err(u, 33, 0, 0); break; }
++        if (r) err_from(u, r);
++        break; }
++    case 'R': {
++        if (p < end && *p == ':') p++;
++        const char *eq = p;
++        while (eq < end && *eq != '=') eq++;
++        char nn[17], on[17];
++        size_t a = (size_t)(eq - p), b = (size_t)(end - eq - 1);
++        if (eq == end || a < 1 || a > 16 || b < 1 || b > 16) { set_err(u, 34, 0, 0); break; }
++        memcpy(nn, p, a); nn[a] = 0; memcpy(on, eq + 1, b); on[b] = 0;
++        int r = d64_rename(u->disk, on, nn);
++        if (r) err_from(u, r);
++        break; }
++    case 'U':                                          /* UI / UJ etc.: nothing to do */
++        break;
++    case 'I': case 'V':                                /* initialize / validate: nothing to do */
++        break;
++    default:
++        set_err(u, 31, 0, 0);
++    }
++}
++
++/* ---- public ------------------------------------------------------------- */
++VD_COLD void vdrive_init(vdrive_t *v)
++{
++    memset(v, 0, sizeof *v);
++    v->act = -1;
++    v->dev[0] = VD_DEV0; v->dev[1] = VD_DEV1;
++}
++
++VD_COLD void vdrive_attach(vdrive_t *v, int unit, d64_t *disk, int present)
++{
++    vd_unit_t *u = &v->unit[unit];
++    close_all(u);
++    u->disk = disk; u->present = (uint8_t)present;
++    set_err(u, 0, 0, 0);
++}
++
++VD_COLD void vdrive_set_devices(vdrive_t *v, uint8_t dev0, uint8_t dev1) { v->dev[0] = dev0; v->dev[1] = dev1; }
++VD_COLD int vdrive_unit_for(const vdrive_t *v, uint8_t dev) { return dev == v->dev[0] ? 0 : dev == v->dev[1] ? 1 : -1; }
++VD_COLD void vdrive_set_host(vdrive_t *v, const vd_host_t *host) { v->host = *host; }
++VD_COLD int vdrive_chan_mode(const vdrive_t *v, int unit, int ch)
++{
++    uint8_t i = v->unit[unit].slot_of[ch];
++    return i ? v->unit[unit].slot[i - 1].mode : 0;
++}
++VD_COLD int vdrive_pending_err(const vdrive_t *v, int unit) { return v->unit[unit].err; }
++VD_COLD size_t vdrive_sizeof(void) { return sizeof(vdrive_t); }
++
++VD_COLD static int read_byte(vdrive_t *v, int unit, vd_unit_t *u, vd_chan_t *c, uint8_t *b, int *eoi)
++{
++    if (c->mode == 1) {
++        int n = d64_file_read(u->disk, &c->u.r, b, 1);
++        if (n <= 0) return 0;
++        *eoi = d64_file_eof(&c->u.r);
++        return 1;
++    }
++    if (c->mode == 4) {
++        vd_dirstream_t *d = &c->u.d;
++        if (d->lpos >= d->llen) dir_gen(v, unit, u, d);
++        if (d->lpos >= d->llen) return 0;
++        *b = d->line[d->lpos++];
++        *eoi = d->lpos >= d->llen && d->phase == 3;
++        return 1;
++    }
++    return 0;
++}
++
++VD_COLD int vdrive_mailbox(vdrive_t *v, uint8_t cmd, uint8_t arg, uint8_t *data, uint8_t *st)
++{
++    *data = 0; *st = 0;
++    if (cmd == VD_LISTEN || cmd == VD_TALK) {
++        v->talking = (cmd == VD_TALK);
++        v->wlen = 0;
++        int unit = vdrive_unit_for(v, arg);
++        if (unit >= 0) {
++            v->act = (int8_t)unit;
++            if (!v->unit[v->act].present) { v->act = 2; *st = ST_NODEV; }
++            return 0;
++        }
++        v->act = -1;
++        return 1;
++    }
++    if (v->act < 0) return 1;                          /* not our transaction */
++    if (v->act == 2) return 0;                         /* absent device: swallow quietly */
++    vd_unit_t *u = &v->unit[v->act];
++    int ch = v->sa & 0xF, op = v->sa & 0xF0;
++
++    switch (cmd) {
++    case VD_SECOND: case VD_TKSA:
++        v->sa = arg; v->wlen = 0;
++        if (cmd == VD_TKSA && (arg & 0xF) == 15 && u->stat_pos >= u->stat_len) status_text(u);
++        return 0;
++    case VD_CIOUT:
++        if (op == 0x60 && ch != 15) {
++            vd_chan_t *c = chan_find(u, ch);
++            if (c && c->mode == 3) {
++                int r = d64_write(u->disk, &c->u.w, &arg, 1);
++                if (r < 0) { err_from(u, r); c->mode = 0; chan_close(u, ch); *st = ST_TIMEOUT; }   /* write already aborted: just release the slot */
++            }
++        } else if (v->wlen < VD_CMDBUF - 1) {
++            v->wbuf[v->wlen++] = arg;
++        }
++        return 0;
++    case VD_UNLSN:
++        if (op == 0xF0) {
++            if (ch == 15) exec_command(v, v->act, u, v->wbuf, v->wlen);
++            else chan_open(v, v->act, u, ch, v->wbuf, v->wlen);
++        } else if (op == 0x60 && ch == 15) {
++            exec_command(v, v->act, u, v->wbuf, v->wlen);
++        } else if (op == 0xE0) {
++            if (ch == 15) close_all(u); else chan_close(u, ch);
++        }
++        v->wlen = 0; v->act = -1;
++        return 0;
++    case VD_ACPTR: {
++        int eoi = 0;
++        if (ch == 15) {                                /* error channel */
++            if (u->stat_pos < u->stat_len) { *data = u->statbuf[u->stat_pos++]; if (u->stat_pos >= u->stat_len) *st = ST_EOI; }
++            else { *data = '\r'; *st = ST_EOI; }
++            return 0;
++        }
++        vd_chan_t *c = chan_find(u, ch);
++        if (!c || !read_byte(v, v->act, u, c, data, &eoi)) { *st = ST_TIMEOUT | ST_EOI; return 0; }
++        if (eoi) *st = ST_EOI;
++        return 0; }
++    case VD_UNTLK:
++        v->act = -1;
++        return 0;
++    }
++    return 1;
++}
+diff --git a/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.h b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.h
+new file mode 100644
+index 0000000..4628403
+--- /dev/null
++++ b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.h
+@@ -0,0 +1,84 @@
++/* Virtual IEC drive: the Teensy-side state machine behind the KERNAL mailbox.
++ * Units 0/1 = devices 8/9, each backed by an optional mounted d64_t.
++ * One mailbox command in, one result out; no I/O other than the d64 and host callbacks. */
++#ifndef VDRIVE_H
++#define VDRIVE_H
++#include "d64.h"
++#include "vd_cfg.h"
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++enum { VD_LISTEN = 1, VD_TALK, VD_SECOND, VD_TKSA, VD_CIOUT, VD_ACPTR, VD_UNLSN, VD_UNTLK };
++
++#define VD_CMDBUF 64
++
++/* Directory listings are generated a line at a time: no listing buffer. */
++typedef struct {
++    d64_dir_t it;               /* image directory iterator (unused for host listings) */
++    char      pat[17];
++    uint8_t   phase;            /* 0 header, 1 entries, 2 footer, 3 done */
++    uint8_t   host;             /* listing the host directory (nothing mounted) */
++    uint8_t   has_pat;
++    uint8_t   lpos, llen;       /* cursor / length of line[] */
++    uint16_t  off;              /* bytes emitted so far, load address included */
++    uint8_t   line[48];
++} vd_dirstream_t;
++
++typedef struct {
++    uint8_t  mode;              /* 0 free, 1 file read, 3 file write, 4 directory stream */
++    union { d64_file_t r; d64_wfile_t w; vd_dirstream_t d; } u;
++} vd_chan_t;
++
++/* Services the host (Teensy glue / test harness) provides for image selection.
++ * Paths are passed through unconverted (PETSCII); the host converts. All optional. */
++typedef struct {
++    void *ctx;
++    int  (*mount)(void *ctx, int unit, const char *name, d64_t **out);   /* 0 ok, else DOS error code (e.g. 62) */
++    void (*unmount)(void *ctx, int unit);
++    int  (*chdir)(void *ctx, int unit, const char *name);                /* "..", subdir; 0 ok else DOS error */
++    int  (*dir_open)(void *ctx, int unit, char title[17]);               /* 0 ok */
++    int  (*dir_next)(void *ctx, int unit, char name[17], uint32_t *size, int *is_dir); /* 1 entry, 0 end */
++    void (*save_devices)(void *ctx, uint8_t dev0, uint8_t dev1);        /* persist after a U0> renumber (0 = default) */
++} vd_host_t;
++
++typedef struct {
++    d64_t   *disk;              /* NULL: no image mounted */
++    uint8_t  present;           /* device answers on the bus */
++    uint8_t  slot_of[16];       /* channel number -> pool slot + 1 (0 = not open) */
++    vd_chan_t slot[VD_NSLOT];
++    uint8_t  statbuf[48];       /* error channel (15) text */
++    uint8_t  stat_len, stat_pos;
++    uint8_t  err, err_t, err_s; /* DOS status */
++} vd_unit_t;
++
++typedef struct {
++    vd_host_t host;
++    vd_unit_t unit[2];
++    uint8_t  dev[2];            /* IEC device number of each unit (VD_DEV0/VD_DEV1 by default) */
++    int8_t   act;               /* -1 none, 0/1 unit, 2 = absent device */
++    uint8_t  talking;
++    uint8_t  sa;
++    uint8_t  wlen;
++    uint8_t  wbuf[VD_CMDBUF];
++} vdrive_t;
++
++void vdrive_init(vdrive_t *v);
++void vdrive_attach(vdrive_t *v, int unit, d64_t *disk, int present);
++void vdrive_set_devices(vdrive_t *v, uint8_t dev0, uint8_t dev1);   /* change the device numbers at run time */
++int  vdrive_unit_for(const vdrive_t *v, uint8_t dev);                /* unit 0/1 serving this device number, or -1 */
++void vdrive_set_host(vdrive_t *v, const vd_host_t *host);
++int  vdrive_chan_mode(const vdrive_t *v, int unit, int ch);   /* 0 closed, 1 file-read, 3 file-write, 4 directory */
++int  vdrive_pending_err(const vdrive_t *v, int unit);         /* DOS error code waiting on the status channel (0 = none) */
++
++/* Returns 1 if the transaction is not ours (fall back to the real IEC bus);
++ * 0 if handled, with data and st filled in (st = bits to OR into KERNAL ST). */
++int vdrive_mailbox(vdrive_t *v, uint8_t cmd, uint8_t arg, uint8_t *data, uint8_t *st);
++
++size_t vdrive_sizeof(void);
++
++#ifdef __cplusplus
++}
++#endif
++#endif
+diff --git a/Source/Teensy/MinimalBoot/Common/vdrive/vdrive_io.c b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive_io.c
+new file mode 100644
+index 0000000..31a356a
+--- /dev/null
++++ b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive_io.c
+@@ -0,0 +1,156 @@
++#include "vdrive_io.h"
++#include "vd_cfg.h"
++#include <string.h>
++
++VD_COLD void vio_init(vio_t *v)
++{
++    memset((void *)v, 0, sizeof *v);
++    vdrive_init(&v->vd);
++}
++
++uint8_t vio_io1_read(const vio_t *v, uint8_t off)
++{
++    switch (off) {
++    case VIO_ARG:  return v->arg;
++    case VIO_DATA: return v->data;
++    case VIO_STAT: return v->stat;
++    case VIO_ST:   return v->st;
++    case VIO_LEN:  return v->len;
++    default:       return 0;
++    }
++}
++
++VD_COLD void vio_io1_write(vio_t *v, uint8_t off, uint8_t val)
++{
++    switch (off) {
++    case VIO_ARG: v->arg = val; break;
++    case VIO_LEN: v->len = val; break;
++    case VIO_CMD:
++        v->cmd = val;
++        v->stat = VIO_BUSY;          /* visible to the 6502 before it can read STAT */
++        v->pending = 1;
++        break;
++    default: break;
++    }
++}
++
++uint8_t vio_io2_read(const vio_t *v, uint8_t off) { return v->window[off]; }
++void    vio_io2_write(vio_t *v, uint8_t off, uint8_t val) { v->window[off] = val; }
++
++/* ---- fast paths, built from the byte-level commands ---- */
++VD_COLD static int bus(vio_t *v, uint8_t c, uint8_t a, uint8_t *data)
++{
++    uint8_t st = 0, d = 0;
++    vdrive_mailbox(&v->vd, c, a, &d, &st);
++    if (data) *data = d;
++    return st;
++}
++
++VD_COLD static void send_name_open(vio_t *v, uint8_t dev, uint8_t sa)
++{
++    bus(v, VD_LISTEN, dev, 0);
++    bus(v, VD_SECOND, sa, 0);
++    for (unsigned i = 0; i < v->len; i++) bus(v, VD_CIOUT, v->window[i], 0);
++    bus(v, VD_UNLSN, 0, 0);
++}
++
++VD_COLD static void close_chan(vio_t *v, uint8_t dev, uint8_t sa)
++{
++    bus(v, VD_LISTEN, dev, 0); bus(v, VD_SECOND, sa, 0); bus(v, VD_UNLSN, 0, 0);
++}
++
++VD_COLD static void fload_open(vio_t *v)
++{
++    uint8_t dev = v->arg, b0, b1 = 0;
++    v->fl_active = 0;
++    if (bus(v, VD_LISTEN, dev, 0) & 0x80) { v->data = 5; return; }
++    bus(v, VD_UNLSN, 0, 0);                         /* finish probe transaction */
++    send_name_open(v, dev, 0xF0);
++    bus(v, VD_TALK, dev, 0); bus(v, VD_TKSA, 0x60, 0);
++    int st0 = bus(v, VD_ACPTR, 0, &b0);
++    if (st0 & 0x02) {                               /* nothing came back: file not found */
++        bus(v, VD_UNTLK, 0, 0); close_chan(v, dev, 0xE0);
++        v->data = 4; return;
++    }
++    v->fl_eof = (st0 & 0x40) != 0;
++    if (!v->fl_eof) { int st1 = bus(v, VD_ACPTR, 0, &b1); v->fl_eof = (st1 & 0x40) != 0; }
++    bus(v, VD_UNTLK, 0, 0);
++    v->window[0] = b0; v->window[1] = b1;
++    v->fl_active = 1; v->fl_dev = dev;
++    v->data = 0;
++}
++
++VD_COLD static void fload_blk(vio_t *v)
++{
++    uint8_t n = 0, d;
++    v->data = 0; v->st = 0x40;                       /* default: EOI, empty */
++    if (!v->fl_active) return;
++    if (v->fl_eof) { close_chan(v, v->fl_dev, 0xE0); v->fl_active = 0; return; }
++    int eof = 0;
++    bus(v, VD_TALK, v->fl_dev, 0); bus(v, VD_TKSA, 0x60, 0);
++    while (n < 255) {
++        int st = bus(v, VD_ACPTR, 0, &d);
++        if (st & 0x02) { eof = 1; break; }
++        v->window[n++] = d;
++        if (st & 0x40) { eof = 1; break; }
++    }
++    bus(v, VD_UNTLK, 0, 0);
++    v->data = n;
++    v->st = eof ? 0x40 : 0;
++    if (eof) { close_chan(v, v->fl_dev, 0xE0); v->fl_active = 0; }
++}
++
++VD_COLD static void fsave_open(vio_t *v)
++{
++    uint8_t dev = v->arg;
++    v->fs_active = 0;
++    if (bus(v, VD_LISTEN, dev, 0) & 0x80) { v->data = 5; return; }
++    bus(v, VD_UNLSN, 0, 0);
++    send_name_open(v, dev, 0xF1);
++    int unit = vdrive_unit_for(&v->vd, dev);
++    if (vdrive_chan_mode(&v->vd, unit, 1) == 3) { v->fs_active = 1; v->fs_dev = dev; v->data = 0; }
++    else { int e = vdrive_pending_err(&v->vd, unit); v->data = (uint8_t)(e ? e : 74); }
++}
++
++VD_COLD static void fsave_blk(vio_t *v)
++{
++    if (!v->fs_active) return;
++    bus(v, VD_LISTEN, v->fs_dev, 0); bus(v, VD_SECOND, 0x61, 0);
++    for (unsigned i = 0; i < v->len; i++) bus(v, VD_CIOUT, v->window[i], 0);
++    bus(v, VD_UNLSN, 0, 0);
++}
++
++VD_COLD static void fsave_close(vio_t *v)
++{
++    v->data = 0;
++    if (!v->fs_active) return;
++    int unit = vdrive_unit_for(&v->vd, v->fs_dev);
++    int ok = vdrive_chan_mode(&v->vd, unit, 1) == 3;
++    close_chan(v, v->fs_dev, 0xE1);
++    if (!ok) { int e = vdrive_pending_err(&v->vd, unit); v->data = (uint8_t)(e ? e : 74); }
++    v->fs_active = 0;
++}
++
++VD_COLD int vio_poll(vio_t *v)
++{
++    if (!v->pending) return 0;
++    uint8_t c = v->cmd, notmine = 0;
++    v->data = 0; v->st = 0;
++    if (c >= VD_LISTEN && c <= VD_UNTLK) {
++        uint8_t d, st;
++        notmine = (uint8_t)vdrive_mailbox(&v->vd, c, v->arg, &d, &st);
++        v->data = d; v->st = st;
++    } else switch (c) {
++        case VIO_FLOAD_OPEN:  if (vdrive_unit_for(&v->vd, v->arg) >= 0) fload_open(v);  else notmine = 1; break;
++        case VIO_FLOAD_BLK:   fload_blk(v); break;
++        case VIO_FSAVE_OPEN:  if (vdrive_unit_for(&v->vd, v->arg) >= 0) fsave_open(v);  else notmine = 1; break;
++        case VIO_FSAVE_BLK:   fsave_blk(v); break;
++        case VIO_FSAVE_CLOSE: fsave_close(v); break;
++        default: notmine = 1;
++    }
++    v->pending = 0;                                  /* order: results first ... */
++    v->stat = notmine ? VIO_NOTMINE : 0;             /* ... then release BUSY */
++    return 1;
++}
++
++VD_COLD size_t vio_sizeof(void) { return sizeof(vio_t); }
+diff --git a/Source/Teensy/MinimalBoot/Common/vdrive/vdrive_io.h b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive_io.h
+new file mode 100644
+index 0000000..21b3140
+--- /dev/null
++++ b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive_io.h
+@@ -0,0 +1,49 @@
++/* Mailbox register engine for the TR+ virtual drive.
++ *
++ *   IO1 ($DE00): +0 CMD (W: trigger)  +1 ARG (RW)  +2 DATA (R)  +3 STAT (R)  +4 ST (R)  +5 LEN (RW)
++ *   IO2 ($DF00): 256-byte window (RW): file name in, data blocks in/out
++ *
++ * ISR side (vio_io*_read/write) is O(1) and never touches storage. Everything
++ * else runs from vio_poll() in the main loop. Portable C: host tests and the
++ * Teensy glue (IOH_VDrive.c) use the same code. */
++#ifndef VDRIVE_IO_H
++#define VDRIVE_IO_H
++#include "vdrive.h"
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++enum { VIO_CMD = 0, VIO_ARG = 1, VIO_DATA = 2, VIO_STAT = 3, VIO_ST = 4, VIO_LEN = 5, VIO_NREGS = 6 };
++#define VIO_BUSY    0x80
++#define VIO_NOTMINE 0x40
++
++/* Commands 1..8 are VD_LISTEN..VD_UNTLK (byte-level). Fast paths: */
++enum {
++    VIO_FLOAD_OPEN = 9,    /* ARG=device, window[0..LEN) = name. DATA: 0 ok (window[0..1] = load address), 4 not found, 5 no device */
++    VIO_FLOAD_BLK  = 10,   /* DATA = byte count (0..255) now in window; ST=$40 on the last block */
++    VIO_FSAVE_OPEN = 11,   /* ARG=device, window[0..LEN) = name. DATA: 0 ok else DOS error code (63, 72, ...) or 5 */
++    VIO_FSAVE_BLK  = 12,   /* LEN bytes from window are appended to the file */
++    VIO_FSAVE_CLOSE= 13    /* DATA: 0 ok else DOS error code */
++};
++
++typedef struct {
++    vdrive_t vd;
++    volatile uint8_t cmd, arg, data, stat, st, len, pending;
++    uint8_t window[256];
++    uint8_t fl_active, fl_eof, fl_dev, fs_active, fs_dev;
++} vio_t;
++
++void    vio_init(vio_t *v);
++uint8_t vio_io1_read(const vio_t *v, uint8_t off);
++void    vio_io1_write(vio_t *v, uint8_t off, uint8_t val);
++uint8_t vio_io2_read(const vio_t *v, uint8_t off);
++void    vio_io2_write(vio_t *v, uint8_t off, uint8_t val);
++int     vio_poll(vio_t *v);                  /* 1 if a command was processed */
++
++size_t  vio_sizeof(void);
++
++#ifdef __cplusplus
++}
++#endif
++#endif
+diff --git a/Source/Teensy/Teensy.ino b/Source/Teensy/Teensy.ino
+index 99d0514..d675220 100644
+--- a/Source/Teensy/Teensy.ino
++++ b/Source/Teensy/Teensy.ino
+@@ -527,6 +527,11 @@ FLASHMEM void SetEEPDefaults()
+    EEPROM.write(eepAdMIDISettings, 0xff);  //see RegMIDISettingsMasks
+    EEPROM.write(eepAdMIDISettings2, 0x0f); //see RegMIDISettingsMasks2
+    
++#ifdef Fab04_VDrive
++   EEPROM.write(eepAdVDriveDevs, 0);   //VDrive device numbers: 0 = defaults (8/9)
++   EEPROM.write(eepAdVDriveDevs+1, 0);
++#endif
++
+    //future use:
+    for(uint32_t EEPByteNum = 0; EEPByteNum<eepAdUnusedSize ; EEPByteNum++)
+       EEPROM.write(eepAdUnused+EEPByteNum, 0);

@@ -1,0 +1,84 @@
+/* Virtual IEC drive: the Teensy-side state machine behind the KERNAL mailbox.
+ * Units 0/1 = devices 8/9, each backed by an optional mounted d64_t.
+ * One mailbox command in, one result out; no I/O other than the d64 and host callbacks. */
+#ifndef VDRIVE_H
+#define VDRIVE_H
+#include "d64.h"
+#include "vd_cfg.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+enum { VD_LISTEN = 1, VD_TALK, VD_SECOND, VD_TKSA, VD_CIOUT, VD_ACPTR, VD_UNLSN, VD_UNTLK };
+
+#define VD_CMDBUF 64
+
+/* Directory listings are generated a line at a time: no listing buffer. */
+typedef struct {
+    d64_dir_t it;               /* image directory iterator (unused for host listings) */
+    char      pat[17];
+    uint8_t   phase;            /* 0 header, 1 entries, 2 footer, 3 done */
+    uint8_t   host;             /* listing the host directory (nothing mounted) */
+    uint8_t   has_pat;
+    uint8_t   lpos, llen;       /* cursor / length of line[] */
+    uint16_t  off;              /* bytes emitted so far, load address included */
+    uint8_t   line[48];
+} vd_dirstream_t;
+
+typedef struct {
+    uint8_t  mode;              /* 0 free, 1 file read, 3 file write, 4 directory stream */
+    union { d64_file_t r; d64_wfile_t w; vd_dirstream_t d; } u;
+} vd_chan_t;
+
+/* Services the host (Teensy glue / test harness) provides for image selection.
+ * Paths are passed through unconverted (PETSCII); the host converts. All optional. */
+typedef struct {
+    void *ctx;
+    int  (*mount)(void *ctx, int unit, const char *name, d64_t **out);   /* 0 ok, else DOS error code (e.g. 62) */
+    void (*unmount)(void *ctx, int unit);
+    int  (*chdir)(void *ctx, int unit, const char *name);                /* "..", subdir; 0 ok else DOS error */
+    int  (*dir_open)(void *ctx, int unit, char title[17]);               /* 0 ok */
+    int  (*dir_next)(void *ctx, int unit, char name[17], uint32_t *size, int *is_dir); /* 1 entry, 0 end */
+    void (*save_devices)(void *ctx, uint8_t dev0, uint8_t dev1);        /* persist after a U0> renumber (0 = default) */
+} vd_host_t;
+
+typedef struct {
+    d64_t   *disk;              /* NULL: no image mounted */
+    uint8_t  present;           /* device answers on the bus */
+    uint8_t  slot_of[16];       /* channel number -> pool slot + 1 (0 = not open) */
+    vd_chan_t slot[VD_NSLOT];
+    uint8_t  statbuf[48];       /* error channel (15) text */
+    uint8_t  stat_len, stat_pos;
+    uint8_t  err, err_t, err_s; /* DOS status */
+} vd_unit_t;
+
+typedef struct {
+    vd_host_t host;
+    vd_unit_t unit[2];
+    uint8_t  dev[2];            /* IEC device number of each unit (VD_DEV0/VD_DEV1 by default) */
+    int8_t   act;               /* -1 none, 0/1 unit, 2 = absent device */
+    uint8_t  talking;
+    uint8_t  sa;
+    uint8_t  wlen;
+    uint8_t  wbuf[VD_CMDBUF];
+} vdrive_t;
+
+void vdrive_init(vdrive_t *v);
+void vdrive_attach(vdrive_t *v, int unit, d64_t *disk, int present);
+void vdrive_set_devices(vdrive_t *v, uint8_t dev0, uint8_t dev1);   /* change the device numbers at run time */
+int  vdrive_unit_for(const vdrive_t *v, uint8_t dev);                /* unit 0/1 serving this device number, or -1 */
+void vdrive_set_host(vdrive_t *v, const vd_host_t *host);
+int  vdrive_chan_mode(const vdrive_t *v, int unit, int ch);   /* 0 closed, 1 file-read, 3 file-write, 4 directory */
+int  vdrive_pending_err(const vdrive_t *v, int unit);         /* DOS error code waiting on the status channel (0 = none) */
+
+/* Returns 1 if the transaction is not ours (fall back to the real IEC bus);
+ * 0 if handled, with data and st filled in (st = bits to OR into KERNAL ST). */
+int vdrive_mailbox(vdrive_t *v, uint8_t cmd, uint8_t arg, uint8_t *data, uint8_t *st);
+
+size_t vdrive_sizeof(void);
+
+#ifdef __cplusplus
+}
+#endif
+#endif

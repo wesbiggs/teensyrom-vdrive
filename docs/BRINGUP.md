@@ -1,0 +1,125 @@
+# TR+ hardware bring-up checklist — VDrive KERNAL
+
+Nothing in this project has run on a TR+ yet. This is the staged plan for the first time. Each stage has a
+pass criterion and a stop rule: **do not move on until the stage passes**, and record the numbers in the
+table at the end. Everything up to stage 3 can be done without the patched KERNAL, so a failure there points at
+the firmware side, not the 6502 side.
+
+Equipment: TR+ (PCB v0.4), C64 with the original KERNAL socketed (for the stock-dump control), SD card with a few `.d64`
+images, a USB stick (second unit), a USB cable to the TR+ for the serial console (the TR USB power trace is cut: the C64
+must be powered). Nice to have: a logic analyzer / scope with 4 channels (PHI2, /IO1, /IO2, R/W; data bus optional).
+
+## Stage 0 — baseline the firmware you will patch
+1. Check out TeensyROM at a known commit; use Teensyduino **1.61.0** (1.62.0 is documented as bad in `docs/Architecture/Build-System.md`).
+2. `npm run build:c64` then `npm run build:tr-plus` (see `Source/BuildInfo.md` for exact commands) **without** our patch.
+3. Record from the build log: `RAM1: variables / code / padding / free for local variables`, and the flash size. This is your reference.
+4. Flash it (below), boot a C64, confirm the stock menu, REU or Kernal Replace with a stock dump still work.
+   - Flashing: copy the generated `.hex` to the SD/USB drive and launch it from the TR menu (documented firmware-update path), or use the
+     Teensy loader with the C64 powered.
+   - **Pass:** unmodified TR+ boots and behaves as before. **Stop** if not: your toolchain/board, not this project.
+
+## Stage 1 — patched firmware builds and fits
+1. `cd TeensyROM && git apply /path/to/c64exp/firmware/teensyrom-vdrive.patch` (`make` in this repo regenerates it with `tools/make_tr_patch.sh`).
+2. Build for tr-plus. Compare with stage 0:
+   | Metric | Expected | Why |
+   |---|---|---|
+   | RAM1 code | + a few hundred bytes | only the IO1/IO2 handlers and 4 register accessors are not `FLASHMEM` (132 B measured on arm64 -Os) |
+   | RAM1 variables | ≈ + 100 B | `vdUnit[2]`, pointers; the drive state (~4.6 KB) is `DMAMEM` (RAM2) |
+   | Flash | + ~10-16 KB | d64/vdrive/vdrive_io in `FLASHMEM` (arm64 -Os measured 16 KB; Thumb-2 should be smaller) |
+   - If it does not link (RAM1 or RAM2), try `-DVD_ALLOC_HEAP` (heap instead of RAM2), or reduce `VD_NSLOT` in `d64/vd_cfg.h`
+     (each slot ≈ 290 B per unit; 6 → 4 saves ~1.2 KB).
+   - If it does not compile: the glue was only compiled against host stubs. Likely suspects are `File::seek/read/write/flush`
+     signatures on the Teensy `FS` classes, `FILE_WRITE`, and `DMAMEM` placement of a struct with `volatile` members.
+3. **Pass:** links, RAM1 padding still > ~4 KB, flash fits. Record the numbers.
+
+## Stage 2 — handler is registered, nothing else changed
+1. Flash. Boot. Settings → Special IO: `a`/`A` cycles to **VDrive KERNAL** (name ≤ 20 chars).
+2. Open the USB serial console (115200 irrelevant, CDC): on selecting/launching with this Special IO you should see
+   `VDrive: dev 8 (SD) ready, dev 9 (USB) ready|absent`. Insert/remove media and re-launch to see `absent` flip.
+3. Do **not** select a KERNAL image yet. Launch a PRG: it must run normally (the KERNAL hook is only installed when an image is loaded).
+- **Pass:** name appears, serial message correct, PRGs run. **Stop** on a menu/enum crash: the `IOH_VDrive` entries in `Menu_Regs.h` and
+  `IOHandlers.h` must match positionally (there is a `static_assert` on the count).
+
+## Stage 3 — mailbox registers from BASIC (stock KERNAL, no patch)
+Select Special IO = VDrive KERNAL, start BASIC (F2, or launch a trivial PRG). Registers: IO1 = 56832.. (`CMD ARG DATA STAT ST LEN` = +0..+5), IO2 window = 57088.
+```
+POKE56833,90 : PRINT PEEK(56833)            expect 90   (ARG reads back; the not-mine path depends on it)
+POKE57088,170 : POKE57343,85 : PRINT PEEK(57088);PEEK(57343)     expect 170 85  (window RW, both ends)
+POKE56833,8 : POKE56832,1 : FORI=0TO99:NEXT : PRINT PEEK(56835)  expect 0   (LISTEN 8: handled, not busy)
+POKE56833,4 : POKE56832,1 : FORI=0TO99:NEXT : PRINT PEEK(56835)  expect 64  (LISTEN 4: NOT_MINE)
+POKE56832,7 : REM UNLSN to finish the dangling LISTEN
+POKE57088,36 : POKE56837,1 : POKE56833,8 : POKE56832,9 : FORI=0TO99:NEXT
+PRINT PEEK(56834);PEEK(57088);PEEK(57089)                         expect 0 1 4   (fast LOAD "$": ok, load address $0401)
+POKE56832,10 : FORI=0TO99:NEXT : PRINT PEEK(56834);PEEK(56836)    count > 0; ST = 0 or 64
+```
+If a directory listing appears in the window (`PRINT CHR$(PEEK(57088+6))` ...) the whole ISR→poll→ISR path works.
+- **Pass:** all values as expected, 10× repeatable. **Stop** if STAT never clears (polling handler not running → check `Special IO` really active),
+  or reads return 0xFF/garbage (bus timing; go to the scope section below).
+
+## Stage 4 — scope the bus (once, before the patched KERNAL)
+Trigger on /IO1 low. Check against the same signals from an existing handler (e.g. TR_BASIC, `$DEB6` status reads):
+- Read: data valid before PHI2 falls, held until PHI2 low, bus released afterwards; /IO1 width unchanged.
+- Write: the handler reads the byte inside the PHI2-high window (`DataPortWaitRead`).
+- Nothing in the VDrive path should make the ISR longer than the TR_BASIC register reads; `vio_io1_*` are a switch and a store.
+- **Pass:** edges match the reference handler. **Stop** on any bus conflict (two drivers on the data bus): power off.
+
+## Stage 5 — control: stock KERNAL through the replacement path
+`make build/kernal-stock.bin` (byte-identical copy of your 901227-03 dump). Copy to SD, `<Shift-K>` it, select **VDrive KERNAL** as Special IO,
+F2 to BASIC.
+- **Pass:** BASIC looks and behaves exactly like the stock KERNAL (screen colours, `LOAD"$",8` on a real drive if you have one).
+  This isolates the TR+ KERNAL-replacement feature (HIRAM sensing etc.) from our patches. **Stop** on any difference: not our bug.
+
+## Stage 6 — proof patch
+`make build/kernal-banner.bin` (only the banner changes: `TRVDRIVE 64 BASIC V2`; 21 bytes differ from stock).
+- **Pass:** new banner shows after F2/PRG launch; everything else identical.
+
+## Stage 7 — the real image, drive path in order of risk
+`make build/kernal-tr.bin` (mailbox at `$DE00`, window `$DF00`). Build firmware with `-DVD_TRACE` for this stage so every mailbox command prints
+`vd cmd=.. arg=.. len=.. -> stat=.. data=.. st=..` on the serial console (the 6502 spins on BUSY, so printing is safe, just slow).
+Check after each line; keep the trace open.
+1. Banner and BASIC still fine; a plain `PRINT`, `POKE`, `LOAD"X",11` → `?DEVICE NOT PRESENT` (stock IEC path through the hook, ~instant, trace shows `stat=40` not-mine on LISTEN).
+2. `LOAD"$",8` with nothing mounted → SD card listing (title `SD:/`), `DIR`/`D64`/`PRG` types. Trace: `cmd=9` then `cmd=10` blocks.
+3. `OPEN15,8,15,"CD:GAME.D64"` → no error; `LOAD"$",8:LIST` → disk header and files. Then `PRINT DS$` style status via
+   `OPEN15,8,15:INPUT#15,A,B$:PRINT A;B$:CLOSE15` → `0 OK`.
+4. `LOAD"NAME",8` (small BASIC), `RUN`. Then a large PRG with `,8,1` (compare checksum of memory against the file; the `vdrive_mock.py` test does exactly this in VICE).
+5. `SAVE"TEST",8`, power-cycle the C64 **after waiting ~1 s** (write-back is deferred 250 ms), reload and compare on a PC with `c1541 -attach … -list`.
+   - Pull the card only after the 250 ms idle flush; yanking it mid-write may corrupt the image (no journalling).
+6. `VERIFY`, sequential `OPEN2,8,2,"X,S,W"` + `PRINT#` + read back, `S:` scratch, `R:` rename, `N:NAME,ID` (on a copy!).
+7. Device 9: insert USB stick, `OPEN15,9,15,"CD:X.D64"`, repeat 2-6. Remove the stick and `LOAD"$",9` → `?DEVICE NOT PRESENT`.
+8. **Device numbers (only if you want something other than 8/9):** `OPEN15,8,15,"U0>"+CHR$(10):CLOSE15`, then `LOAD"$",10` lists the card (header id `10`) and `LOAD"$",8` goes to the real bus; power-cycle and confirm 10 stuck (EEPROM); `OPEN15,10,15,"U0>"+CHR$(0):CLOSE15` restores 8.
+9. **Time-out check:** select a different Special IO (e.g. None) but keep the patched KERNAL image loaded → `LOAD"X",8` should print
+   `?DEVICE NOT PRESENT` after ~1 s instead of hanging (this is `vcall`'s time-out; tested in VICE only).
+- **Pass criteria:** every item above (items 8-9 if you use them), three times in a row; trace has no `stat=40` on devices 8/9 and no unexpected `st=80`.
+
+## Stage 8 — soak and edge cases
+- Loop in BASIC: `10 LOAD"BIG",8,1:GOTO10` for 10 minutes (each pass ≈ 25 mailbox block calls); `SAVE`/`LOAD` cycle 100×; after each batch `c1541 -validate` on the image copy must not change the BAM.
+- Press RUN/STOP during a long LOAD (fast path does not poll STOP; expected: ignored, load completes) and during a directory `LIST`.
+- Tape is gone by design: `LOAD"X",1` now crashes into reclaimed code — confirm it is merely wrong, not a hang you didn't expect.
+- Games/demos that call KERNAL `LOAD` should work; fast loaders and anything touching the serial bus directly will not (they never reach the KERNAL).
+- Hot-unplug SD/USB during idle then `LOAD"$"`: expected `?DEVICE NOT PRESENT` or `FILE NOT FOUND`, never a hang.
+
+## If something fails — quick triage
+| Symptom | First suspects |
+|---|---|
+| `?DEVICE NOT PRESENT` for 8, SD inserted | `SDFullInit()` false at init (re-launch with card in), `vdrive_attach(...present)`; serial line at startup |
+| ~1 s pause then `?DEVICE NOT PRESENT` on every device-8/9 access | mailbox never answers: wrong Special IO selected, KERNAL image not from the same build (`MBX/WIN` addresses), polling handler not running |
+| Garbage data, wrong file contents | IO2 window read timing (stage 4), `WIN` base differs from firmware (`$DF00`), block count byte |
+| Hang during LOAD | `BUSY` stuck: firmware blocked in SD/USB call (the 6502 will give up after ~1 s), `USBFileSystemWait` |
+| Directory OK, LOAD fails with `FILE NOT FOUND` | PETSCII↔ASCII conversion on host side (`VD_ToAscii`), long names, wildcard in name |
+| Files vanish after power cycle | write-back flush (250 ms idle) not reached; `File::flush()` semantics on the media |
+| Link error RAM1 | `-DVD_ALLOC_HEAP`, lower `VD_NSLOT`, or move more code to `FLASHMEM` |
+
+## Rollback
+`<Shift-K>` to a stock KERNAL (or none) and choose another Special IO; or reflash the stage-0 firmware. Nothing is stored outside EEPROM
+settings and the files on the card.
+
+## Results table (fill in)
+| Item | Value |
+|---|---|
+| Stage 0 RAM1 padding / flash | |
+| Stage 1 RAM1 padding / flash (delta) | |
+| `LOAD"BIG"` 6000 B, wall-clock | |
+| `SAVE` 6000 B, wall-clock | |
+| Mailbox calls per 6000 B load (trace) | expect ~27 |
+| Stage 7 items passed (of 9) | |
+| Soak: loads without error | |
