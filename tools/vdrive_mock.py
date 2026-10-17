@@ -15,7 +15,8 @@ MBX = 0xC800
 WIN = 0xCA00                      # IO2 window (RAM here)
 CMD, ARG, DATA, STAT, ST, LEN = (MBX + i for i in range(6))
 (C_LISTEN, C_TALK, C_SECOND, C_TKSA, C_CIOUT, C_ACPTR, C_UNLSN, C_UNTLK) = range(1, 9)
-NOT_MINE = 0x40
+NOT_MINE = 0xA5                   # STAT answer tokens (see d64/vdrive_io.h)
+ANSWERED = 0x5A
 
 # ---- drive backed by libd64 ------------------------------------------------
 import ctypes, os, random, shutil, tempfile, pathlib
@@ -105,6 +106,7 @@ def main(kernal):
         io.attach(0, disk)
         io.attach(1, None, present=False)          # device 9 ("USB") not present in the mock
         log = []
+        fault = {"at": 0, "n": 0}               # fault injection: answer NOT_MINE to the Nth FLOAD_BLK of a run
 
         def service(timeout):
             """handle mailbox stops until quiet for `timeout` s"""
@@ -118,11 +120,14 @@ def main(kernal):
                         if c in (9, 11, 12):                    # commands that consume the window
                             io.win_write(bytes(m.read(WIN, 256)))
                         nm, d, st = io.call(c, a, ln)
+                        if c == 10 and fault["at"]:
+                            fault["n"] += 1
+                            if fault["n"] == fault["at"]: nm = True
                         log.append((c, a, d, st, nm))
                         if c in (9, 10):                        # commands that produce window data
                             m.write(WIN, io.win_read(256))
                         m.write(DATA, [d]); m.write(ST, [st])
-                        m.write(STAT, [NOT_MINE if nm else 0])
+                        m.write(STAT, [NOT_MINE if nm else ANSWERED])
                         m.write(CMD, [0])
                     m.go()
 
@@ -163,6 +168,14 @@ def main(kernal):
         n_acptr = sum(1 for e in log if e[0] == 6)
         check("LOAD used the fast path (%d block calls, %d byte-level ACPTR calls in the whole run so far)" % (n_blk, n_acptr),
               n_blk >= 24 and n_acptr == 0)
+
+        # --- fault injection: a bad answer in the middle of a LOAD must give an error, never silent corruption ---
+        m.write(0x2000, bytes(6000))                                  # known contents to see whether anything was copied after the fault
+        fault["at"], fault["n"] = 3, 0
+        run('LOAD"BIG",8,1\r', "DEVICE NOT PRESENT")
+        fault["at"] = 0
+        run('LOAD"BIG",8,1\r', "READY.")                             # and the machine/drive recover cleanly
+        check("LOAD works again after the injected fault", bytes(m.read(0x2000, len(big) - 2)) == big[2:])
 
         # --- SAVE a BASIC program, replace, collision ---
         run('NEW\r')

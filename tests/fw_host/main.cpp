@@ -28,11 +28,11 @@ static uint8_t wr_(uint8_t off) { IO2Hndlr_VDrive(off, true); return g_bus_out; 
 static int call(uint8_t cmd, uint8_t arg = 0, uint8_t len = 0, uint8_t *st = nullptr)
 {
     w1(VIO_ARG, arg); w1(VIO_LEN, len); w1(VIO_CMD, cmd);
-    if (!(r1(VIO_STAT) & VIO_BUSY)) { puts("BUSY not visible"); fails++; }
+    if (r1(VIO_STAT) != VIO_BUSY) { puts("BUSY not visible"); fails++; }
     int guard = 0;
-    while (r1(VIO_STAT) & VIO_BUSY) { PollingHndlr_VDrive(); if (++guard > 10) { puts("poll stuck"); fails++; break; } }
+    while (r1(VIO_STAT) == VIO_BUSY) { PollingHndlr_VDrive(); if (++guard > 10) { puts("poll stuck"); fails++; break; } }
     if (st) *st = r1(VIO_ST);
-    return ((r1(VIO_STAT) & VIO_NOTMINE) ? 0x100 : 0) | r1(VIO_DATA);
+    return ((r1(VIO_STAT) == VIO_NOTMINE) ? 0x100 : 0) | r1(VIO_DATA);
 }
 
 static void put_name(const std::string &n) { for (size_t i = 0; i < n.size(); i++) ww((uint8_t)i, (uint8_t)n[i]); }

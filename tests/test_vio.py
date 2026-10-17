@@ -1,7 +1,7 @@
 import ctypes, pathlib, random, shutil, subprocess, sys, tempfile, unittest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / 'tools'))
 from d64py import (LIB, Disk, VIO, VDrive, F_LOAD_OPEN, F_LOAD_BLK, F_SAVE_OPEN, F_SAVE_BLK, F_SAVE_CLOSE,
-                   R_STAT, BUSY, NOTMINE)
+                   R_STAT, BUSY, OK, NOTMINE)
 
 LISTEN, TALK, SECOND, TKSA, CIOUT, ACPTR, UNLSN, UNTLK = range(1, 9)
 
@@ -43,10 +43,11 @@ class VioTests(unittest.TestCase):
 
     # ---- registers ----
     def test_busy_until_polled(self):
+        self.assertEqual(self.io.r(R_STAT), OK)                        # idle
         self.io.w(5, 0); self.io.w(1, 8); self.io.w(0, LISTEN)
-        self.assertEqual(self.io.r(R_STAT) & BUSY, BUSY)
+        self.assertEqual(self.io.r(R_STAT), BUSY)
         self.assertEqual(LIB.vio_poll(self.io.v), 1)
-        self.assertEqual(self.io.r(R_STAT), 0)
+        self.assertEqual(self.io.r(R_STAT), OK)
         self.assertEqual(LIB.vio_poll(self.io.v), 0)                     # nothing pending
 
     def test_arg_reads_back(self):
@@ -377,9 +378,15 @@ class FootprintTests(unittest.TestCase):
     def tearDown(self): shutil.rmtree(self.tmp)
 
     def test_state_fits_the_ram_budget(self):
-        size = LIB.vio_sizeof()
-        print(f"\n  sizeof(vio_t) = {size} bytes (budget {VIO_RAM_BUDGET})")
-        self.assertLess(size, VIO_RAM_BUDGET)
+        size, hot = LIB.vio_sizeof(), LIB.vio_hot_sizeof()
+        print(f"\n  sizeof(vio_t) = {size} bytes + vio_hot_t = {hot} bytes (budget {VIO_RAM_BUDGET} total)")
+        self.assertLess(size + hot, VIO_RAM_BUDGET)
+        self.assertLess(hot, 300)                                     # ISR-visible part stays small enough for DTCM
+
+    def test_status_is_a_token_never_a_bare_flag(self):
+        # a floating bus returns the previous bus byte ($DE for the operand fetch of LDA $DE03); it must not equal an answer token
+        self.assertNotIn(0xDE, (BUSY, OK, NOTMINE))
+        self.assertNotIn(0x03, (BUSY, OK, NOTMINE))
 
     def test_streamed_directory_is_byte_identical_to_buffered_listing(self):
         for pat in (None, b"FILE1*", b"FILE?9", b"NOPE*"):

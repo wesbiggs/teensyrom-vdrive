@@ -56,7 +56,10 @@ struct stcVDUnit
 #ifndef VD_ALLOC_HEAP
 DMAMEM static vio_t vioStore;
 #endif
-static vio_t     *vio = NULL;
+static vio_hot_t  vioHot;           // registers + window: the ONLY memory the bus ISR touches. Plain static = RAM1/DTCM, fast
+static vio_t     *vio = NULL;       // everything else (main loop only, may live in slower RAM2)
+static volatile bool vioReady = false;
+static uint32_t   lastActivityMs = 0;
 static stcVDUnit  vdUnit[2];
 
 // ---- PETSCII <-> ASCII (names are uppercase on the C64 side) -------------------------------
@@ -216,7 +219,8 @@ FLASHMEM void VDrive_PreStart()
    vio = &vioStore;                 // DMAMEM is not zero-initialised: vio_init() clears it
 #endif
    if (vio == NULL) { Serial.println("VDrive: out of memory"); return; }
-   vio_init(vio);
+   vioReady = false;
+   vio_init(vio, &vioHot);
 
    vd_host_t host;
    memset(&host, 0, sizeof host);
@@ -230,6 +234,7 @@ FLASHMEM void VDrive_PreStart()
    vdUnit[1].fs = &firstPartition;
    vdrive_attach(&vio->vd, 0, NULL, SDFullInit());
    vdrive_attach(&vio->vd, 1, NULL, USBFileSystemWait());
+   vioReady = true;                 // only now may the bus handlers answer
    Serial.printf("VDrive: dev %d (SD) %s, dev %d (USB) %s\n",
                  vio->vd.dev[0], vio->vd.unit[0].present ? "ready" : "absent",
                  vio->vd.dev[1], vio->vd.unit[1].present ? "ready" : "absent");
@@ -246,35 +251,40 @@ FLASHMEM void PollingHndlr_VDrive()
    if (vio == NULL) return;
    if (vio_poll(vio))
    {
+      lastActivityMs = millis();
 #ifdef VD_TRACE   // bring-up aid: one line per mailbox command on the USB serial port (see docs/BRINGUP.md)
       Serial.printf("vd cmd=%u arg=%02x len=%u -> stat=%02x data=%02x st=%02x\n",
-                    vio->cmd, vio->arg, vio->len, vio->stat, vio->data, vio->st);
+                    vioHot.cmd, vioHot.arg, vioHot.len, vioHot.stat, vioHot.data, vioHot.st);
 #endif
    }
+   // Write back only when both the last sector write and the last mailbox command are old: SD access can mask
+   // interrupts, and the C64 must not be mid-LOAD (reading our registers) when that happens.
+   uint32_t now = millis();
    for (int i = 0; i < 2; i++)
-      if (vdUnit[i].dirty && millis() - vdUnit[i].lastWriteMs > VD_FlushIdleMs) VD_Flush(&vdUnit[i]);
+      if (vdUnit[i].dirty && now - vdUnit[i].lastWriteMs > VD_FlushIdleMs && now - lastActivityMs > VD_FlushIdleMs)
+         VD_Flush(&vdUnit[i]);
 }
 
 FASTRUN void IO1Hndlr_VDrive(uint8_t Address, bool R_Wn)
 {
-   if (vio == NULL || Address >= VIO_NREGS) return;       // not mapped: open bus
-   if (R_Wn) DataPortWriteWaitLog(vio_io1_read(vio, Address));
+   if (!vioReady || Address >= VIO_NREGS) return;         // not mapped: open bus
+   if (R_Wn) DataPortWriteWaitLog(vio_io1_read(&vioHot, Address));
    else
    {
       uint8_t Data = DataPortWaitRead();
       TraceLogAddValidData(Data);
-      vio_io1_write(vio, Address, Data);
+      vio_io1_write(&vioHot, Address, Data);
    }
 }
 
 FASTRUN void IO2Hndlr_VDrive(uint8_t Address, bool R_Wn)
 {
-   if (vio == NULL) return;
-   if (R_Wn) DataPortWriteWaitLog(vio_io2_read(vio, Address));
+   if (!vioReady) return;
+   if (R_Wn) DataPortWriteWaitLog(vio_io2_read(&vioHot, Address));
    else
    {
       uint8_t Data = DataPortWaitRead();
       TraceLogAddValidData(Data);
-      vio_io2_write(vio, Address, Data);
+      vio_io2_write(&vioHot, Address, Data);
    }
 }

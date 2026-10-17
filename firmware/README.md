@@ -51,7 +51,7 @@ is not bumped because 0/0xFF/garbage all fall back to the defaults.
 * The 8 serial entry points (`LISTEN TALK SECOND TKSA CIOUT ACPTR UNLSN UNTLK`) `JMP` into stubs that ask the mailbox
   whether the transaction is for device 8/9; "not mine" replays the displaced instructions into the stock routine.
 * `LOAD` (`$F4C8`) and `SAVE` (`$F605`) get block-transfer fast paths (any device is offered to the Teensy first; ~one extra mailbox round trip when the device is a real drive); `VERIFY` takes the stock path.
-* ~1 s mailbox time-out falls back to the stock IEC code, so the image is harmless if the handler isn't active.
+* The mailbox answer is a token (`$5A` / `$A5`); a bad or missing answer in the middle of a transfer aborts it with an error. ~1 s mailbox time-out at the start of a transaction falls back to the stock IEC code, so the image is harmless if the handler isn't active.
 * Space comes from the cassette bit-timing code `$F8E2-$FB8D`: **tape I/O (device 1) no longer works.**
 
 See [docs/BRINGUP.md](../docs/BRINGUP.md) for the staged hardware bring-up plan (build `-DVD_TRACE` for a per-command serial trace).

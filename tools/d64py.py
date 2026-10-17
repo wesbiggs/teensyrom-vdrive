@@ -143,24 +143,26 @@ class VDrive:
 # ---------------------------------------------------------------------------
 # register-level view (vio_t): exactly what the 6502 / IO1+IO2 handlers see
 LIB.vio_sizeof.restype = ctypes.c_size_t
+LIB.vio_hot_sizeof.restype = ctypes.c_size_t
 LIB.vio_io1_read.restype = ctypes.c_uint8
 LIB.vio_io2_read.restype = ctypes.c_uint8
 LIB.vio_poll.restype = ctypes.c_int
 (R_CMD, R_ARG, R_DATA, R_STAT, R_ST, R_LEN) = range(6)
 (F_LOAD_OPEN, F_LOAD_BLK, F_SAVE_OPEN, F_SAVE_BLK, F_SAVE_CLOSE) = range(9, 14)
-BUSY, NOTMINE = 0x80, 0x40
+BUSY, OK, NOTMINE = 0x80, 0x5A, 0xA5
 
 
 class VIO:
     def __init__(self):
         self.v = ctypes.create_string_buffer(LIB.vio_sizeof())
-        LIB.vio_init(self.v)
+        self.hot = ctypes.create_string_buffer(LIB.vio_hot_sizeof())     # what the bus ISR touches
+        LIB.vio_init(self.v, self.hot)
         self.keep = []
 
-    def r(self, off): return LIB.vio_io1_read(self.v, ctypes.c_uint8(off))
-    def w(self, off, val): LIB.vio_io1_write(self.v, ctypes.c_uint8(off), ctypes.c_uint8(val))
-    def win_r(self, off): return LIB.vio_io2_read(self.v, ctypes.c_uint8(off))
-    def win_w(self, off, val): LIB.vio_io2_write(self.v, ctypes.c_uint8(off), ctypes.c_uint8(val))
+    def r(self, off): return LIB.vio_io1_read(self.hot, ctypes.c_uint8(off))
+    def w(self, off, val): LIB.vio_io1_write(self.hot, ctypes.c_uint8(off), ctypes.c_uint8(val))
+    def win_r(self, off): return LIB.vio_io2_read(self.hot, ctypes.c_uint8(off))
+    def win_w(self, off, val): LIB.vio_io2_write(self.hot, ctypes.c_uint8(off), ctypes.c_uint8(val))
     def win_write(self, data):
         for i, b in enumerate(data): self.win_w(i, b)
     def win_read(self, n): return bytes(self.win_r(i) for i in range(n))
@@ -175,11 +177,11 @@ class VIO:
     def call(self, cmd, arg=0, length=0):
         """write regs like the 6502, poll like the main loop; returns (notmine, data, st)"""
         self.w(R_ARG, arg); self.w(R_LEN, length); self.w(R_CMD, cmd)
-        assert self.r(R_STAT) & BUSY, "BUSY must be visible immediately after the CMD write"
+        assert self.r(R_STAT) == BUSY, "BUSY must be visible immediately after the CMD write"
         assert LIB.vio_poll(self.v) == 1
         stat = self.r(R_STAT)
-        assert not stat & BUSY
-        return bool(stat & NOTMINE), self.r(R_DATA), self.r(R_ST)
+        assert stat in (OK, NOTMINE), hex(stat)
+        return stat == NOTMINE, self.r(R_DATA), self.r(R_ST)
 
     def fast_load(self, dev, name):
         """what the patched LOAD does. returns (rc, load_addr, data)"""

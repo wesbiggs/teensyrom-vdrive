@@ -45,8 +45,8 @@ Select Special IO = VDrive KERNAL, start BASIC (F2, or launch a trivial PRG). Re
 ```
 POKE56833,90 : PRINT PEEK(56833)            expect 90   (ARG reads back; the not-mine path depends on it)
 POKE57088,170 : POKE57343,85 : PRINT PEEK(57088);PEEK(57343)     expect 170 85  (window RW, both ends)
-POKE56833,8 : POKE56832,1 : FORI=0TO99:NEXT : PRINT PEEK(56835)  expect 0   (LISTEN 8: handled, not busy)
-POKE56833,4 : POKE56832,1 : FORI=0TO99:NEXT : PRINT PEEK(56835)  expect 64  (LISTEN 4: NOT_MINE)
+POKE56833,8 : POKE56832,1 : FORI=0TO99:NEXT : PRINT PEEK(56835)  expect 90  ($5A: LISTEN 8 handled; idle STAT is also 90)
+POKE56833,4 : POKE56832,1 : FORI=0TO99:NEXT : PRINT PEEK(56835)  expect 165 ($A5: LISTEN 4 is NOT MINE; BUSY would be 128)
 POKE56832,7 : REM UNLSN to finish the dangling LISTEN
 POKE57088,36 : POKE56837,1 : POKE56833,8 : POKE56832,9 : FORI=0TO99:NEXT
 PRINT PEEK(56834);PEEK(57088);PEEK(57089)                         expect 0 1 4   (fast LOAD "$": ok, load address $0401)
@@ -75,9 +75,9 @@ F2 to BASIC.
 
 ## Stage 7 — the real image, drive path in order of risk
 `make build/kernal-tr.bin` (mailbox at `$DE00`, window `$DF00`). The firmware logs by default during bring-up (`VD_TRACE`; define `VD_NO_TRACE` to silence) so every mailbox command prints
-`vd cmd=.. arg=.. len=.. -> stat=.. data=.. st=..` on the serial console (the 6502 spins on BUSY, so printing is safe, just slow).
+`vd cmd=.. arg=.. len=.. -> stat=.. data=.. st=..` on the serial console (`stat=5a` answered, `stat=a5` not mine) (the 6502 spins on BUSY, so printing is safe, just slow).
 Check after each line; keep the trace open.
-1. Banner and BASIC still fine; a plain `PRINT`, `POKE`, `LOAD"X",11` → `?DEVICE NOT PRESENT` (stock IEC path through the hook, ~instant, trace shows `stat=40` not-mine on LISTEN).
+1. Banner and BASIC still fine; a plain `PRINT`, `POKE`, `LOAD"X",11` → `?DEVICE NOT PRESENT` (stock IEC path through the hook, ~instant, trace shows `stat=a5` not-mine on LISTEN).
 2. `LOAD"$",8` with nothing mounted → SD card listing (title `SD:/`), `DIR`/`D64`/`PRG` types. Trace: `cmd=9` then `cmd=10` blocks.
 3. `OPEN15,8,15,"CD:GAME.D64"` → no error; `LOAD"$",8:LIST` → disk header and files. Then `PRINT DS$` style status via
    `OPEN15,8,15:INPUT#15,A,B$:PRINT A;B$:CLOSE15` → `0 OK`.
@@ -89,7 +89,7 @@ Check after each line; keep the trace open.
 8. **Device numbers (only if you want something other than 8/9):** `OPEN15,8,15,"U0>"+CHR$(10):CLOSE15`, then `LOAD"$",10` lists the card (header id `10`) and `LOAD"$",8` goes to the real bus; power-cycle and confirm 10 stuck (EEPROM); `OPEN15,10,15,"U0>"+CHR$(0):CLOSE15` restores 8.
 9. **Time-out check:** select a different Special IO (e.g. None) but keep the patched KERNAL image loaded → `LOAD"X",8` should print
    `?DEVICE NOT PRESENT` after ~1 s instead of hanging (this is `vcall`'s time-out; tested in VICE only).
-- **Pass criteria:** every item above (items 8-9 if you use them), three times in a row; trace has no `stat=40` on devices 8/9 and no unexpected `st=80`.
+- **Pass criteria:** every item above (items 8-9 if you use them), three times in a row; trace has no `stat=a5` on devices 8/9 and no unexpected `st=80`.
 
 ## Stage 8 — soak and edge cases
 - Loop in BASIC: `10 LOAD"BIG",8,1:GOTO10` for 10 minutes (each pass ≈ 25 mailbox block calls); `SAVE`/`LOAD` cycle 100×; after each batch `c1541 -validate` on the image copy must not change the BAM.

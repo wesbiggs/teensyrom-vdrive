@@ -7,7 +7,7 @@
 ;   MBX+0 CMD   W  write triggers the Teensy; sets BUSY at once
 ;   MBX+1 ARG   RW argument (device / secondary / byte)
 ;   MBX+2 DATA  R  result byte (ACPTR)
-;   MBX+3 STAT  R  bit7 BUSY, bit6 NOT_MINE
+;   MBX+3 STAT  R  $80 BUSY, then $5A (answered) or $A5 (not mine)
 ;   MBX+4 ST    R  IEC status bits to OR into $90 (EOI=$40, no device=$80)
 ;
 ; Reclaims tape bit-timing code $F8E2-$FB8D (device 1 tape I/O stops working).
@@ -24,6 +24,8 @@ MBX_DATA = MBX+2
 MBX_STAT = MBX+3
 MBX_ST   = MBX+4
 MBX_LEN  = MBX+5
+STAT_OK      = $5A      ; answer tokens: exact values, so a misread can't pass for "done"
+STAT_NOTMINE = $A5
 
 ST       = $90
 
@@ -77,15 +79,17 @@ vcall:
         lda #0
         sta $A5
         sta $A6
-@wait:  bit MBX_STAT
-        bpl @done
-        inc $A5
+@wait:  lda MBX_STAT            ; BUSY ($80) until the Teensy publishes an answer token
+        cmp #STAT_OK
+        beq @ok
+        cmp #STAT_NOTMINE
+        beq @no
+        inc $A5                 ; anything else (busy, or a floating-bus misread) keeps waiting
         bne @wait
         inc $A6
         bne @wait
         beq @no                 ; timed out
-@done:  bvs @no
-        lda MBX_ST
+@ok:    lda MBX_ST
         ora ST
         sta ST
         lda MBX_DATA
@@ -184,6 +188,8 @@ hk_acptr:
 ; file in blocks of <=255 bytes through the IO2 window. Anything else, or a
 ; firmware without the fast commands, replays the displaced JSR and continues
 ; in the stock code ($F4CB).
+fl_fail:
+        jmp $F707               ; an answer failed mid-transfer: report an error instead of using stale data
 fl_slowx:
         ldx $A4                 ; restore X (original SA) for the stock path
 fl_slow:
@@ -226,6 +232,7 @@ fl_hook:
 @go:    jsr $F5D2               ; "LOADING"
 @blk:   lda #C_FLOAD_BLK
         jsr vcall
+        bcs fl_fail             ; time-out / not-mine in the middle of a load
         sta $A3                 ; byte count (0..255)
         beq @chk
         ldy #0
@@ -246,6 +253,8 @@ fl_hook:
         jmp $F5A9               ; CLC, X/Y = end address, RTS
 
 ; ---- fast SAVE ---------------------------------------------------------------
+fs_fail:
+        jmp $F707               ; mailbox stopped answering mid-save
 fs_slow:
         jsr $F3D5
         jmp $F608
@@ -304,6 +313,7 @@ fs_hook:
         sta MBX_LEN
         lda #C_FSAVE_BLK
         jsr vcall
+        bcs fs_fail
         lda $AC
         clc
         adc $A3

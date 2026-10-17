@@ -25,6 +25,9 @@ Firmware integration and usage: `firmware/README.md`.
   the hook was "enabled"; stock images can't reveal this because the bytes are identical). Treat C128 as unsupported. On the real C64:
   stage 6 passed (the banner image shows `TRVDRIVE 64 BASIC V2` immediately on F2, keyboard fine, drives detected). The
   `PEEK(58483+I)` check at `$E473` is the quickest "is the replacement really being served" test (original text = 67 79 77 77...).
+  Observed intermittent corruption on real hardware (directory listings cut off or missing lines, `LOADING` printed twice) in the first
+  build; fixed in code by the token STAT handshake, DTCM-resident hot registers, abort-on-failed-block, and flush-only-when-idle. **Needs
+  re-test on hardware (new firmware AND a re-copied `kernal-tr.bin` — the protocol changed, old image + new firmware time out).**
   An earlier keyboard failure was attributed to SD/USB probing at handler start; all storage access now happens in `VDrive_PreStart()`
   (called from `KERNALPreStart()` while the C64 waits). Stages 4 and 7-8 (scope, real image, drive tests, soak) are still to do.
 * Known open risks:
@@ -64,6 +67,10 @@ build/          generated, git-ignored (kernal images derived from the ROM, libd
 * The firmware compiles `.c` files inside the `.ino` as **C++**: no implicit `void*` conversions, etc. `make` runs a `-x c++`
   syntax check on the library, and `tests/fw_host/run.py` compiles the glue with `-Wall -Wextra -Werror`.
 * Anything not reachable from the bus ISR must be `VD_COLD` (flash). Only `vio_io1_read/write` and `vio_io2_read/write` stay in RAM1.
+* **Bus-handler data must be in fast RAM.** The registers and the 256-byte window are a separate small `vio_hot_t` (263 B, plain `static`
+  = DTCM); only the main loop touches the big `vio_t` (RAM2/`DMAMEM`). A late answer from slow RAM makes the C64 read the previous bus
+  byte. STAT is a token handshake (`$80` busy, `$5A` answered, `$A5` not mine; never a bare flag) so a floating-bus misread (`$DE`)
+  can't look like "done". The 6502 aborts a load/save with an error if any answer fails mid-transfer.
 * `U0>` is parsed before the CR/LF strip because devices 10 and 13 are LF and CR.
 * The KERNAL stubs write `$A5-$A7` (vcall) and `$A3/$A4` (fast paths); these are serial-bus scratch bytes, free outside bit-banging.
 * Names are PETSCII throughout the C code; the glue converts to/from ASCII for the host file system.
