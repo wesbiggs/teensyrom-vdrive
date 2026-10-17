@@ -47,7 +47,12 @@ struct FS {
     fs_::path root;
     File open(const char *path, int mode = FILE_READ) {
         File r; fs_::path p = root / (path[0] == '/' ? path + 1 : path);
-        if (!fs_::exists(p)) return r;
+        if (!fs_::exists(p)) {
+            if (mode != FILE_WRITE) return r;
+            FILE *nf = fopen(p.c_str(), "w+b");           // real SD: FILE_WRITE = O_RDWR|O_CREAT, creates the file
+            if (!nf) return r;
+            fclose(nf);
+        }
         r.s = std::make_shared<File::St>(); r.s->p = p; r.s->nm = p.filename().string();
         if (fs_::is_directory(p)) {
             r.s->dir = true;

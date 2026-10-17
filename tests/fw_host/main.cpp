@@ -137,6 +137,10 @@ int main(int argc, char **argv)
     cmd15("CD:_"); cmd15("CD:.."); d = fast_load(8, "$");
     check("CD:.. returns to root", d.find("\"GAME.D64\"") != std::string::npos);
     cmd15("CD:NOPE.D64"); check("missing image -> 62", status15().rfind("62,FILE NOT FOUND", 0) == 0);
+    check("a failed mount creates no file on the card", !fs_::exists(SD.root / "nope.d64") && !fs_::exists(SD.root / "NOPE.D64"));
+    { FILE *f = fopen((SD.root / "TINY.D64").c_str(), "wb"); fputs("not an image", f); fclose(f); }
+    cmd15("CD:TINY.D64"); check("undersized file -> 74 DRIVE NOT READY", status15().rfind("74,DRIVE NOT READY", 0) == 0);
+    check("... and it is left untouched", fs_::file_size(SD.root / "TINY.D64") == 12);
 
     // USB unit (device 9) is independent
     int nm = call(VD_LISTEN, 9); call(VD_UNLSN);

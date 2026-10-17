@@ -114,12 +114,17 @@ FLASHMEM static int VD_Mount(void *ctx, int unit, const char *name, d64_t **out)
    char path[VD_CwdLen + 20];
    VD_PathFor(u, name, path, sizeof path);
    VD_Unmount(ctx, unit);
+   // Check existence and size with a read-only open first: FILE_WRITE creates missing files on SD/USB, and a mistyped
+   // CD: must never litter the card with empty "images".
+   File probe = u->fs->open(path, FILE_READ);
+   if (!probe || probe.isDirectory()) { if (probe) probe.close(); return 62; }   // FILE NOT FOUND
+   uint32_t size = probe.size();
+   probe.close();
+   if (size < 174848) return 74;                                                  // DRIVE NOT READY: not a D64
    bool writable = true;
-   u->img = u->fs->open(path, FILE_WRITE);
+   u->img = u->fs->open(path, FILE_WRITE);                                        // exists now, so nothing is created
    if (!u->img) { writable = false; u->img = u->fs->open(path, FILE_READ); }
-   if (!u->img || u->img.isDirectory()) { if (u->img) u->img.close(); return 62; }  // FILE NOT FOUND
-   uint32_t size = u->img.size();
-   if (size < 174848) { u->img.close(); return 74; }
+   if (!u->img) return 62;
    d64_open(&u->d, VD_ReadSector, u, size >= 196608 ? 40 : 35);
    u->d.write = writable ? VD_WriteSector : NULL;
    u->mounted = true; u->dirty = false;
