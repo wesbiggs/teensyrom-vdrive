@@ -42,8 +42,9 @@ edit(f"{C}/IOHandlers.h",
      "   #ifdef Fab04_KernalReplace\n      &IOHndlr_KernalReplace,      //IOH_KernalReplace,\n   #endif  \n"
      "   #ifdef Fab04_VDrive\n      &IOHndlr_VDrive,             //IOH_VDrive,\n   #endif  \n")
 edit(f"{C}/IO_Handlers/StatusFunctions.c",
-     "   if (NextIOHndlr == IOH_KernalReplace)\n",
-     "   if (NextIOHndlr == IOH_KernalReplace\n#ifdef Fab04_VDrive\n       || NextIOHndlr == IOH_VDrive\n#endif\n      )\n")
+     "   if (NextIOHndlr == IOH_KernalReplace)\n   {\n      InitHndlr_KERNALReplace_PreStart(); //separate function so it doesn't get called twice\n",
+     "   if (NextIOHndlr == IOH_KernalReplace\n#ifdef Fab04_VDrive\n       || NextIOHndlr == IOH_VDrive\n#endif\n      )\n   {\n      InitHndlr_KERNALReplace_PreStart(); //separate function so it doesn't get called twice\n"
+     "#ifdef Fab04_VDrive\n      if (NextIOHndlr == IOH_VDrive) VDrive_PreStart(); //SD/USB probing now, while the C64 still waits\n#endif\n")
 PY
 cp "$HERE/firmware/IOH_VDrive.c" "$C/IO_Handlers/IOH_VDrive.c"
 mkdir -p "$C/vdrive"

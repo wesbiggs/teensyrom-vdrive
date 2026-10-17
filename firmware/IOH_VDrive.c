@@ -7,11 +7,18 @@
 //
 // This file is included from IOHandlers.h like the other handlers (unity build, compiled as C++).
 
+// Bring-up phase: log every mailbox command on the USB serial port. Define VD_NO_TRACE (e.g. at the top of this
+// file) to silence it once things work: the printing slows the polling loop.
+#ifndef VD_NO_TRACE
+#define VD_TRACE
+#endif
+
 #define VD_COLD FLASHMEM          // everything except the bus-ISR register accessors lives in flash
 #include "../vdrive/d64.c"
 #include "../vdrive/vdrive.c"
 #include "../vdrive/vdrive_io.c"
 
+void VDrive_PreStart();   // called from KERNALPreStart(), see StatusFunctions.c
 void InitHndlr_VDrive();
 void PollingHndlr_VDrive();
 void IO1Hndlr_VDrive(uint8_t Address, bool R_Wn);
@@ -192,9 +199,11 @@ extern bool SDFullInit();
 extern bool USBFileSystemWait();
 void InitHndlr_KernalReplace();   // re-stages the KERNAL bus hook (IOH_KernalReplace.c)
 
-FLASHMEM void InitHndlr_VDrive()
+// All storage access (SD/USB probing, sizing) happens here, called from KERNALPreStart() while the C64 is still
+// waiting for the TR ("WaitForTRDots"). Doing it later is unsafe: SD reads mask interrupts, and once the replacement
+// KERNAL is live every C64 instruction fetch from $E000-$FFFF depends on the bus ISR running.
+FLASHMEM void VDrive_PreStart()
 {
-   InitHndlr_KernalReplace();
 #ifdef VD_ALLOC_HEAP
    if (vio == NULL) vio = (vio_t *)malloc(sizeof(vio_t));
 #else
@@ -218,6 +227,12 @@ FLASHMEM void InitHndlr_VDrive()
    Serial.printf("VDrive: dev %d (SD) %s, dev %d (USB) %s\n",
                  vio->vd.dev[0], vio->vd.unit[0].present ? "ready" : "absent",
                  vio->vd.dev[1], vio->vd.unit[1].present ? "ready" : "absent");
+}
+
+// Handler start (the C64 is already running): only re-stage the KERNAL bus hook. No storage access here.
+FLASHMEM void InitHndlr_VDrive()
+{
+   InitHndlr_KernalReplace();
 }
 
 FLASHMEM void PollingHndlr_VDrive()

@@ -9,8 +9,9 @@ EEPROMStub EEPROM;
 uint8_t g_bus_in, g_bus_out;
 static uint32_t g_ms = 0;
 uint32_t millis() { return g_ms; }
-bool SDFullInit() { return fs_::exists(SD.root); }
-bool USBFileSystemWait() { return fs_::exists(firstPartition.root); }
+static int g_fs_probes = 0;
+bool SDFullInit() { g_fs_probes++; return fs_::exists(SD.root); }
+bool USBFileSystemWait() { g_fs_probes++; return fs_::exists(firstPartition.root); }
 void InitHndlr_KernalReplace() {}
 
 #include "glue.c"          // = firmware/IOH_VDrive.c (with ../vdrive/*.c resolved by the build script)
@@ -90,7 +91,10 @@ int main(int argc, char **argv)
     { FILE *f = fopen(argv[3], "rb"); char b[4096]; size_t n; while ((n = fread(b, 1, sizeof b, f)) > 0) hello_expect.append(b, n); fclose(f); }
 
     memset(EEPROM.m, 0xFF, sizeof EEPROM.m);               // erased flash: no setting stored yet
+    VDrive_PreStart();
+    check("pre-start probed SD and USB", g_fs_probes == 2);
     InitHndlr_VDrive();
+    check("handler start does no storage access", g_fs_probes == 2);
     check("init allocated the mailbox", vio != NULL);
     check("erased EEPROM -> default device numbers 8/9", vio->vd.dev[0] == 8 && vio->vd.dev[1] == 9);
     check("handler table entry named", strcmp(IOHndlr_VDrive.Name, "VDrive KERNAL") == 0 && IOHndlr_VDrive.IO1Hndlr && IOHndlr_VDrive.IO2Hndlr && IOHndlr_VDrive.PollingHndlr);
@@ -157,13 +161,13 @@ int main(int argc, char **argv)
     check("device 8 -> not mine after renumbering", (nm & 0x100) != 0);
     nm = call(VD_LISTEN, 10); call(VD_UNLSN);
     check("device 10 is the SD unit", !(nm & 0x100));
-    InitHndlr_VDrive();                                     // 'power cycle'
+    VDrive_PreStart();                                     // 'power cycle'
     check("numbers survive a restart (10/9)", vio->vd.dev[0] == 10 && vio->vd.dev[1] == 9);
     EEPROM.m[eepAdVDriveDevs] = 7; EEPROM.m[eepAdVDriveDevs + 1] = 7;
-    InitHndlr_VDrive();
+    VDrive_PreStart();
     check("out-of-range/duplicate stored values fall back to defaults", vio->vd.dev[0] == 8 && vio->vd.dev[1] == 9);
     EEPROM.m[eepAdVDriveDevs] = 12; EEPROM.m[eepAdVDriveDevs + 1] = 12;
-    InitHndlr_VDrive();
+    VDrive_PreStart();
     check("duplicate stored values fall back to defaults", vio->vd.dev[0] == 8 && vio->vd.dev[1] == 9);
 
     printf("%s\n", fails ? "FAILED" : "ALL OK");

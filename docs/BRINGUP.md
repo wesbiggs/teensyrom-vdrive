@@ -74,7 +74,7 @@ F2 to BASIC.
 - **Pass:** new banner shows after F2/PRG launch; everything else identical.
 
 ## Stage 7 — the real image, drive path in order of risk
-`make build/kernal-tr.bin` (mailbox at `$DE00`, window `$DF00`). Build firmware with `-DVD_TRACE` for this stage so every mailbox command prints
+`make build/kernal-tr.bin` (mailbox at `$DE00`, window `$DF00`). The firmware logs by default during bring-up (`VD_TRACE`; define `VD_NO_TRACE` to silence) so every mailbox command prints
 `vd cmd=.. arg=.. len=.. -> stat=.. data=.. st=..` on the serial console (the 6502 spins on BUSY, so printing is safe, just slow).
 Check after each line; keep the trace open.
 1. Banner and BASIC still fine; a plain `PRINT`, `POKE`, `LOAD"X",11` → `?DEVICE NOT PRESENT` (stock IEC path through the hook, ~instant, trace shows `stat=40` not-mine on LISTEN).
