@@ -19,14 +19,16 @@ Firmware integration and usage: `firmware/README.md`.
 * **Stage 0-1 done (build + fit):** the patched `[main]` image builds and links with the real toolchain. Cost vs stock: RAM1 padding
   −976 B (13,816 → 12,840), flash code +15.7 KB, RAM2 +4.5 KB (the drive state). RAM1 code is +976 B, more than the ~130 B hot-code
   estimate: the two `FASTRUN` handlers plus the glue's sector callbacks/helpers; could move those to `FLASHMEM` if RAM1 ever gets tight.
-  **Stage 2-3 passed on hardware** (handler listed, drive detection for all SD/USB combinations, mailbox registers and the fast `$` open
-  via BASIC `POKE`/`PEEK`). **Stage 5 (stock KERNAL control) passed** once the C128 was booted in C64 mode (a C128 in 128 mode cannot use a
-  C64 KERNAL replacement). Stage 6 banner test **cannot work via F2**: the TR menu prints the banner before the KERNAL hook goes live, so use
-  `SYS 58402` ($E422) to reprint it from the served image. Observed: with the banner image the keyboard died; suspected cause was SD/USB
-  probing in `InitHndlr_VDrive` while the C64 already runs from the replacement KERNAL (SD reads mask interrupts). Fixed by moving all
-  storage access into `VDrive_PreStart()`, called from `KERNALPreStart()` while the C64 still waits. **Needs re-test on hardware.**
-  Stages 4 and 6-8 are still to do.
-* Known open risks: `File::seek/read/write/flush` semantics on the
+  **Hardware results so far:** stages 2-3 passed (handler listed, drive detection for all SD/USB combinations, mailbox registers and the fast
+  `$` open via BASIC `POKE`/`PEEK`). **The test machine for this project is a real C64**: on a flat NTSC C128 in C64 mode the KERNAL
+  replacement did not reliably take effect (the C64 read the original ROM text at `$E473` via `PEEK` even though the file loaded and
+  the hook was "enabled"; stock images can't reveal this because the bytes are identical). Treat C128 as unsupported. On the real C64:
+  stage 6 passed (the banner image shows `TRVDRIVE 64 BASIC V2` immediately on F2, keyboard fine, drives detected). The
+  `PEEK(58483+I)` check at `$E473` is the quickest "is the replacement really being served" test (original text = 67 79 77 77...).
+  An earlier keyboard failure was attributed to SD/USB probing at handler start; all storage access now happens in `VDrive_PreStart()`
+  (called from `KERNALPreStart()` while the C64 waits). Stages 4 and 7-8 (scope, real image, drive tests, soak) are still to do.
+* Known open risks:
+  C128 not supported (see above); `File::seek/read/write/flush` semantics on the
   real SD/USB classes, IO1/IO2 ISR timing, tape (device 1) intentionally broken (its code space was reclaimed).
 
 ## Layout

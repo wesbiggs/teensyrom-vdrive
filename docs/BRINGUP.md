@@ -5,7 +5,7 @@ pass criterion and a stop rule: **do not move on until the stage passes**, and r
 table at the end. Everything up to stage 3 can be done without the patched KERNAL, so a failure there points at
 the firmware side, not the 6502 side.
 
-Equipment: TR+ (PCB v0.4), C64 with the original KERNAL socketed (for the stock-dump control), SD card with a few `.d64`
+Equipment: TR+ (PCB v0.4), **a real C64** (a flat NTSC C128 in C64 mode did not reliably serve the replacement KERNAL: do not use one; a stock-image control can't detect this because the bytes are identical, so always include the banner proof in stage 6), SD card with a few `.d64`
 images, a USB stick (second unit), a USB cable to the TR+ for the serial console (the TR USB power trace is cut: the C64
 must be powered). Nice to have: a logic analyzer / scope with 4 channels (PHI2, /IO1, /IO2, R/W; data bus optional).
 
@@ -69,9 +69,9 @@ F2 to BASIC.
 - **Pass:** BASIC looks and behaves exactly like the stock KERNAL (screen colours, `LOAD"$",8` on a real drive if you have one).
   This isolates the TR+ KERNAL-replacement feature (HIRAM sensing etc.) from our patches. **Stop** on any difference: not our bug.
 
-## Stage 6 — proof patch
+## Stage 6 — proof patch (this is the real "is it being served" test)
 `make build/kernal-banner.bin` (only the banner changes: `TRVDRIVE 64 BASIC V2`; 21 bytes differ from stock).
-- **Pass:** new banner shows after F2/PRG launch; everything else identical.
+- **Pass:** new banner shows right after F2/PRG launch and the keyboard works. Quick re-check from BASIC: `FORI=0TO31:PRINTPEEK(58483+I);:NEXT` must print the bytes of `TRVDRIVE` (84 82 86 68 82 73 86 69 at positions 11-18), not `COMMODORE` (67 79 77 77 ...), which would mean the C64's own ROM is answering.
 
 ## Stage 7 — the real image, drive path in order of risk
 `make build/kernal-tr.bin` (mailbox at `$DE00`, window `$DF00`). The firmware logs by default during bring-up (`VD_TRACE`; define `VD_NO_TRACE` to silence) so every mailbox command prints
