@@ -22,6 +22,9 @@ Firmware integration and usage: `firmware/README.md`.
   `VERIFY`, the error channel, and repeated directory listings without corruption. Not yet checked on hardware: device 9 (USB stick),
   `U0>` renumbering and its EEPROM persistence, `CD:/`, the no-handler time-out, soak tests, the scope stage, sequential files, scratch /
   rename / `N:`.
+* **BASIC test programs** (`tests/basic/`, built into `build/testdisk/vdtest.d64` by `make testdisk`) run inside VICE in `make test` and on the C64; they
+  found two real bugs that unit tests missed: `CIOUT` must return `A` = the byte sent (CHROUT tail-jumps into it; BASIC's PRINT broke after a
+  number), and `U0>` must also be accepted with PRINT#'s trailing CR.
 * **Lessons from bring-up (keep):** (1) a flat NTSC C128 in C64 mode did not reliably serve the replacement KERNAL: use a real C64, and
   verify "is it really served" with the banner image or `PEEK(58483+I)` at `$E473` (a stock image can't show it). (2) All SD/USB probing
   must happen in `VDrive_PreStart()` while the C64 waits, not at handler start. (3) Bus-handler data in fast RAM1, token STAT handshake,

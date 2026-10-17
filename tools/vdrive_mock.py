@@ -22,6 +22,8 @@ ANSWERED = 0x5A
 import ctypes, os, random, shutil, tempfile, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from d64py import LIB, Disk, VDrive, VIO
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "tests"))
+from test_vio import HostStruct               # ctypes layout of vd_host_t
 
 OK = b"00, OK,00,00\r"
 
@@ -37,6 +39,14 @@ def make_image(workdir):
     c("-format", "mockdisk,md", "d64", str(img))
     c("-attach", str(img), "-write", str(workdir / "test.prg"), "test")
     c("-attach", str(img), "-write", str(workdir / "big.prg"), "big")
+    basic = pathlib.Path(__file__).resolve().parent.parent / "tests" / "basic"
+    xx = sum(big[2 + i] for i in range(0, 6000, 8))                 # stride-8 checksum soak.bas compares against
+    for src in sorted(basic.glob("*.bas")):
+        out = workdir / (src.stem + ".prg")
+        text = workdir / src.name
+        text.write_text(src.read_text().replace("@XX@", str(xx)))
+        subprocess.run(["petcat", "-w2", "-o", str(out), "--", str(text)], check=True, capture_output=True)
+        c("-attach", str(img), "-write", str(out), src.stem)
     return img.read_bytes(), big
 
 
@@ -103,14 +113,45 @@ def main(kernal):
         image, big = make_image(workdir)
         disk = Disk(image)
         io = VIO()
+        # a fake SD card for CD:/mount/renumber tests (cdtest.bas, renum.bas)
+        sdroot = workdir / "sdroot"; sdroot.mkdir()
+        (sdroot / "mock.d64").write_bytes(image)
+        subprocess.run(["c1541", "-format", "vdtest,01", "d64", str(sdroot / "vdtest.d64")], check=True, capture_output=True)
+        hs = {"cwd": sdroot, "disks": [], "entries": [], "i": 0, "saved": []}
+        def h_mount(ctx, unit, name, out):
+            p = hs["cwd"] / name.decode().lower()
+            if not p.exists() or p.is_dir(): return 62
+            d = Disk(p.read_bytes()); hs["disks"].append(d); out[0] = ctypes.addressof(d.d); return 0
+        def h_unmount(ctx, unit): pass
+        def h_chdir(ctx, unit, name):
+            n = name.decode().lower()
+            if n == "/": hs["cwd"] = sdroot; return 0
+            q = hs["cwd"].parent if n == ".." else hs["cwd"] / n
+            if not q.is_dir(): return 62
+            hs["cwd"] = q; return 0
+        def h_dir_open(ctx, unit, title):
+            ctypes.memmove(title, b"SD:/\0", 5)
+            hs["entries"] = sorted(hs["cwd"].iterdir()); hs["i"] = 0; return 0
+        def h_dir_next(ctx, unit, name, size, is_dir):
+            if hs["i"] >= len(hs["entries"]): return 0
+            p = hs["entries"][hs["i"]]; hs["i"] += 1
+            ctypes.memmove(name, p.name.upper().encode()[:16] + b"\0", min(len(p.name), 16) + 1)
+            size[0] = 0 if p.is_dir() else p.stat().st_size; is_dir[0] = int(p.is_dir()); return 1
+        cbs = HostStruct()
+        cbs.mount = HostStruct.MOUNT(h_mount); cbs.unmount = HostStruct.UNMOUNT(h_unmount); cbs.chdir = HostStruct.CHDIR(h_chdir)
+        cbs.dir_open = HostStruct.DIROPEN(h_dir_open); cbs.dir_next = HostStruct.DIRNEXT(h_dir_next)
+        cbs.save_devices = HostStruct.SAVEDEV(lambda c, a, b: hs["saved"].append((a, b)))
+        LIB.vdrive_set_host(io.v, ctypes.byref(cbs))
         io.attach(0, disk)
         io.attach(1, None, present=False)          # device 9 ("USB") not present in the mock
         log = []
         fault = {"at": 0, "n": 0}               # fault injection: answer NOT_MINE to the Nth FLOAD_BLK of a run
 
-        def service(timeout):
-            """handle mailbox stops until quiet for `timeout` s"""
+        def service(timeout, limit=None):
+            """handle mailbox stops until quiet for `timeout` s (or `limit` s in total, for programs that never go quiet)"""
+            deadline = time.time() + limit if limit else None
             while True:
+                if deadline and time.time() > deadline: return
                 try: typ, body = m.ev.get(timeout=timeout)
                 except queue.Empty: return
                 if typ == 0x62:  # stopped
@@ -169,6 +210,42 @@ def main(kernal):
         check("LOAD used the fast path (%d block calls, %d byte-level ACPTR calls in the whole run so far)" % (n_blk, n_acptr),
               n_blk >= 24 and n_acptr == 0)
 
+        # --- regression: CIOUT must return the byte sent (CHROUT tail-jumps into it); numbers followed by more PRINT items broke BASIC ---
+        run('NEW\r')
+        run('OPEN2,8,2,"NUMTST,S,W"\r')
+        run('PRINT#2,1;"A";2:PRINT#2,12;34\r', None, absent="SYNTAX")
+        run('CLOSE2\r')
+        run('OPEN15,8,15,"S:NUMTST":CLOSE15\r')
+
+        # --- the shipped BASIC test programs, run for real inside VICE ---
+        def prog(name, answers, expect, wait=3.0, dev=8):
+            run('NEW\r')
+            run('LOAD"%s",%d\r' % (name.upper(), dev), "READY.")
+            m.keys('RUN\r'); service(1.0)
+            for a in answers:
+                m.keys(a + '\r'); service(wait)
+            scr = m.screen()
+            norm = [" ".join(r.split()) for r in scr]
+            ok_ = all(any(" ".join(e.split()) in r for r in norm) for e in expect)
+            print(("PASS" if ok_ else "FAIL"), "BASIC program", name, "| expect", expect)
+            if not ok_:
+                print("\n".join(scr))
+            return ok_
+        ok = prog("seqtest", [""], ["SEQ TEST PASS", "CHECKED 100 LINES, 0 ERRORS"]) and ok
+        ok = prog("dostest", [""], ["0 FAILED"]) and ok
+        run('NEW\r')
+        run('LOAD"SOAK",8\r', "READY.")
+        m.keys('RUN\r')
+        for _ in range(12):                                           # let it make several passes (each reloads BIG and checksums it)
+            service(0.5, limit=5)
+            if any("PASS 3 " in r for r in m.screen()): break
+        scr = m.screen()
+        soak_ok = any("PASS 3 ERRORS 0" in r.replace("  ", " ") for r in scr) and not any("MISMATCH" in r for r in scr)
+        print(("PASS" if soak_ok else "FAIL"), "BASIC soak program: 3 load+verify passes, 0 errors")
+        if not soak_ok: print("\n".join(scr))
+        ok = ok and soak_ok
+        m.keys(' '); service(1.5, limit=15)                            # any key stops the soak loop
+
         # --- fault injection: a bad answer in the middle of a LOAD must give an error, never silent corruption ---
         m.write(0x2000, bytes(6000))                                  # known contents to see whether anything was copied after the fault
         fault["at"], fault["n"] = 3, 0
@@ -212,6 +289,14 @@ def main(kernal):
         run('NEW\r')
         run('OPEN15,8,15,"S:SAVEME":CLOSE15\r')
         run('LOAD"SAVEME",8\r', "FILE NOT FOUND")
+
+        # --- cdtest + renum: they unmount / renumber the drive, so they run after the disk checks and before the dead-mailbox test ---
+        ok = prog("cdtest", [""], ["6 PASSED, 0 FAILED"]) and ok
+        run('OPEN15,8,15,"CD:MOCK.D64":CLOSE15\r')                    # remount the mock disk
+        ok = prog("renum", ["8", "10"], ["NEW DEVICE 10 ANSWERS: 0 OK"]) and ok
+        check("U0> reported the new number for persistence", hs["saved"] and hs["saved"][-1] == (10, 0))
+        ok = prog("renum", ["10", "8"], ["NEW DEVICE 8 ANSWERS: 0 OK"], dev=10) and ok
+        check("... and the default again afterwards", hs["saved"][-1] == (0, 0))
 
         # --- handler absent (BUSY never clears): KERNAL must time out and use the real IEC code ---
         m.req(0x13, struct.pack("<I", cp_num))                  # delete the checkpoint: nobody answers any more

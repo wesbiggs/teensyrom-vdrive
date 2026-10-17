@@ -149,6 +149,8 @@ hk_ciout:
         lda #C_CIOUT
         jsr vcall
         bcs @orig
+        lda $A7                 ; CHROUT tail-jumps here: A must come back as the byte sent, as in the stock
+        clc                     ; routine (BASIC's PRINT depends on it), not the mailbox DATA byte
         rts
 @orig:  bit $94
         bmi @buf

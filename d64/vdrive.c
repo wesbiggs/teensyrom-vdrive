@@ -265,7 +265,8 @@ VD_COLD static void cmd_renumber(vdrive_t *v, int unit, vd_unit_t *u, uint8_t n)
 
 VD_COLD static void exec_command(vdrive_t *v, int unit, vd_unit_t *u, uint8_t *cmd, uint8_t len)
 {
-    if (len == 4 && cmd[0] == 'U' && cmd[1] == '0' && cmd[2] == '>') { cmd_renumber(v, unit, u, cmd[3]); return; }
+    /* OPEN 15,d,15,"U0>"+CHR$(n) sends 4 bytes; PRINT#15 adds a CR, making 5 */
+    if ((len == 4 || (len == 5 && cmd[4] == '\r')) && cmd[0] == 'U' && cmd[1] == '0' && cmd[2] == '>') { cmd_renumber(v, unit, u, cmd[3]); return; }
     while (len && (cmd[len - 1] == '\r' || cmd[len - 1] == '\n')) len--;
     if (!len) return;
     cmd[len] = 0;

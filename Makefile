@@ -41,3 +41,7 @@ build/banner-only/banner.s: patches/banner.s
 
 build/kernal-banner.bin: build/banner-only/banner.s tools/build.py
 	python3 -I tools/build.py $(STOCK) $@ --patches build/banner-only
+
+# Test disk for the real hardware: copy build/testdisk/vdtest.d64 to the SD card, then OPEN15,8,15,"CD:VDTEST.D64"
+testdisk:
+	python3 -I tools/make_testdisk.py

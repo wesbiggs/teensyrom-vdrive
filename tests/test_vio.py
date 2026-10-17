@@ -340,6 +340,14 @@ class DeviceNumberTests(unittest.TestCase):
         self.assertEqual(self.saved[-1], (10, 13))
         nm, _, _ = self.io.call(LISTEN, 13); self.assertFalse(nm)
 
+    def test_u0_with_trailing_cr_as_sent_by_print_hash(self):
+        self.hook_save()
+        self.io.call(LISTEN, 8); self.io.call(SECOND, 0x6F)
+        for b in b"U0>" + bytes([10]) + b"\r": self.io.call(CIOUT, b)          # PRINT#15,"U0>"+CHR$(10)
+        self.io.call(UNLSN)
+        self.assertEqual(self.saved, [(10, 0)])
+        self.assertEqual(self.io.fast_load(10, b"HI")[0], 0)
+
     def test_u0_zero_restores_default(self):
         self.hook_save()
         self.renumber(8, 10); self.renumber(10, 0)
