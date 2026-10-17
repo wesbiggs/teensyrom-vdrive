@@ -121,5 +121,5 @@ settings and the files on the card.
 | `LOAD"BIG"` 6000 B, wall-clock | |
 | `SAVE` 6000 B, wall-clock | |
 | Mailbox calls per 6000 B load (trace) | expect ~27 |
-| Stage 7 items passed (of 9) | |
+| Stage 7 items passed (of 9) | owner-verified: 1-6 core path (mount, load small/large, save, verify, error channel, repeated listings). Pending: 7 (USB, device 9), 8 (U0> renumber), 9 (time-out) |
 | Soak: loads without error | |
