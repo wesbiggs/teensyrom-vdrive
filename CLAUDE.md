@@ -16,7 +16,11 @@ Firmware integration and usage: `firmware/README.md`.
 * **Never built against the real Teensy toolchain, never run on a TR+** as of the first commit. The owner is doing the first build
   and flash now (toolchain: `arduino-cli`, `teensy:avr@1.61.0`, `CRC32@2.0.1`; do NOT use Teensyduino 1.62.0 — SD read stalls).
   Follow `docs/BRINGUP.md` stage by stage and record results in its table; update this section as stages pass.
-* Known open risks: RAM1 fit (state is ~4.6 KB in RAM2/`DMAMEM`, ~130 B hot code), `File::seek/read/write/flush` semantics on the
+* **Stage 0-1 done (build + fit):** the patched `[main]` image builds and links with the real toolchain. Cost vs stock: RAM1 padding
+  −976 B (13,816 → 12,840), flash code +15.7 KB, RAM2 +4.5 KB (the drive state). RAM1 code is +976 B, more than the ~130 B hot-code
+  estimate: the two `FASTRUN` handlers plus the glue's sector callbacks/helpers; could move those to `FLASHMEM` if RAM1 ever gets tight.
+  Stages 2-8 (flash, run, mailbox, scope, KERNAL, drive tests) are still to do.
+* Known open risks: `File::seek/read/write/flush` semantics on the
   real SD/USB classes, IO1/IO2 ISR timing, tape (device 1) intentionally broken (its code space was reclaimed).
 
 ## Layout

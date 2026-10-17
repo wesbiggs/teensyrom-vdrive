@@ -116,8 +116,8 @@ settings and the files on the card.
 ## Results table (fill in)
 | Item | Value |
 |---|---|
-| Stage 0 RAM1 padding / flash | |
-| Stage 1 RAM1 padding / flash (delta) | |
+| Stage 0 RAM1 padding / flash (stock, `[main]`, TeensyROM FW 0.9 tree, Teensyduino core 1.61.0) | padding 13,816; flash code 277,892; RAM2 vars 17,600 |
+| Stage 1 RAM1 padding / flash (delta) | padding 12,840 (−976); flash code 293,604 (+15,712); RAM1 code +976; RAM1 vars +352; RAM2 vars 22,144 (+4,544). **Stage 1 passed** (builds, links, padding ≫ 4 KB) |
 | `LOAD"BIG"` 6000 B, wall-clock | |
 | `SAVE` 6000 B, wall-clock | |
 | Mailbox calls per 6000 B load (trace) | expect ~27 |
