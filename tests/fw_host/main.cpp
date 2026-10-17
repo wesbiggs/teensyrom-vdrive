@@ -134,6 +134,8 @@ int main(int argc, char **argv)
     d = fast_load(8, "$");
     check("listing of SUB", d.find("\"SD:/SUB ") != std::string::npos && d.find("\"INNER.D64\"") != std::string::npos);
     cmd15("CD:INNER.D64"); check("mount from subdirectory", status15() == "00, OK,00,00\r");
+    cmd15("CD:/"); check("CD:/ unmounts and returns to the root", status15() == "00, OK,00,00\r" && !vdUnit[0].mounted && vdUnit[0].cwd[0] == 0);
+    cmd15("CD:SUB"); cmd15("CD:INNER.D64"); status15();
     cmd15("CD:_"); cmd15("CD:.."); d = fast_load(8, "$");
     check("CD:.. returns to root", d.find("\"GAME.D64\"") != std::string::npos);
     cmd15("CD:NOPE.D64"); check("missing image -> 62", status15().rfind("62,FILE NOT FOUND", 0) == 0);

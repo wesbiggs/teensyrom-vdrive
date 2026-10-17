@@ -234,9 +234,11 @@ VD_COLD static void cmd_cd(vdrive_t *v, int unit, vd_unit_t *u, const char *p, c
     memcpy(name, p, n); name[n] = 0;
     const vd_host_t *h = &v->host;
     int up = (!strcmp(name, "..") || !strcmp(name, "_") || (n == 1 && (uint8_t)name[0] == 0x5F));
-    if (u->disk && up) {
+    int root = (n == 1 && name[0] == '/');                     /* CD:/ = unmount (if mounted) and go to the card root */
+    if (u->disk && (up || root)) {
         close_all(u); u->disk = NULL;
         if (h->unmount) h->unmount(h->ctx, unit);
+        if (root && h->chdir) h->chdir(h->ctx, unit, "/");
     } else if (n && has_d64_suffix(name)) {
         d64_t *d = NULL;
         if (!h->mount) { set_err(u, 33, 0, 0); return; }

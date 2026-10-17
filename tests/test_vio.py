@@ -170,6 +170,7 @@ class HostTests(unittest.TestCase):
             subprocess.run(["c1541", "-format", f"disk{n},0{n}", "d64", str(self.tmp / f"{n}.d64")],
                            capture_output=True, check=True)
         (self.tmp / "sub").mkdir()
+        subprocess.run(["c1541", "-format", "inner,0i", "d64", str(self.tmp / "sub" / "inner.d64")], capture_output=True, check=True)
         (self.tmp / "readme.prg").write_bytes(b"x" * 1000)
         self.cwd = self.tmp
         self.mounted = []
@@ -190,6 +191,7 @@ class HostTests(unittest.TestCase):
 
         def chdir(ctx, unit, name):
             n = name.decode().lower()
+            if n == "/": self.cwd = self.tmp; return 0
             q = (self.cwd.parent if n == ".." else self.cwd / n)
             if not q.is_dir(): return 62
             self.cwd = q; return 0
@@ -243,6 +245,19 @@ class HostTests(unittest.TestCase):
         self.cmd15(b"CD:_")                                                   # left-arrow: unmount
         self.assertEqual(self.unmounted, [0])
         self.assertIn(b'"SD CARD', self.io.fast_load(8, b"$")[2])
+
+    def test_cd_slash_goes_to_root_and_unmounts(self):
+        self.cmd15(b"CD:SUB"); self.cmd15(b"CD:INNER.D64")                    # inside a subfolder, image mounted
+        self.assertEqual(self.status(), "00, OK,00,00\r")
+        self.assertEqual(self.mounted[-1], "inner.d64")
+        self.cmd15(b"CD:/")
+        self.assertEqual(self.status(), "00, OK,00,00\r")
+        self.assertEqual(self.cwd, self.tmp)                                   # back at the root
+        self.assertEqual(self.unmounted, [0])                                  # and unmounted
+        d = self.io.fast_load(8, b"$")[2]
+        self.assertIn(b'"SD CARD', d); self.assertIn(b'"SUB"', d)              # host listing of the root
+        self.cmd15(b"CD:/")                                                    # harmless when already there
+        self.assertEqual(self.status(), "00, OK,00,00\r")
 
     def test_cd_into_directory_and_back(self):
         self.cmd15(b"CD:SUB"); self.assertEqual(self.status(), "00, OK,00,00\r")

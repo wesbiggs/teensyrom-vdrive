@@ -22,7 +22,7 @@ KERNAL replacement. Status: **host-tested only** — see "What is and isn't veri
 ## Use
 ```
 LOAD"$",8                      lists the SD card (or the mounted image)
-OPEN15,8,15,"CD:GAME.D64"      mount an image (CD:SUBDIR / CD:.. move around; CD:_ unmounts)
+OPEN15,8,15,"CD:GAME.D64"      mount an image (CD:SUBDIR / CD:.. move around; CD:_ unmounts; CD:/ unmounts and goes to the card root)
 LOAD"$",8 : LIST               directory of the image;  LOAD"NAME",8,1   SAVE"@0:NAME",8   etc.
 OPEN15,8,15,"S:OLD*"           scratch;  "N:NAME,ID" format;  "R:NEW=OLD" rename
 ```

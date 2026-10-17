@@ -136,6 +136,7 @@ FLASHMEM static int VD_Mount(void *ctx, int unit, const char *name, d64_t **out)
 FLASHMEM static int VD_ChDir(void *ctx, int unit, const char *name)
 {
    stcVDUnit *u = &vdUnit[unit];
+   if (strcmp(name, "/") == 0) { u->cwd[0] = 0; return 0; }   // card root
    if (strcmp(name, "..") == 0 || strcmp(name, "_") == 0)
    {
       char *slash = strrchr(u->cwd, '/');
