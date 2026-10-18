@@ -150,6 +150,22 @@ class VDriveTests(unittest.TestCase):
         self.vd.listen(8, 0x6F, b"X:FOO")
         self.assertTrue(self.vd.status().startswith("31,SYNTAX ERROR"))
 
+    def test_unread_status_is_dropped_by_the_next_operation(self):
+        # the Q4K pattern: scratch through channel 15, read only the first 2 bytes, then save; the next status read must be the
+        # save's own "00", not the unread tail of the scratch message
+        self.vd.open(8, 15, b"S0:Q4K.SAV")
+        self.assertEqual(self.vd.talk(8, 0x6F, 2)[0], b"01")
+        self.vd.save(8, b"Q4K.SAV", b"\x01\x08abc")
+        self.assertEqual(self.vd.talk(8, 0x6F, 2)[0], b"00")
+        self.assertEqual(self.vd.status(), ", OK,00,00\r")                 # the rest of the SAVE's own message
+
+    def test_status_read_in_pieces_without_operations_continues(self):
+        self.vd.listen(8, 0x6F, b"S:NOSUCH")
+        got = b"".join(self.vd.talk(8, 0x6F, 1)[0] for _ in range(6))      # one byte per TALK session, like GET#15
+        self.assertEqual(got, b"01,FIL")
+        rest = self.vd.status()
+        self.assertEqual(rest, "ES SCRATCHED,00,00\r")
+
     def test_status_read_twice_in_a_row(self):
         self.assertEqual(self.vd.status(), "00, OK,00,00\r")
         self.assertEqual(self.vd.status(), "00, OK,00,00\r")

@@ -1096,10 +1096,10 @@ index 0000000..20f3ecc
 +#endif
 diff --git a/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.c b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.c
 new file mode 100644
-index 0000000..b9786ee
+index 0000000..47f48ba
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.c
-@@ -0,0 +1,438 @@
+@@ -0,0 +1,442 @@
 +#include "vdrive.h"
 +#include "vd_cfg.h"
 +#include <string.h>
@@ -1511,6 +1511,10 @@ index 0000000..b9786ee
 +        }
 +        return 0;
 +    case VD_UNLSN:
++        if (op == 0xF0 || op == 0xE0 || (op == 0x60 && ch == 15))
++            u->stat_len = u->stat_pos = 0;             /* a new DOS operation replaces the status message: whatever was left
++                                                          unread is dropped (as on a real drive / in VICE), so callers need
++                                                          not drain it. Reading it in pieces between operations still works. */
 +        if (op == 0xF0) {
 +            if (ch == 15) exec_command(v, v->act, u, v->wbuf, v->wlen);
 +            else chan_open(v, v->act, u, ch, v->wbuf, v->wlen);

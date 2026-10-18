@@ -15,6 +15,10 @@
 150 open2,d,2,"dt9,s,w":gosub 900:close2
 160 t$="create existing refused (63)":x=(en=63):gosub 700
 170 print#15,"s:dt9":gosub 900
+172 print#15,"s:dt9":get#15,a$:get#15,b$
+174 open2,d,2,"dt8,s,w":print#2,"x":close2
+176 gosub 900:t$="unread status dropped by next op":x=(em$="ok"):gosub 700
+178 print#15,"s:dt8":gosub 900
 180 print#15,"x:foo":gosub 900:t$="unknown command (31)":x=(en=31):gosub 700
 190 print:print p;"passed,";f;"failed"
 200 close15:end

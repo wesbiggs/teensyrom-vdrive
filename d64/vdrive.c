@@ -409,6 +409,10 @@ VD_COLD int vdrive_mailbox(vdrive_t *v, uint8_t cmd, uint8_t arg, uint8_t *data,
         }
         return 0;
     case VD_UNLSN:
+        if (op == 0xF0 || op == 0xE0 || (op == 0x60 && ch == 15))
+            u->stat_len = u->stat_pos = 0;             /* a new DOS operation replaces the status message: whatever was left
+                                                          unread is dropped (as on a real drive / in VICE), so callers need
+                                                          not drain it. Reading it in pieces between operations still works. */
         if (op == 0xF0) {
             if (ch == 15) exec_command(v, v->act, u, v->wbuf, v->wlen);
             else chan_open(v, v->act, u, ch, v->wbuf, v->wlen);

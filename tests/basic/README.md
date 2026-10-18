@@ -14,6 +14,7 @@ LOAD"SEQTEST",8 : RUN        (device 9 for the USB stick)
 | `DOSTEST` | rename, rename onto an existing name (63), scratch one / by wildcard (01 + count), create-existing refused (63), unknown command (31) | `9 PASSED, 0 FAILED` |
 | `CDTEST` | `CD:/` (root listing), mount `VDTEST.D64`, header shows the disk, `CD:/` unmounts, missing image gives 62, state unchanged after the failure. Needs `VDTEST.D64` in the card root | `6 PASSED, 0 FAILED` |
 | `SOAK` | endless loop: clears memory, `LOAD"BIG",8,1`, checksums it. Any key stops it | `PASS n ERRORS 0` counting up; any `MISMATCH` is a failure |
+| `STATUS` | probe, not a test: prints the raw status text for a few commands in `[brackets]` so you can compare a real drive with ours (spacing, wording). Run it on your real drive 8, then on ours | compare the two outputs |
 | `RENUM` | `U0>` renumber. Run with current=8 new=10, then power-cycle and run with current=10 new=8 to prove it persisted and put it back | `NEW DEVICE 10 ANSWERS: 0 OK` (then `... 8 ...`) |
 
 Notes:
