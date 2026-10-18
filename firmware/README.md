@@ -81,7 +81,7 @@ C API. The EEPROM bytes are carved out of the reserved area (`eepAdNext` moves f
 now a fixed number (an explicit 8 stays 8).
 
 ## Changing the disk while a program runs (remote control)
-With the VDrive handler active, the TeensyROM's remote-control port (TCP 2112, or the USB serial port) accepts two extra commands that work while the C64 runs a program: `0x64E3` reads what a unit has mounted, `0x64E4` mounts an image (or unmounts with an empty path). The swap waits for a quiet moment on the C64's drive, closes the unit's open channels and mounts, like `CD:`. Details and framing are in `docs/DESIGN.md` section 20. The `trvdrive` tool in `teensyrom-rcp` wraps them:
+With the VDrive handler active, the TeensyROM's remote-control port (TCP 2112, or the USB serial port) accepts two extra commands that work while the C64 runs a program: `0x64E3` reads what a unit has mounted, `0x64E4` mounts an image (or unmounts with an empty path). The swap waits for a quiet moment on the C64's drive, closes the unit's open channels and mounts, like `CD:`. Details and framing are in `docs/DESIGN.md` section 20. Directory listings (`trls`) are also allowed while a program runs, after the same wait, so you can browse for an image; the other file commands (`trget`, `trput`, ...) still answer `Busy!`. The `trvdrive` tool in `teensyrom-rcp` wraps get and set:
 
 ```
 trvdrive -H tr.local                      # show SD and USB

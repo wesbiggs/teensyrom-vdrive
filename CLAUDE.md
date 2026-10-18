@@ -42,7 +42,7 @@ Firmware integration and usage: `firmware/README.md`.
   in names (18): `LOAD"$/dir/image.d64"` only lists (selection restored on close), `LOAD"$==path"` selects like `CD`, `UI`/`UJ`/`U9` (status 73), `U1`.. now `31`. A `U0>` number is a *fixed* number now (0 = automatic);
   `vdrive_set_devices()` takes pins. To check on hardware: the scan with a real drive at 8 (SD must become 9; `PEEK(56854)`), a first access that is a
   `LOAD`, the time of the first access, `.d81` mounting on SD, paths.
-* **0.9.0.8 (host-tested, builds with the real toolchain, nothing of it on hardware):** disk changes from outside while a program runs: remote-control commands `0x64E3` (get) / `0x64E4` (set) on TCP 2112, swap at a quiet point
+* **0.9.0.8/0.9.0.9 (host-tested, builds with the real toolchain, nothing of it on hardware):** disk changes from outside while a program runs (0.9.0.9 also lets `trls` through, after the quiet wait): remote-control commands `0x64E3` (get) / `0x64E4` (set) on TCP 2112, swap at a quiet point
   (`VDrive_RemoteStatus` / `VDrive_RemoteSet` in `firmware/IOH_VDrive.c`, dispatcher text in `firmware/vdrive_remote.inc`, docs/DESIGN.md 20). No 6502-side flag yet: channels live on the Teensy. Client: `trvdrive` in `../teensyrom-rcp`.
 * Known open risks:
   C128 not supported (see above); `File::seek/read/write/flush` semantics on the

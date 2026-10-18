@@ -42,6 +42,16 @@ edit("Source/Teensy/SerUSBIO.ino",
 edit("Source/Teensy/SerUSBIO.ino",
      "FLASHMEM bool ReceiveFileName(RegMenuTypes* DriveType, char *FileNamePath)\n",
      open(sys.argv[3]).read() + "\nFLASHMEM bool ReceiveFileName(RegMenuTypes* DriveType, char *FileNamePath)\n")
+edit("Source/Teensy/SerUSBIO.ino",
+     "   if (CurrentIOHandler != IOH_TeensyROM && !ASIDAllowed)\n",
+     "   //VDrive running a C64 program: directory listings (so a client can browse for an image to mount) once the drive is quiet\n"
+     "   bool VDriveListing = false;\n"
+     "#ifdef Fab04_VDrive\n"
+     "   VDriveListing = (CurrentIOHandler == IOH_VDrive || CurrentIOHandler == IOH_VDriveSwift) &&\n"
+     "      (TokenVal == GetDirectoryToken || TokenVal == GetDirNDJSONToken);\n"
+     "   if (VDriveListing)\n   {\n      char Msg[64];\n      if (VDrive_RemoteQuiet(Msg, sizeof Msg))\n      {\n         SendU16(FailToken);\n         CmdChannel->printf(\"%s\\n\", Msg);\n         return;\n      }\n   }\n"
+     "#endif\n\n"
+     "   if (CurrentIOHandler != IOH_TeensyROM && !ASIDAllowed && !VDriveListing)\n")
 edit(f"{C}/Common_Defs.h",
      "   eepAdNext          = 4235, // Next address to be used\n",
      "   eepAdVDriveDevs    = 4235, // (2:uint8_t x2)  VDrive KERNAL device numbers of the SD / USB units, 0 = default (VD_DEV0/1)\n"

@@ -15,7 +15,7 @@ index 6024ccd..2f5cbbf 100644
     else IOHandlerNextInit();
  }
 diff --git a/Source/Teensy/MinimalBoot/Common/Common_Defs.h b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
-index 7feae53..78dd124 100644
+index 7feae53..fc39194 100644
 --- a/Source/Teensy/MinimalBoot/Common/Common_Defs.h
 +++ b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
 @@ -14,6 +14,7 @@
@@ -31,7 +31,7 @@ index 7feae53..78dd124 100644
  
  
 -#define TRVersion              "0.9"    //*VERSION*
-+#define TRVersion              "0.9.0.8"    //*VERSION*  (stock 0.9 + VDrive rev 8)
++#define TRVersion              "0.9.0.9"    //*VERSION*  (stock 0.9 + VDrive rev 9)
  #ifdef Fab04_Features
     char strVersionNumber[] = "TeensyROM+ v" TRVersion; 
  #else
@@ -91,10 +91,10 @@ index 88bc75b..26e4a01 100644
        
 diff --git a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c
 new file mode 100644
-index 0000000..cfe9393
+index 0000000..c1ab95b
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c
-@@ -0,0 +1,494 @@
+@@ -0,0 +1,504 @@
 +// "VDrive" Special IO for TeensyROM+: replacement KERNAL + virtual IEC drive.
 +//   unit 0 = SD card, unit 1 = USB drive. Device numbers are automatic by default: the first free numbers from 8 up
 +//   (the KERNAL probes the real serial bus on the first disk access of a run, see vdrive_io.h), so 8 (SD) and 9 (USB) when
@@ -518,6 +518,21 @@ index 0000000..cfe9393
 +   return (n > 0 && (size_t)n < cap) ? (size_t)n : 0;
 +}
 +
++// Wait (up to VD_SwapWaitMs) for a quiet moment, polling the mailbox meanwhile, so the caller may touch the card: 0 = quiet now,
++// 2 = the C64 kept the drive busy (reason in msg). Used by the swap below and by the remote directory listing.
++FLASHMEM int VDrive_RemoteQuiet(char *msg, size_t cap)
++{
++   if (vio == NULL || !vioReady) { snprintf(msg, cap, "VDrive is not running"); return 1; }
++   uint32_t began = millis();
++   while (!VD_Quiet())
++   {
++      if (millis() - began > VD_SwapWaitMs) { snprintf(msg, cap, "C64 is busy with the drive"); return 2; }
++      PollingHndlr_VDrive();           // keep answering the C64 while we wait
++   }
++   msg[0] = 0;
++   return 0;
++}
++
 +// Select the disk image for a unit: path = "/dir/IMAGE.D64" (ASCII, on that unit's own card), "" = unmount (the folder stays).
 +// Waits for a quiet moment (up to VD_SwapWaitMs, polling the mailbox meanwhile), then closes every channel on the unit and
 +// mounts, exactly as CD: would. Returns 0, or a DOS error code with a short reason in msg; 1 = no such unit, 2 = not quiet in time.
@@ -534,12 +549,7 @@ index 0000000..cfe9393
 +      probe.close();
 +      if (bad) { snprintf(msg, cap, "not a disk image"); return 74; }
 +   }
-+   uint32_t began = millis();
-+   while (!VD_Quiet())
-+   {
-+      if (millis() - began > VD_SwapWaitMs) { snprintf(msg, cap, "C64 is busy with the drive"); return 2; }
-+      PollingHndlr_VDrive();           // keep answering the C64 while we wait
-+   }
++   if (VDrive_RemoteQuiet(msg, cap)) return 2;
 +   if (!path[0])
 +   {
 +      VD_Unmount(NULL, unit);
@@ -2536,7 +2546,7 @@ index 0000000..698301b
 +#endif
 +#endif
 diff --git a/Source/Teensy/SerUSBIO.ino b/Source/Teensy/SerUSBIO.ino
-index 92480e7..b9d5e06 100644
+index 92480e7..4f81e9c 100644
 --- a/Source/Teensy/SerUSBIO.ino
 +++ b/Source/Teensy/SerUSBIO.ino
 @@ -600,6 +600,12 @@ FLASHMEM void ProcessCommand()
@@ -2552,7 +2562,33 @@ index 92480e7..b9d5e06 100644
     }
  
  
-@@ -805,6 +811,67 @@ FLASHMEM void LaunchFile()
+@@ -610,7 +616,24 @@ FLASHMEM void ProcessCommand()
+        TokenVal == SendFileToken     || TokenVal == PostFileToken     ||
+        TokenVal == CopyFileToken     || TokenVal == DeleteFileToken);
+ 
+-   if (CurrentIOHandler != IOH_TeensyROM && !ASIDAllowed)
++   //VDrive running a C64 program: directory listings (so a client can browse for an image to mount) once the drive is quiet
++   bool VDriveListing = false;
++#ifdef Fab04_VDrive
++   VDriveListing = (CurrentIOHandler == IOH_VDrive || CurrentIOHandler == IOH_VDriveSwift) &&
++      (TokenVal == GetDirectoryToken || TokenVal == GetDirNDJSONToken);
++   if (VDriveListing)
++   {
++      char Msg[64];
++      if (VDrive_RemoteQuiet(Msg, sizeof Msg))
++      {
++         SendU16(FailToken);
++         CmdChannel->printf("%s\n", Msg);
++         return;
++      }
++   }
++#endif
++
++   if (CurrentIOHandler != IOH_TeensyROM && !ASIDAllowed && !VDriveListing)
+    {
+       SendU16(FailToken);
+       CmdChannel->print("Busy!\n");
+@@ -805,6 +828,67 @@ FLASHMEM void LaunchFile()
     }
  }
  

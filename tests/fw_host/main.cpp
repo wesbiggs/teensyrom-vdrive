@@ -13,7 +13,8 @@ char DriveDirPath[128];
 EEPROMStub EEPROM;
 uint8_t g_bus_in, g_bus_out;
 static uint32_t g_ms = 0, g_tick = 0;               // g_tick > 0: every millis() call advances the clock (for code that waits)
-uint32_t millis() { g_ms += g_tick; return g_ms; }
+static void (*g_on_millis)() = nullptr;               // test hook: a busy C64 issuing mailbox commands while the firmware waits
+uint32_t millis() { g_ms += g_tick; if (g_on_millis) g_on_millis(); return g_ms; }
 static int g_fs_probes = 0;
 bool SDFullInit() { g_fs_probes++; return fs_::exists(SD.root); }
 bool USBFileSystemWait() { g_fs_probes++; return fs_::exists(firstPartition.root); }
@@ -373,6 +374,22 @@ int main(int argc, char **argv)
         check("remote set: empty path unmounts, folder stays, sidecar gone", VDrive_RemoteSet(0, "", msg, sizeof msg) == 0 && !vdUnit[0].mounted && !fs_::exists(SD.root / ".vdrive") && has(0, "\"mounted\":false,\"writable\":false,\"path\":\"\",\"cwd\":\"/SUB\""));
         g_tick = 0;
         check("... the C64 lists the host folder again", fast_load(8, "$").find("\"SD:/SUB") != std::string::npos);
+
+        // the remote directory listing (and the swap) wait for the drive to be quiet; a C64 that never lets go gets a refusal
+        g_tick = 0; call(VD_LISTEN, 8); call(VD_UNLSN); lastActivityMs = millis();
+        g_tick = 1; t0 = g_ms;
+        check("quiet wait: returns 0 after the C64's last command has aged", VDrive_RemoteQuiet(msg, sizeof msg) == 0 && g_ms - t0 >= VD_QuietMs && msg[0] == 0);
+        t0 = g_ms;
+        check("quiet wait: already quiet returns at once", VDrive_RemoteQuiet(msg, sizeof msg) == 0 && g_ms - t0 < 5);
+        VDrive_RemoteSet(0, "/GAME.D64", msg, sizeof msg);
+        g_on_millis = [] { if (!vioHot.pending) { w1(VIO_LEN, 0); w1(VIO_ARG, 0); w1(VIO_CMD, VD_UNLSN); } };   // never lets go
+        t0 = g_ms;
+        check("quiet wait: a C64 that keeps talking is refused after the limit", VDrive_RemoteQuiet(msg, sizeof msg) == 2 && strstr(msg, "busy") && g_ms - t0 >= VD_SwapWaitMs);
+        check("remote set in the same situation fails (2) and leaves the disk alone", VDrive_RemoteSet(0, "/BIG.D81", msg, sizeof msg) == 2 && has(0, "/game.d64"));
+        g_on_millis = nullptr; g_tick = 0;
+        vioReady = false;
+        check("quiet wait: VDrive not running is refused", VDrive_RemoteQuiet(msg, sizeof msg) == 1);
+        vioReady = true;
     }
 
     printf("%s\n", fails ? "FAILED" : "ALL OK");

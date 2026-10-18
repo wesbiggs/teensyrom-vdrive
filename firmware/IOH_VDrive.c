@@ -421,6 +421,21 @@ FLASHMEM size_t VDrive_RemoteStatus(int unit, char *out, size_t cap)
    return (n > 0 && (size_t)n < cap) ? (size_t)n : 0;
 }
 
+// Wait (up to VD_SwapWaitMs) for a quiet moment, polling the mailbox meanwhile, so the caller may touch the card: 0 = quiet now,
+// 2 = the C64 kept the drive busy (reason in msg). Used by the swap below and by the remote directory listing.
+FLASHMEM int VDrive_RemoteQuiet(char *msg, size_t cap)
+{
+   if (vio == NULL || !vioReady) { snprintf(msg, cap, "VDrive is not running"); return 1; }
+   uint32_t began = millis();
+   while (!VD_Quiet())
+   {
+      if (millis() - began > VD_SwapWaitMs) { snprintf(msg, cap, "C64 is busy with the drive"); return 2; }
+      PollingHndlr_VDrive();           // keep answering the C64 while we wait
+   }
+   msg[0] = 0;
+   return 0;
+}
+
 // Select the disk image for a unit: path = "/dir/IMAGE.D64" (ASCII, on that unit's own card), "" = unmount (the folder stays).
 // Waits for a quiet moment (up to VD_SwapWaitMs, polling the mailbox meanwhile), then closes every channel on the unit and
 // mounts, exactly as CD: would. Returns 0, or a DOS error code with a short reason in msg; 1 = no such unit, 2 = not quiet in time.
@@ -437,12 +452,7 @@ FLASHMEM int VDrive_RemoteSet(int unit, const char *path, char *msg, size_t cap)
       probe.close();
       if (bad) { snprintf(msg, cap, "not a disk image"); return 74; }
    }
-   uint32_t began = millis();
-   while (!VD_Quiet())
-   {
-      if (millis() - began > VD_SwapWaitMs) { snprintf(msg, cap, "C64 is busy with the drive"); return 2; }
-      PollingHndlr_VDrive();           // keep answering the C64 while we wait
-   }
+   if (VDrive_RemoteQuiet(msg, cap)) return 2;
    if (!path[0])
    {
       VD_Unmount(NULL, unit);
