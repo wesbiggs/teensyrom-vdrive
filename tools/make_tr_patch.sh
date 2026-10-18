@@ -11,7 +11,7 @@ for f in Common_Defs.h Menu_Regs.h IOHandlers.h IO_Handlers/StatusFunctions.c; d
 mkdir -p "$W/Source/Teensy"; cp "$TR/Source/Teensy/Teensy.ino" "$W/Source/Teensy/Teensy.ino"
 cd "$W"; git init -q; git add -A; git -c user.name=x -c user.email=x@x commit -qm base
 
-python3 -I - "$C" <<'PY'
+python3 -I - "$C" "$HERE/firmware/REV" <<'PY'
 import sys
 C = sys.argv[1]
 def edit(path, old, new):
@@ -22,6 +22,13 @@ edit(f"{C}/Common_Defs.h",
      "   #define Fab04_KernalReplace        //include Kernal Replacement support\n",
      "   #define Fab04_KernalReplace        //include Kernal Replacement support\n"
      "   #define Fab04_VDrive               //virtual IEC drive for the replacement KERNAL (needs Fab04_KernalReplace)\n")
+import re
+base = re.search(r'#define TRVersion\s+"([^"]+)"', open(f"{C}/Common_Defs.h").read()).group(1)
+rev = open(sys.argv[2]).read().strip()                      # firmware/REV: bumped by hand on firmware-affecting commits
+vd_version = f"{base}.{rev}" if base.count(".") >= 2 else f"{base}.0.{rev}"   # e.g. 0.9 -> 0.9.0.1 (digits and dots only: the flash tool parses it)
+edit(f"{C}/Common_Defs.h",
+     f'#define TRVersion              "{base}"    //*VERSION*',
+     f'#define TRVersion              "{vd_version}"    //*VERSION*  (stock {base} + VDrive rev {rev})')
 edit(f"{C}/Common_Defs.h",
      "   eepAdNext          = 4235, // Next address to be used\n",
      "   eepAdVDriveDevs    = 4235, // (2:uint8_t x2)  VDrive KERNAL device numbers of the SD / USB units, 0 = default (VD_DEV0/1)\n"

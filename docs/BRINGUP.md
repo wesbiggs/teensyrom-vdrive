@@ -9,6 +9,9 @@ Equipment: TR+ (PCB v0.4), **a real C64** (a flat NTSC C128 in C64 mode did not 
 images, a USB stick (second unit), a USB cable to the TR+ for the serial console (the TR USB power trace is cut: the C64
 must be powered). Nice to have: a logic analyzer / scope with 4 channels (PHI2, /IO1, /IO2, R/W; data bus optional).
 
+**Which build is on the board?** Patched builds are versioned `<stock>.<rev>` (e.g. `0.9.0.1`, from `firmware/REV`): look at the TR menu title or the hex file name
+(`TeensyROM+_0.9.0.1_full.hex`). Stock firmware says plain `0.9`.
+
 ## Stage 0 — baseline the firmware you will patch
 1. Check out TeensyROM at a known commit; use Teensyduino **1.61.0** (1.62.0 is documented as bad in `docs/Architecture/Build-System.md`).
 2. `npm run build:c64` then `npm run build:tr-plus` (see `Source/BuildInfo.md` for exact commands) **without** our patch.

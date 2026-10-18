@@ -1,5 +1,5 @@
 diff --git a/Source/Teensy/MinimalBoot/Common/Common_Defs.h b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
-index 7feae53..ed20fac 100644
+index 7feae53..1e14ba9 100644
 --- a/Source/Teensy/MinimalBoot/Common/Common_Defs.h
 +++ b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
 @@ -14,6 +14,7 @@
@@ -10,6 +10,15 @@ index 7feae53..ed20fac 100644
     //#define Fab04_GlobalKernalReplace  //force kernal enable on all PRG launches, regardless of Special IO settings
     #define Fab04_DebugSignals         //For debug only
  #endif
+@@ -38,7 +39,7 @@
+   // #define DbgSignalSenseReset
+ 
+ 
+-#define TRVersion              "0.9"    //*VERSION*
++#define TRVersion              "0.9.0.1"    //*VERSION*  (stock 0.9 + VDrive rev 1)
+ #ifdef Fab04_Features
+    char strVersionNumber[] = "TeensyROM+ v" TRVersion; 
+ #else
 @@ -132,7 +133,8 @@ enum InternalEEPROMmap
     eepAdMIDISettings2 = 4233, // (1:uint8_t)    MIDI Settings reg#2, see RegMIDISettingsMasks2
     eepAdPwrUpDefaults3= 4234, // (1:uint8_t)    power up default reg3, see bit mask defs RegPowerUpDefaultMasks3
