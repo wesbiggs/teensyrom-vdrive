@@ -208,3 +208,17 @@ The TR+ author suggested avoiding a KERNAL replacement: point the KERNAL's RAM v
 * **Interrupts.** While Ultimax is banked in, the IRQ/NMI/reset vectors come from ROMH, so the stub must disable interrupts or the image must carry its own trampolines.
 
 **Possible follow-up (not started):** a reduced "plain TR" mode for the vectored calls only, reusing the `d64/` engine and mailbox registers unchanged, with only a new 6502 side. Whether it is viable depends on whether the original TR can re-apply the vectors after a reset or RESTORE without patching ROM.
+
+## 20. Changing the disk from outside while a program runs (remote control; done on the host, builds with the real toolchain, not on hardware)
+The C64 side has no way to ask for a different disk without BASIC, and an on-screen menu would have to save and restore the VIC state, so the choice is made over the TeensyROM's remote-control port (TCP 2112, also the USB serial port) instead.
+
+**Commands** (`SerUSBIO.ino`, tokens in `Common_Defs.h`; both sit in the "allowed while busy" switch of `ProcessCommand()`, because every other command answers `Busy!` while an IO handler other than the TR menu runs):
+* `VDriveGetToken 0x64E3`: `Drive(1)` (USB = 0, SD = 1, as the file commands). Reply `AckToken` + one JSON line `{"unit","storage","device","fixed","mounted","writable","path","cwd"}`, or `FailToken` + a text line.
+* `VDriveSetToken 0x64E4`: `Drive(1)`, then a null-terminated image path on that card (`/dir/IMAGE.D64`; empty = unmount). Reply as for get (the state after the change).
+* Both fail with "VDrive is not running" unless the VDrive (or VDrive+SwiftLink) handler is active. File names come back lower-cased (names go through PETSCII), folder names as they were given; FAT does not care.
+
+**Quiet point.** The set command runs in the main loop between polls, so it never splits a mailbox command. It then waits (calling `PollingHndlr_VDrive()` itself, so the C64 keeps being answered) until `VD_Quiet()`: 40 ms without a mailbox command and no open bus transaction or fast LOAD/SAVE, or 1 s without any mailbox activity at all (whatever was open has been abandoned). After 3 s without a quiet moment it gives up with "C64 is busy with the drive". A missing or non-image path is rejected *before* anything is touched, so a typo leaves the current disk mounted; a mount that fails after the check puts the previous image back.
+
+**What the swap does.** It is `CD:` for the unit: `vdrive_attach()` closes every channel on the unit and resets the status channel to `00, OK`. The channel pool lives on the Teensy, so nothing has to be cleaned up on the 6502; a program that keeps a file open across a swap gets errors on it, as with a real drive. The new mount is written to the `/.vdrive` sidecar like any other.
+
+**Not done:** a firmware-to-6502 "disk changed" flag or generation counter (nothing on the C64 side needs it yet), listing images over the remote port while a program runs (the file commands are still refused as busy), and the Alt-button/freezer integration. Client: `trvdrive` in the `teensyrom-rcp` tools.

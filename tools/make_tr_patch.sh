@@ -8,10 +8,10 @@ C=Source/Teensy/MinimalBoot/Common
 W="$(mktemp -d)"; trap 'rm -rf "$W"' EXIT
 mkdir -p "$W/$C/IO_Handlers"
 for f in Common_Defs.h Menu_Regs.h IOHandlers.h IO_Handlers/StatusFunctions.c; do cp "$TR/$C/$f" "$W/$C/$f"; done
-mkdir -p "$W/Source/Teensy"; cp "$TR/Source/Teensy/Teensy.ino" "$TR/Source/Teensy/IOHandlers.ino" "$W/Source/Teensy/"
+mkdir -p "$W/Source/Teensy"; cp "$TR/Source/Teensy/Teensy.ino" "$TR/Source/Teensy/IOHandlers.ino" "$TR/Source/Teensy/SerUSBIO.ino" "$W/Source/Teensy/"
 cd "$W"; git init -q; git add -A; git -c user.name=x -c user.email=x@x commit -qm base
 
-python3 -I - "$C" "$HERE/firmware/REV" <<'PY'
+python3 -I - "$C" "$HERE/firmware/REV" "$HERE/firmware/vdrive_remote.inc" <<'PY'
 import sys
 C = sys.argv[1]
 def edit(path, old, new):
@@ -29,6 +29,19 @@ vd_version = f"{base}.{rev}" if base.count(".") >= 2 else f"{base}.0.{rev}"   # 
 edit(f"{C}/Common_Defs.h",
      f'#define TRVersion              "{base}"    //*VERSION*',
      f'#define TRVersion              "{vd_version}"    //*VERSION*  (stock {base} + VDrive rev {rev})')
+edit(f"{C}/Common_Defs.h",
+     "#define FWFullToken       0x64E2  // Full firmware response\n",
+     "#define FWFullToken       0x64E2  // Full firmware response\n"
+     "#define VDriveGetToken    0x64E3  // VDrive: read what a unit has mounted\n"
+     "#define VDriveSetToken    0x64E4  // VDrive: mount an image on a unit / unmount\n")
+edit("Source/Teensy/SerUSBIO.ino",
+     "      case FWCheckToken: //Check firmware type\n         SendU16(FWFullToken);\n         return;   \n",
+     "      case FWCheckToken: //Check firmware type\n         SendU16(FWFullToken);\n         return;   \n"
+     "#ifdef Fab04_VDrive\n      case VDriveGetToken:  //VDrive disk image of a unit (works while a C64 program runs)\n      case VDriveSetToken:  //VDrive change the disk image of a unit\n"
+     "         VDriveRemoteCommand(TokenVal == VDriveSetToken);\n         return;\n#endif\n")
+edit("Source/Teensy/SerUSBIO.ino",
+     "FLASHMEM bool ReceiveFileName(RegMenuTypes* DriveType, char *FileNamePath)\n",
+     open(sys.argv[3]).read() + "\nFLASHMEM bool ReceiveFileName(RegMenuTypes* DriveType, char *FileNamePath)\n")
 edit(f"{C}/Common_Defs.h",
      "   eepAdNext          = 4235, // Next address to be used\n",
      "   eepAdVDriveDevs    = 4235, // (2:uint8_t x2)  VDrive KERNAL device numbers of the SD / USB units, 0 = default (VD_DEV0/1)\n"

@@ -272,21 +272,23 @@ extern char DriveDirPath[];
 extern volatile uint8_t* IO1;     // defined in IOH_TeensyROM.c, which is included after this file
 
 // path = "/a/b/X.D64" (ASCII, no trailing '*'): folder becomes the unit's cwd, then the image is mounted.
-FLASHMEM static void VD_MountPath(int unit, const char *path)
+FLASHMEM static int VD_MountPath(int unit, const char *path)   // 0 ok, else a DOS error code
 {
    stcVDUnit *u = &vdUnit[unit];
    const char *slash = strrchr(path, '/');
    const char *file = slash ? slash + 1 : path;
    size_t dl = slash ? (size_t)(slash - path) : 0;                 // "/a/b/X.D64" -> cwd "/a/b"; root -> ""
-   if (dl >= VD_CwdLen || !*file) return;
+   if (dl >= VD_CwdLen || !*file) return 33;
    memcpy(u->cwd, path, dl); u->cwd[dl] = 0;
    char pname[VD_CwdLen];                                           // VD_Mount takes PETSCII names
    size_t i = 0;
    for (; file[i] && i + 1 < sizeof pname; i++) pname[i] = (char)VD_ToPetscii(file[i]);
    pname[i] = 0;
    d64_t *d = NULL;
-   if (VD_Mount(NULL, unit, pname, &d) == 0) vdrive_attach(&vio->vd, unit, d, 1);
+   int r = VD_Mount(NULL, unit, pname, &d);
+   if (r == 0) vdrive_attach(&vio->vd, unit, d, 1);
    else u->cwd[0] = 0;
+   return r;
 }
 
 FLASHMEM static void VD_StartupMount(int unit, bool menuUnit)
@@ -379,6 +381,91 @@ FLASHMEM void PollingHndlr_VDrive()
    for (int i = 0; i < 2; i++)
       if (vdUnit[i].dirty && now - vdUnit[i].lastWriteMs > VD_FlushIdleMs && now - lastActivityMs > VD_FlushIdleMs)
          VD_Flush(&vdUnit[i]);
+}
+
+// ---- remote control: the get / set commands on the TCP 2112 / USB serial port (SerUSBIO.ino) ------------------------------
+// Both run in the main loop, between polls, so they never see a half-processed mailbox command. A change of disk waits for a
+// quiet moment first (the C64 may be in the middle of a LOAD or SAVE); VD_Quiet() says when.
+#define VD_QuietMs      40     // no mailbox command for this long, and no LOAD / SAVE / bus transaction open
+#define VD_StaleMs      1000   // ... or nothing at all for this long: whatever was open has been abandoned
+#define VD_SwapWaitMs   3000   // give up waiting for a quiet moment after this long
+
+FLASHMEM static bool VD_Quiet()
+{
+   uint32_t idle = millis() - lastActivityMs;
+   if (idle >= VD_StaleMs) return true;
+   return idle >= VD_QuietMs && !vioHot.pending && vdrive_active(&vio->vd) < 0 && !vio->fl_active && !vio->fs_active;
+}
+
+static bool VD_RemoteReady(int unit)
+{
+   return vio != NULL && vioReady && unit >= 0 && unit <= 1 && vio->vd.unit[unit].present;
+}
+
+// One-line JSON for a unit; returns its length (0 = no such unit or VDrive not running).
+FLASHMEM size_t VDrive_RemoteStatus(int unit, char *out, size_t cap)
+{
+   if (!VD_RemoteReady(unit)) return 0;
+   stcVDUnit *u = &vdUnit[unit];
+   char path[VD_CwdLen + 20];
+   path[0] = 0;
+   if (u->mounted) VD_PathFor(u, u->imgName, path, sizeof path);
+   for (char *p = path; *p; p++) if (*p == '"' || *p == '\\') *p = '?';      // FAT cannot hold either; keep the JSON valid regardless
+   char cwd[VD_CwdLen];
+   strlcpy(cwd, u->cwd, sizeof cwd);
+   for (char *p = cwd; *p; p++) if (*p == '"' || *p == '\\') *p = '?';
+   int n = snprintf(out, cap,
+      "{\"unit\":%d,\"storage\":\"%s\",\"device\":%u,\"fixed\":%u,\"mounted\":%s,\"writable\":%s,\"path\":\"%s\",\"cwd\":\"%s\"}",
+      unit, unit == 0 ? "sd" : "usb", vio->vd.dev[unit], vio->vd.pin[unit], u->mounted ? "true" : "false",
+      (u->mounted && u->d.write) ? "true" : "false", path, cwd[0] ? cwd : "/");
+   return (n > 0 && (size_t)n < cap) ? (size_t)n : 0;
+}
+
+// Select the disk image for a unit: path = "/dir/IMAGE.D64" (ASCII, on that unit's own card), "" = unmount (the folder stays).
+// Waits for a quiet moment (up to VD_SwapWaitMs, polling the mailbox meanwhile), then closes every channel on the unit and
+// mounts, exactly as CD: would. Returns 0, or a DOS error code with a short reason in msg; 1 = no such unit, 2 = not quiet in time.
+FLASHMEM int VDrive_RemoteSet(int unit, const char *path, char *msg, size_t cap)
+{
+   if (!VD_RemoteReady(unit)) { snprintf(msg, cap, "no such drive"); return 1; }
+   stcVDUnit *u = &vdUnit[unit];
+   if (path[0] && path[0] != '/') { snprintf(msg, cap, "path must start with /"); return 33; }
+   if (path[0])   // check the image before disturbing anything: a mistyped path must leave the current disk mounted
+   {
+      File probe = u->fs->open(path, FILE_READ);
+      if (!probe) { snprintf(msg, cap, "file not found"); return 62; }
+      bool bad = probe.isDirectory() || probe.size() < 174848;
+      probe.close();
+      if (bad) { snprintf(msg, cap, "not a disk image"); return 74; }
+   }
+   uint32_t began = millis();
+   while (!VD_Quiet())
+   {
+      if (millis() - began > VD_SwapWaitMs) { snprintf(msg, cap, "C64 is busy with the drive"); return 2; }
+      PollingHndlr_VDrive();           // keep answering the C64 while we wait
+   }
+   if (!path[0])
+   {
+      VD_Unmount(NULL, unit);
+      vdrive_attach(&vio->vd, unit, NULL, 1);
+      vio_publish_devices(vio);
+      msg[0] = 0;
+      return 0;
+   }
+   char oldCwd[VD_CwdLen], oldImg[VD_CwdLen];
+   strlcpy(oldCwd, u->cwd, sizeof oldCwd);
+   strlcpy(oldImg, u->mounted ? u->imgName : "", sizeof oldImg);
+   int r = VD_MountPath(unit, path);
+   if (r)
+   {
+      strlcpy(u->cwd, oldCwd, sizeof u->cwd);                       // put the previous disk back
+      d64_t *d = NULL;
+      if (oldImg[0] && VD_Mount(NULL, unit, oldImg, &d) == 0) vdrive_attach(&vio->vd, unit, d, 1);
+      else vdrive_attach(&vio->vd, unit, NULL, 1);
+      snprintf(msg, cap, "cannot mount (DOS error %d)", r);
+      return r;
+   }
+   msg[0] = 0;
+   return 0;
 }
 
 FASTRUN void IO1Hndlr_VDrive(uint8_t Address, bool R_Wn)

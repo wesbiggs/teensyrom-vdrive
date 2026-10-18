@@ -12,8 +12,8 @@ volatile uint8_t *IO1 = io1_mem;
 char DriveDirPath[128];
 EEPROMStub EEPROM;
 uint8_t g_bus_in, g_bus_out;
-static uint32_t g_ms = 0;
-uint32_t millis() { return g_ms; }
+static uint32_t g_ms = 0, g_tick = 0;               // g_tick > 0: every millis() call advances the clock (for code that waits)
+uint32_t millis() { g_ms += g_tick; return g_ms; }
 static int g_fs_probes = 0;
 bool SDFullInit() { g_fs_probes++; return fs_::exists(SD.root); }
 bool USBFileSystemWait() { g_fs_probes++; return fs_::exists(firstPartition.root); }
@@ -313,6 +313,67 @@ int main(int argc, char **argv)
     EEPROM.m[eepAdVDriveDevs] = 12; EEPROM.m[eepAdVDriveDevs + 1] = 13;
     VDrive_PreStart(); g_scans = 0; call(VD_LISTEN, 12); call(VD_UNLSN);
     check("both fixed: no scan at all", g_scans == 0 && r1(VIO_DEV0) == 12 && r1(VIO_DEV1) == 13);
+
+    // ---- remote control: VDrive_RemoteStatus / VDrive_RemoteSet (the TCP 2112 get / set commands) ----
+    {
+        g_real_drives.clear();
+        EEPROM.m[eepAdVDriveDevs] = 0xFF; EEPROM.m[eepAdVDriveDevs + 1] = 0xFF;
+        fs_::remove(SD.root / ".vdrive"); fs_::remove(firstPartition.root / ".vdrive");
+        IO1[rWRegCurrMenuWAIT] = rmtTeensy; DriveDirPath[0] = 0;
+        VDrive_PreStart();
+        fs_::copy_file(SD.root / "TWO.D71", SD.root / "SUB" / "COPY.D64", fs_::copy_options::overwrite_existing);   // a 1571 image under a .D64 name: the size decides
+        char js[300], msg[64];
+        auto has = [&](int unit, const char *needle) { return VDrive_RemoteStatus(unit, js, sizeof js) > 0 && strstr(js, needle) != nullptr; };
+        check("remote get: SD unit, nothing mounted", has(0, "\"unit\":0,\"storage\":\"sd\",\"device\":8,\"fixed\":0,\"mounted\":false"));
+        check("remote get: USB unit is device 9", has(1, "\"storage\":\"usb\",\"device\":9"));
+        check("remote get: no unit 2", VDrive_RemoteStatus(2, js, sizeof js) == 0 && VDrive_RemoteStatus(-1, js, sizeof js) == 0);
+        check("remote get: output too small is refused, not truncated", VDrive_RemoteStatus(0, js, 20) == 0);
+
+        g_tick = 1;                                           // let the waiting code see time pass
+        check("remote set: mounts an image on SD", VDrive_RemoteSet(0, "/GAME.D64", msg, sizeof msg) == 0 && vdUnit[0].mounted);
+        check("remote get: shows it", has(0, "\"mounted\":true,\"writable\":true,\"path\":\"/game.d64\",\"cwd\":\"/\""));
+        g_tick = 0;
+        int rc = -1;
+        check("... and the C64 can read from it", fast_load(8, "HELLO", &rc) == hello_expect && rc == 0);
+        g_tick = 1;
+
+        check("remote set: unknown image fails with 62 and keeps the current disk", VDrive_RemoteSet(0, "/NOPE.D64", msg, sizeof msg) == 62 && strstr(msg, "not found") && has(0, "/game.d64"));
+        check("remote set: a directory is not an image (74)", VDrive_RemoteSet(0, "/SUB", msg, sizeof msg) == 74 && has(0, "/game.d64"));
+        check("remote set: relative path refused (33)", VDrive_RemoteSet(0, "GAME.D64", msg, sizeof msg) == 33 && has(0, "/game.d64"));
+        check("remote set: no such unit", VDrive_RemoteSet(2, "/GAME.D64", msg, sizeof msg) == 1);
+        check("remote set: no file was created by the failed attempts", !fs_::exists(SD.root / "NOPE.D64"));
+
+        check("remote set: other image in a folder", VDrive_RemoteSet(0, "/SUB/COPY.D64", msg, sizeof msg) == 0 && has(0, "\"path\":\"/SUB/copy.d64\",\"cwd\":\"/SUB\""));
+        check("... the C64 sees the new disk", (g_tick = 0, fast_load(8, "$").find("TWODISK") != std::string::npos));
+        g_tick = 1;
+        { std::ifstream f(SD.root / ".vdrive"); std::string t((std::istreambuf_iterator<char>(f)), {}); check("... and it is the remembered one", t == "/SUB/copy.d64"); }
+        check("remote set: D81 works too", VDrive_RemoteSet(0, "/BIG.D81", msg, sizeof msg) == 0 && vdUnit[0].d.fmt == D64_FMT_D81);
+
+        check("remote set: USB unit", VDrive_RemoteSet(1, "/USB.D64", msg, sizeof msg) == 0 && has(1, "\"path\":\"/usb.d64\"") && has(0, "/big.d81"));
+
+        // quiet point: a mailbox command just happened, so the swap waits at least VD_QuietMs
+        g_tick = 0; call(VD_LISTEN, 8); call(VD_SECOND, 0x6F); call(VD_UNLSN); lastActivityMs = millis();
+        g_tick = 1; uint32_t t0 = g_ms;
+        check("remote set: waits for a quiet moment after C64 activity", VDrive_RemoteSet(0, "/GAME.D64", msg, sizeof msg) == 0 && g_ms - t0 >= VD_QuietMs);
+
+        // a LOAD in progress holds the swap off until it is abandoned (VD_StaleMs), then the open transfer is dropped
+        g_tick = 0; put_name("HELLO"); call(VIO_FLOAD_OPEN, 8, 5); lastActivityMs = millis();
+        check("fast LOAD is open", vio->fl_active);
+        g_tick = 1; t0 = g_ms;
+        check("remote set: a LOAD in progress delays it until the transfer is stale", VDrive_RemoteSet(0, "/SUB/COPY.D64", msg, sizeof msg) == 0 && g_ms - t0 >= VD_StaleMs);
+
+        // an open file channel does not block the swap but is closed by it
+        g_tick = 0; cmd15("CD:/"); cmd15("CD:GAME.D64"); status15();
+        call(VD_LISTEN, 8); call(VD_SECOND, 0xF2); for (char c : std::string("HELLO")) call(VD_CIOUT, (uint8_t)c); call(VD_UNLSN);
+        check("a file channel is open", vdrive_chan_mode(&vio->vd, 0, 2) == 1);
+        g_tick = 1;
+        check("remote set closes the channels on the unit", VDrive_RemoteSet(0, "/SUB/COPY.D64", msg, sizeof msg) == 0 && vdrive_chan_mode(&vio->vd, 0, 2) == 0);
+
+        g_tick = 0; check("the drive status channel is clean after a swap", status15() == "00, OK,00,00\r"); g_tick = 1;
+        check("remote set: empty path unmounts, folder stays, sidecar gone", VDrive_RemoteSet(0, "", msg, sizeof msg) == 0 && !vdUnit[0].mounted && !fs_::exists(SD.root / ".vdrive") && has(0, "\"mounted\":false,\"writable\":false,\"path\":\"\",\"cwd\":\"/SUB\""));
+        g_tick = 0;
+        check("... the C64 lists the host folder again", fast_load(8, "$").find("\"SD:/SUB") != std::string::npos);
+    }
 
     printf("%s\n", fails ? "FAILED" : "ALL OK");
     return fails ? 1 : 0;

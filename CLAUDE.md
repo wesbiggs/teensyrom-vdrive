@@ -42,6 +42,8 @@ Firmware integration and usage: `firmware/README.md`.
   in names (18): `LOAD"$/dir/image.d64"` only lists (selection restored on close), `LOAD"$==path"` selects like `CD`, `UI`/`UJ`/`U9` (status 73), `U1`.. now `31`. A `U0>` number is a *fixed* number now (0 = automatic);
   `vdrive_set_devices()` takes pins. To check on hardware: the scan with a real drive at 8 (SD must become 9; `PEEK(56854)`), a first access that is a
   `LOAD`, the time of the first access, `.d81` mounting on SD, paths.
+* **0.9.0.8 (host-tested, builds with the real toolchain, nothing of it on hardware):** disk changes from outside while a program runs: remote-control commands `0x64E3` (get) / `0x64E4` (set) on TCP 2112, swap at a quiet point
+  (`VDrive_RemoteStatus` / `VDrive_RemoteSet` in `firmware/IOH_VDrive.c`, dispatcher text in `firmware/vdrive_remote.inc`, docs/DESIGN.md 20). No 6502-side flag yet: channels live on the Teensy. Client: `trvdrive` in `../teensyrom-rcp`.
 * Known open risks:
   C128 not supported (see above); `File::seek/read/write/flush` semantics on the
   real SD/USB classes, IO1/IO2 ISR timing, tape (device 1) intentionally broken (its code space was reclaimed).
@@ -77,7 +79,7 @@ build/          generated, git-ignored (kernal images derived from the ROM, libd
 * `make build/kernal-tr.bin STOCK=/path/to/kernal-901227-03.bin` — hardware image (mailbox `$DE00`, window `$DF00`).
   `STOCK` defaults to VICE's bundled ROM under Homebrew. `make build/kernal-banner.bin`, `build/kernal-stock.bin` are bring-up images.
 * `tools/make_tr_patch.sh /path/to/TeensyROM` — regenerate `firmware/teensyrom-vdrive.patch` after changing `firmware/IOH_VDrive.c`
-  or anything in `d64/` (the patch embeds copies of those files). Always re-run it, then `git apply --check` on a clean checkout.
+  or anything in `d64/` (the patch embeds copies of those files). Always re-run it, then `git apply --check` on a clean checkout. Run it against a *pristine* upstream tree (`git archive HEAD` of the TeensyROM checkout), not the owner's already-patched one: its edits assert on unpatched text. It also reads `firmware/vdrive_remote.inc` (the remote-control dispatcher inserted into `SerUSBIO.ino`).
 * Requires: `ca65/ld65` (cc65), VICE (`x64sc`, `c1541`), a C/C++ compiler, Python 3.
 
 ## Gotchas
