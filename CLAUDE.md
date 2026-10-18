@@ -8,7 +8,7 @@ real IEC code, so physical drives keep working. LOAD/SAVE have block-transfer fa
 second, the first free numbers from 8 up: the KERNAL probes the real bus on the first disk access of a run) or fixed from BASIC with
 `OPEN15,8,15,"U0>"+CHR$(n)` (kept in EEPROM, `CHR$(0)` = automatic, no reflash). Names and `CD` take paths: `LOAD"$/GAMES/G.D64",8`.
 
-Full design and per-milestone notes: `DESIGN.md` (sections 1-14, in order of construction). Hardware plan: `docs/BRINGUP.md`.
+Full design and per-milestone notes: `docs/DESIGN.md` (sections 1-19, in order of construction). Hardware plan: `docs/BRINGUP.md`.
 Firmware integration and usage: `firmware/README.md`.
 
 ## Status (read this first)
@@ -38,7 +38,7 @@ Firmware integration and usage: `firmware/README.md`.
   default Special IO. Builds with the real toolchain (`node tools/build-firmware.mjs --target tr-plus`, RAM1 padding unchanged at 12,840). **KERNAL images built before this change (mailbox `$DE00`) no longer match the firmware: rebuild and re-copy
   `kernal-tr.bin`.** Check on hardware: BRINGUP.md stage 8.
 * **0.9.0.7 (host + VICE tested only, nothing of it on hardware):** automatic device numbers by a lazy bus scan (SCANREQ token `$3C`, `bus_scan` in
-  `patches/vdrive.s`, `VIO_SCAN`/`VIO_FREE`, `DEV0`/`DEV1` registers `$DE16/$DE17`; DESIGN.md 16), `.d71`/`.d81` images (17), paths in `CD` and
+  `patches/vdrive.s`, `VIO_SCAN`/`VIO_FREE`, `DEV0`/`DEV1` registers `$DE16/$DE17`; docs/DESIGN.md 16), `.d71`/`.d81` images (17), paths in `CD` and
   in names (18): `LOAD"$/dir/image.d64"` only lists (selection restored on close), `LOAD"$==path"` selects like `CD`, `UI`/`UJ`/`U9` (status 73), `U1`.. now `31`. A `U0>` number is a *fixed* number now (0 = automatic);
   `vdrive_set_devices()` takes pins. To check on hardware: the scan with a real drive at 8 (SD must become 9; `PEEK(56854)`), a first access that is a
   `LOAD`, the time of the first access, `.d81` mounting on SD, paths.
@@ -99,7 +99,7 @@ build/          generated, git-ignored (kernal images derived from the ROM, libd
 * The KERNAL stubs write `$A5-$A7` (vcall) and `$A3/$A4` (fast paths); these are serial-bus scratch bytes, free outside bit-banging. Nothing else in
   zero page is free once a user program runs (the bus scan keeps its state on the stack).
 * **The mailbox is not live during BASIC init:** the TeensyROM's own IO1 handler runs until the program has loaded, so nothing may call the mailbox at reset
-  (the first design put the scan in the reset routine; it moved to the first transaction, see DESIGN.md 16). A probe must be `LISTEN` + `SECOND`: with any
+  (the first design put the scan in the reset routine; it moved to the first transaction, see docs/DESIGN.md 16). A probe must be `LISTEN` + `SECOND`: with any
   drive on the bus `LISTEN` alone never fails.
 * The device-number model: `pin[]` (user, EEPROM) and `dev[]` (current, 0 = none). Tests that call `vdrive_set_devices()` / `VIO.set_devices()` set pins.
   The Teensy glue calls `vio_arm_scan()` after attaching the units; leave it out in tests that do not want the SCANREQ answer.
