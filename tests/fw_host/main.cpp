@@ -1,3 +1,4 @@
+#include <fstream>
 // Host test for firmware/IOH_VDrive.c: drives it exactly like the 6502 would, through the
 // IO1/IO2 handlers (the ISR entry points) and the polling handler.
 #include "stub.h"
@@ -181,6 +182,7 @@ int main(int argc, char **argv)
 
     // ---- image opened in the TR menu is mounted at launch (DriveDirPath ends in '*') ----
     EEPROM.m[eepAdVDriveDevs] = 0xFF; EEPROM.m[eepAdVDriveDevs + 1] = 0xFF;
+    fs_::remove(SD.root / ".vdrive"); fs_::remove(firstPartition.root / ".vdrive");     // forget everything remembered so far
     IO1[rWRegCurrMenuWAIT] = rmtSD; strcpy(DriveDirPath, "/SUB/INNER.D64*");
     VDrive_PreStart();
     check("menu image on SD auto-mounted on unit 0 in its folder", vdUnit[0].mounted && !vdUnit[1].mounted && strcmp(vdUnit[0].cwd, "/SUB") == 0 && vio->vd.unit[0].disk);
@@ -189,15 +191,32 @@ int main(int argc, char **argv)
     IO1[rWRegCurrMenuWAIT] = rmtUSBDrive; strcpy(DriveDirPath, "/USB.D64*");
     VDrive_PreStart();
     check("menu image on USB auto-mounted on unit 1", vdUnit[1].mounted && !vdUnit[0].mounted && fast_load(9, "$").find("USBDISK") != std::string::npos);
-    IO1[rWRegCurrMenuWAIT] = rmtSD; strcpy(DriveDirPath, "/SUB");                  // plain folder: nothing to mount
+    IO1[rWRegCurrMenuWAIT] = rmtSD; strcpy(DriveDirPath, "/GONE.D64*");
     VDrive_PreStart();
-    check("plain directory path mounts nothing", !vdUnit[0].mounted && !vdUnit[1].mounted);
-    strcpy(DriveDirPath, "/GONE.D64*");
+    check("missing image: no mount, no stray cwd, no file created", !vdUnit[0].mounted && vdUnit[0].cwd[0] == 0 && !fs_::exists(SD.root / "GONE.D64"));
+    check("... the USB unit still restores its own remembered image", vdUnit[1].mounted);
+
+    // ---- remembered mounts (/.vdrive sidecar on each unit's own card) ----
+    fs_::remove(SD.root / ".vdrive"); fs_::remove(firstPartition.root / ".vdrive");
+    IO1[rWRegCurrMenuWAIT] = rmtTeensy; strcpy(DriveDirPath, "/");
+    cmd15("CD:SUB"); cmd15("CD:INNER.D64"); status15();                               // fresh unit 0 state after the last PreStart
+    check("a mount writes the dot-file sidecar", fs_::exists(SD.root / ".vdrive"));
+    { std::ifstream f(SD.root / ".vdrive"); std::string t((std::istreambuf_iterator<char>(f)), {}); check("sidecar holds the image path", t == "/sub/inner.d64"); }
+    check("sidecar is not in the host listing", (cmd15("CD:_"), fast_load(8, "$").find(".VDRIVE") == std::string::npos));
+    check("unmounting removes the sidecar", !fs_::exists(SD.root / ".vdrive"));
+    cmd15("CD:/"); cmd15("CD:GAME.D64"); status15();
+    VDrive_PreStart();                                                                  // power cycle, launched from a non-disk menu
+    check("restart re-mounts the remembered SD image", vdUnit[0].mounted && vdUnit[0].cwd[0] == 0 && fast_load(8, "$").find("GAMEDISK") != std::string::npos);
+    check("... and the USB unit has none (never mounted since reset)", !vdUnit[1].mounted);
+    IO1[rWRegCurrMenuWAIT] = rmtSD; strcpy(DriveDirPath, "/SUB/INNER.D64*");
     VDrive_PreStart();
-    check("missing image: no mount, no stray cwd", !vdUnit[0].mounted && vdUnit[0].cwd[0] == 0 && !fs_::exists(SD.root / "GONE.D64"));
-    IO1[rWRegCurrMenuWAIT] = rmtTeensy; strcpy(DriveDirPath, "/GAME.D64*");
+    check("a menu image beats the remembered one, and becomes the remembered one", strcmp(vdUnit[0].cwd, "/SUB") == 0 && vdUnit[0].mounted);
+    IO1[rWRegCurrMenuWAIT] = rmtTeensy;
     VDrive_PreStart();
-    check("other menu source: nothing mounted", !vdUnit[0].mounted);
+    check("... on the following restart too", strcmp(vdUnit[0].cwd, "/SUB") == 0 && vdUnit[0].mounted);
+    fs_::remove(SD.root / "SUB" / "INNER.D64");
+    VDrive_PreStart();
+    check("remembered image deleted: starts unmounted, cwd reset", !vdUnit[0].mounted && vdUnit[0].cwd[0] == 0 && !fs_::exists(SD.root / ".vdrive"));
 
     printf("%s\n", fails ? "FAILED" : "ALL OK");
     return fails ? 1 : 0;

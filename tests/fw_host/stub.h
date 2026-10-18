@@ -45,6 +45,8 @@ struct File {
 
 struct FS {
     fs_::path root;
+    bool exists(const char *path) { return fs_::exists(root / (path[0] == '/' ? path + 1 : path)); }
+    bool remove(const char *path) { return fs_::remove(root / (path[0] == '/' ? path + 1 : path)); }
     File open(const char *path, int mode = FILE_READ) {
         File r; fs_::path p = root / (path[0] == '/' ? path + 1 : path);
         if (!fs_::exists(p)) {

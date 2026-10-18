@@ -102,6 +102,24 @@ FLASHMEM static void VD_Flush(stcVDUnit *u)
    if (u->mounted && u->dirty) { u->img.flush(); u->dirty = false; }
 }
 
+// ---- remembered mount: "/.vdrive" on each unit's own file system holds the last mounted image's path --------
+// Dot-named, so the TR menu (0.9+) and our own host listing hide it. Written on every successful mount, removed on unmount.
+#define VD_Sidecar "/.vdrive"
+
+FLASHMEM static void VD_SidecarClear(stcVDUnit *u)
+{
+   if (u->fs->exists(VD_Sidecar)) u->fs->remove(VD_Sidecar);
+}
+
+FLASHMEM static void VD_SidecarSave(stcVDUnit *u, const char *path)
+{
+   VD_SidecarClear(u);                                   // FILE_WRITE appends: start from an empty file
+   File f = u->fs->open(VD_Sidecar, FILE_WRITE);
+   if (!f) return;
+   f.write(path, strlen(path));
+   f.close();
+}
+
 // ---- host services for vdrive.c (CD:, host directory listing) --------------------------------
 FLASHMEM static void VD_Unmount(void *ctx, int unit)
 {
@@ -109,6 +127,7 @@ FLASHMEM static void VD_Unmount(void *ctx, int unit)
    VD_Flush(u);
    if (u->mounted) u->img.close();
    u->mounted = false;
+   VD_SidecarClear(u);                                   // an explicit unmount forgets the image (a new mount re-writes it)
 }
 
 FLASHMEM static int VD_Mount(void *ctx, int unit, const char *name, d64_t **out)
@@ -132,6 +151,7 @@ FLASHMEM static int VD_Mount(void *ctx, int unit, const char *name, d64_t **out)
    u->d.write = writable ? VD_WriteSector : NULL;
    u->mounted = true; u->dirty = false;
    *out = &u->d;
+   VD_SidecarSave(u, path);
    Printf_dbg("VDrive %d: mounted %s%s\n", unit + 8, path, writable ? "" : " (read-only)");
    return 0;
 }
@@ -203,24 +223,21 @@ FLASHMEM static void VD_LoadDevices()
    vdrive_set_devices(&vio->vd, d0, d1);
 }
 
-// ---- auto-mount of the disk image opened in the TeensyROM menu --------------------------------
+// ---- mount at start-up: the image opened in the TeensyROM menu, else the one remembered in the sidecar ------------------
 // Opening a .d64 in the menu makes DriveDirPath "<dir>/<image>.d64*" (trailing '*' = inside an image). When a program is
-// launched from there, mount that image on the unit of the same storage (SD = unit 0, USB = unit 1) so the program's own
-// LOAD from device 8/9 finds its files.
+// launched from there, that image is mounted on the unit of the same storage (SD = unit 0, USB = unit 1) so the program's own
+// LOAD from device 8/9 finds its files. Any other launch re-mounts what the unit had mounted last.
 extern char DriveDirPath[];
 extern volatile uint8_t* IO1;     // defined in IOH_TeensyROM.c, which is included after this file
-FLASHMEM static void VD_AutoMount(int unit, const char *menuPath)
+
+// path = "/a/b/X.D64" (ASCII, no trailing '*'): folder becomes the unit's cwd, then the image is mounted.
+FLASHMEM static void VD_MountPath(int unit, const char *path)
 {
-   size_t n = strlen(menuPath);
-   if (n < 2 || menuPath[n - 1] != '*' || !vio->vd.unit[unit].present) return;
-   char path[VD_CwdLen + 20];
-   if (n - 1 >= sizeof path) return;
-   memcpy(path, menuPath, n - 1); path[n - 1] = 0;
-   char *slash = strrchr(path, '/');
-   const char *file = slash ? slash + 1 : path;
    stcVDUnit *u = &vdUnit[unit];
+   const char *slash = strrchr(path, '/');
+   const char *file = slash ? slash + 1 : path;
    size_t dl = slash ? (size_t)(slash - path) : 0;                 // "/a/b/X.D64" -> cwd "/a/b"; root -> ""
-   if (dl >= VD_CwdLen) return;
+   if (dl >= VD_CwdLen || !*file) return;
    memcpy(u->cwd, path, dl); u->cwd[dl] = 0;
    char pname[VD_CwdLen];                                           // VD_Mount takes PETSCII names
    size_t i = 0;
@@ -229,6 +246,30 @@ FLASHMEM static void VD_AutoMount(int unit, const char *menuPath)
    d64_t *d = NULL;
    if (VD_Mount(NULL, unit, pname, &d) == 0) vdrive_attach(&vio->vd, unit, d, 1);
    else u->cwd[0] = 0;
+}
+
+FLASHMEM static void VD_StartupMount(int unit, bool menuUnit)
+{
+   stcVDUnit *u = &vdUnit[unit];
+   if (!vio->vd.unit[unit].present) return;
+   char path[VD_CwdLen + 20];
+   if (menuUnit)
+   {
+      size_t n = strlen(DriveDirPath);
+      if (n >= 2 && DriveDirPath[n - 1] == '*' && n < sizeof path)
+      {
+         memcpy(path, DriveDirPath, n - 1); path[n - 1] = 0;
+         VD_MountPath(unit, path);
+         return;
+      }
+   }
+   File f = u->fs->open(VD_Sidecar, FILE_READ);
+   if (!f) return;
+   int n = f.read(path, sizeof path - 1);
+   f.close();
+   if (n <= 0) return;
+   path[n] = 0;
+   VD_MountPath(unit, path);
 }
 
 // ---- handler ---------------------------------------------------------------------------------
@@ -262,8 +303,8 @@ FLASHMEM void VDrive_PreStart()
    vdUnit[1].fs = &firstPartition;
    vdrive_attach(&vio->vd, 0, NULL, SDFullInit());
    vdrive_attach(&vio->vd, 1, NULL, USBFileSystemWait());
-   if (IO1[rWRegCurrMenuWAIT] == rmtSD) VD_AutoMount(0, DriveDirPath);
-   else if (IO1[rWRegCurrMenuWAIT] == rmtUSBDrive) VD_AutoMount(1, DriveDirPath);
+   VD_StartupMount(0, IO1[rWRegCurrMenuWAIT] == rmtSD);
+   VD_StartupMount(1, IO1[rWRegCurrMenuWAIT] == rmtUSBDrive);
    vioReady = true;                 // only now may the bus handlers answer
    Serial.printf("VDrive: dev %d (SD) %s, dev %d (USB) %s\n",
                  vio->vd.dev[0], vio->vd.unit[0].present ? "ready" : "absent",

@@ -27,7 +27,7 @@ LOAD"$",8 : LIST               directory of the image;  LOAD"NAME",8,1   SAVE"@0
 OPEN15,8,15,"S:OLD*"           scratch;  "N:NAME,ID" format;  "R:NEW=OLD" rename
 ```
 
-Opening a .d64 in the TeensyROM menu and launching a program from it mounts that image automatically on device 8 (SD) or 9 (USB), so the program's own LOADs find its files; `CD:_` unmounts it.
+Opening a .d64 in the TeensyROM menu and launching a program from it mounts that image automatically on device 8 (SD) or 9 (USB), so the program's own LOADs find its files; `CD:_` unmounts it. The last mounted image of each drive is also remembered in a hidden `/.vdrive` file on that card and mounted again at the next start (any unmount forgets it).
 Device 9 works the same on the USB drive. Any other device number uses the real IEC bus untouched.
 Supported: LOAD/SAVE (fast path, ~255 B per mailbox transaction), VERIFY and OPEN/PRINT#/INPUT# (byte path),
 PRG/SEQ/USR, wildcards, `@0:` replace, error channel, directory with `$:pattern`.

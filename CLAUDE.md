@@ -36,9 +36,12 @@ Firmware integration and usage: `firmware/README.md`.
   C128 not supported (see above); `File::seek/read/write/flush` semantics on the
   real SD/USB classes, IO1/IO2 ISR timing, tape (device 1) intentionally broken (its code space was reclaimed).
 
-* **Auto-mount (firmware 0.9.0.2, host-tested only):** if a program is launched from inside a `.d64` opened in the TR menu
+* **Auto-mount (firmware 0.9.0.2, host-tested only; remembered mounts are 0.9.0.3 and also host-only):** if a program is launched from inside a `.d64` opened in the TR menu
   (`DriveDirPath` ends in `*`, menu source SD/USB), `VDrive_PreStart()` mounts that image on the matching unit (SD=8, USB=9) with its
   folder as the `CD:` directory. Not yet checked on hardware.
+* **Remembered mounts (0.9.0.3):** each unit keeps `/.vdrive` (dot-named, so TR 0.9+ and our listing hide it) on its own card, holding the last
+  mounted image path. Written on every successful mount, removed on any unmount (`CD:_`, `CD:/`), read in `VDrive_PreStart()` when the
+  launch did not come from a disk image on that unit. A missing/invalid image just starts unmounted. Not yet checked on hardware.
 
 ## Layout
 ```
@@ -93,9 +96,7 @@ build/          generated, git-ignored (kernal images derived from the ROM, libd
 2. **Create new images + remember mounts** (agreed design, not started):
    * With nothing mounted, `N:FILE.D64,ID` creates a blank 35-track image on the host file system and mounts it (glue + `vdrive.c`
      `N` command; today `N` only formats the mounted disk, and nothing creates a `.d64` file).
-   * Persist the last mounted image path per unit in a small sidecar file on the card and re-mount at start-up (EEPROM only has ~49
-     reserved bytes — not enough for paths). Tests: mount/create via the host-op callbacks in `tests/test_vio.py` and the stub
-     filesystem in `tests/fw_host/`.
+   * (Remembering mounts in a `/.vdrive` sidecar is done, see Status.)
 3. **BASIC utility** (~40 lines, kept as `.bas` text and converted with `petcat` in the Makefile): list the current directory, pick by
    number (mount an image, open a folder, `..`), "new image", "unmount". No menu or KERNAL changes needed.
 4. **TeensyROM menu integration** (last, only if the BASIC utility feels clumsy): a `Shift-D` hotkey like the existing `Shift-K`
