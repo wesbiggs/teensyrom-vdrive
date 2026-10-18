@@ -53,6 +53,20 @@ VD_COLD static vd_chan_t *chan_find(vd_unit_t *u, int ch)
     return i ? &u->slot[i - 1] : NULL;
 }
 
+VD_COLD static void close_all(vd_unit_t *u);
+
+/* Undo the temporary selection of a listing by path: the folder / image that was selected before is selected again. */
+VD_COLD static void restore_selection(vd_unit_t *u)
+{
+    u->restore_ch = 0;
+    close_all(u);                                                 /* anything opened on the temporary image meanwhile goes with it */
+    vdrive_t *v = u->owner;
+    d64_t *d = NULL;
+    u->disk = NULL;
+    if (v && v->host.pop) v->host.pop(v->host.ctx, u->index, &d);
+    u->disk = d;
+}
+
 VD_COLD static void chan_close(vd_unit_t *u, int ch)
 {
     vd_chan_t *c = chan_find(u, ch);
@@ -63,6 +77,7 @@ VD_COLD static void chan_close(vd_unit_t *u, int ch)
     }
     c->mode = 0;
     u->slot_of[ch] = 0;
+    if (u->restore_ch == ch + 1) restore_selection(u);
 }
 
 VD_COLD static vd_chan_t *chan_alloc(vd_unit_t *u, int ch)
@@ -244,6 +259,19 @@ VD_COLD static void open_dir_pat(vdrive_t *v, int unit, vd_unit_t *u, int ch, co
     if (d->llen == 0) { chan_close(u, ch); set_err(u, 74, 0, 0); }
 }
 
+/* A listing by path only shows what is there: the folder / image selected before is restored when its channel closes.
+ * begin_temp remembers it (first closing an earlier listing that is still open), end_temp arms the restore for channel ch. */
+VD_COLD static void begin_temp(vdrive_t *v, int unit, vd_unit_t *u)
+{
+    if (u->restore_ch) chan_close(u, u->restore_ch - 1);
+    v->host.push(v->host.ctx, unit);
+}
+VD_COLD static void end_temp(vd_unit_t *u, int ch)
+{
+    if (chan_find(u, ch)) u->restore_ch = (uint8_t)(ch + 1);     /* restored by that channel's close */
+    else restore_selection(u);                                    /* the listing never opened */
+}
+
 /* "$[n][:]pattern": the directory of the mounted image, or of the current host folder. A pattern with a "/" in it (or, with
  * nothing mounted, ending in an image suffix) is a path: LOAD"$/GAMES/DEMO.D64" mounts the image and lists it,
  * LOAD"$GAMES/" lists that folder, LOAD"$GAMES/DEMO.D64/S*" lists the matching files in the image.
@@ -262,8 +290,13 @@ VD_COLD static void open_dir(vdrive_t *v, int unit, vd_unit_t *u, int ch, const 
     spec[n] = 0;
     char *pat = spec;
     if (force || strchr(spec, '/') || (!u->disk && !strpbrk(spec, "*?") && image_kind(spec))) {
+        int temp = !force && v->host.push && v->host.pop;
+        if (temp) begin_temp(v, unit, u);
         int r = path_walk(v, unit, u, spec, &pat);
-        if (r) { set_err(u, (uint8_t)r, 0, 0); return; }
+        if (r) { set_err(u, (uint8_t)r, 0, 0); if (temp) restore_selection(u); return; }
+        open_dir_pat(v, unit, u, ch, pat);
+        if (temp) end_temp(u, ch);
+        return;
     }
     open_dir_pat(v, unit, u, ch, pat);
 }
@@ -278,10 +311,17 @@ VD_COLD static void chan_open(vdrive_t *v, int unit, vd_unit_t *u, int ch, const
     /* "DIR/IMAGE.D64/FILE" (or a bare "IMAGE.D64" read with nothing mounted): walk there first, the file name is what is left */
     if (strchr(o.name, '/') || (mode == 'R' && !u->disk && image_kind(o.name))) {
         char *rest;
+        int temp = mode == 'R' && v->host.push && v->host.pop;
+        if (temp) begin_temp(v, unit, u);
         int r = path_walk(v, unit, u, o.name, &rest);
-        if (r) { set_err(u, (uint8_t)r, 0, 0); return; }
-        if (!*rest) { open_dir_pat(v, unit, u, ch, ""); return; }            /* it named a folder / image: show what is in it */
-        memmove(o.name, rest, strlen(rest) + 1);
+        if (r) { set_err(u, (uint8_t)r, 0, 0); if (temp) restore_selection(u); return; }
+        if (!*rest) {                                                         /* it named a folder / image: show what is in it, nothing stays selected */
+            open_dir_pat(v, unit, u, ch, "");
+            if (temp) end_temp(u, ch);
+            return;
+        }
+        memmove(o.name, rest, strlen(rest) + 1);                              /* a file through a path: the folder / image stay selected for the program */
+        if (temp) v->host.pop(v->host.ctx, unit, NULL);                       /* (out == NULL: keep the selection, drop the snapshot) */
     }
     if (strlen(o.name) > 16) { set_err(u, 33, 0, 0); return; }
     if (!u->disk) { set_err(u, 74, 0, 0); return; }
@@ -417,6 +457,7 @@ VD_COLD void vdrive_init(vdrive_t *v)
 {
     memset(v, 0, sizeof *v);
     v->act = -1;
+    for (int i = 0; i < 2; i++) { v->unit[i].owner = v; v->unit[i].index = (uint8_t)i; }
     settle(v);
 }
 

@@ -51,6 +51,10 @@ struct stcVDUnit
    d64_t    d;
    bool     mounted;
    bool     dirty;
+   bool     quiet;           // temporary selection for a listing by path: leave the /.vdrive sidecar alone
+   char     imgName[VD_CwdLen];   // PETSCII name the mounted image was opened with (in cwd)
+   char     snapCwd[VD_CwdLen];   // folder / image selected before a listing by path (push / pop)
+   char     snapImg[VD_CwdLen];   // "" = nothing was mounted
    uint32_t lastWriteMs;
    char     cwd[VD_CwdLen];  // "" = root
 };
@@ -112,11 +116,13 @@ FLASHMEM static void VD_Flush(stcVDUnit *u)
 
 FLASHMEM static void VD_SidecarClear(stcVDUnit *u)
 {
+   if (u->quiet) return;
    if (u->fs->exists(VD_Sidecar)) u->fs->remove(VD_Sidecar);
 }
 
 FLASHMEM static void VD_SidecarSave(stcVDUnit *u, const char *path)
 {
+   if (u->quiet) return;
    VD_SidecarClear(u);                                   // FILE_WRITE appends: start from an empty file
    File f = u->fs->open(VD_Sidecar, FILE_WRITE);
    if (!f) return;
@@ -154,10 +160,45 @@ FLASHMEM static int VD_Mount(void *ctx, int unit, const char *name, d64_t **out)
    if (d64_open_size(&u->d, VD_ReadSector, u, size)) { u->img.close(); return 74; }   // format (d64 / d71 / d81) comes from the size
    u->d.write = writable ? VD_WriteSector : NULL;
    u->mounted = true; u->dirty = false;
+   strlcpy(u->imgName, name, sizeof u->imgName);
    *out = &u->d;
    VD_SidecarSave(u, path);
    Printf_dbg("VDrive %d: mounted %s%s\n", unit + 8, path, writable ? "" : " (read-only)");
    return 0;
+}
+
+// A listing by path (LOAD"$/GAMES/G.D64") must not change what is selected: remember folder and image, put them back afterwards.
+FLASHMEM static void VD_Push(void *ctx, int unit)
+{
+   stcVDUnit *u = &vdUnit[unit];
+   strlcpy(u->snapCwd, u->cwd, sizeof u->snapCwd);
+   strlcpy(u->snapImg, u->mounted ? u->imgName : "", sizeof u->snapImg);
+   u->quiet = true;                                       // the sidecar keeps naming the real selection meanwhile
+}
+
+FLASHMEM static int VD_Pop(void *ctx, int unit, d64_t **out)
+{
+   stcVDUnit *u = &vdUnit[unit];
+   if (!out)                                              // keep what the walk selected (a file is being loaded through the path)
+   {
+      u->quiet = false;
+      if (u->mounted)
+      {
+         char path[VD_CwdLen + 20];
+         VD_PathFor(u, u->imgName, path, sizeof path);
+         VD_SidecarSave(u, path);
+      }
+      else VD_SidecarClear(u);
+      return 0;
+   }
+   VD_Unmount(ctx, unit);
+   strlcpy(u->cwd, u->snapCwd, sizeof u->cwd);
+   *out = NULL;
+   int r = 0;
+   if (u->snapImg[0]) r = VD_Mount(ctx, unit, u->snapImg, out);
+   if (r) *out = NULL;
+   u->quiet = false;
+   return r;
 }
 
 FLASHMEM static int VD_ChDir(void *ctx, int unit, const char *name)
@@ -295,10 +336,11 @@ FLASHMEM void VDrive_PreStart()
    memset(&host, 0, sizeof host);
    host.mount = VD_Mount;  host.unmount = VD_Unmount;  host.chdir = VD_ChDir;
    host.dir_open = VD_DirOpen;  host.dir_next = VD_DirNext;  host.save_devices = VD_SaveDevices;
+   host.push = VD_Push;  host.pop = VD_Pop;
    vdrive_set_host(&vio->vd, &host);
    VD_LoadDevices();
 
-   for (int i = 0; i < 2; i++) { vdUnit[i].mounted = false; vdUnit[i].dirty = false; vdUnit[i].cwd[0] = 0; }
+   for (int i = 0; i < 2; i++) { vdUnit[i].mounted = false; vdUnit[i].dirty = false; vdUnit[i].quiet = false; vdUnit[i].cwd[0] = 0; }
    vdUnit[0].fs = &SD;
    vdUnit[1].fs = &firstPartition;
    vdrive_attach(&vio->vd, 0, NULL, SDFullInit());

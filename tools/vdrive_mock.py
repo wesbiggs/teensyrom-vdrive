@@ -130,12 +130,12 @@ def main(kernal, scenario="basic"):
             (workdir / "h.prg").write_bytes(b"\x01\x08" + bytes.fromhex("0b08 0a00 99 22 48 49 22 00 00 00".replace(" ", "")))   # 10 PRINT"HI"
             subprocess.run(["c1541", "-attach", str(sdroot / fn), "-write", str(workdir / "h.prg"), "hello"], check=True, capture_output=True)
         subprocess.run(["c1541", "-format", "vdtest,01", "d64", str(sdroot / "vdtest.d64")], check=True, capture_output=True)
-        hs = {"cwd": sdroot, "disks": [], "entries": [], "i": 0, "saved": []}
+        hs = {"cwd": sdroot, "disks": [], "entries": [], "i": 0, "saved": [], "cur": None, "snap": None}
         def h_mount(ctx, unit, name, out):
             p = hs["cwd"] / name.decode().lower()
             if not p.exists() or p.is_dir(): return 62
-            d = Disk(p.read_bytes()); hs["disks"].append(d); out[0] = ctypes.addressof(d.d); return 0
-        def h_unmount(ctx, unit): pass
+            d = Disk(p.read_bytes()); hs["disks"].append(d); hs["cur"] = d; out[0] = ctypes.addressof(d.d); return 0
+        def h_unmount(ctx, unit): hs["cur"] = None
         def h_chdir(ctx, unit, name):
             n = name.decode().lower()
             if n == "/": hs["cwd"] = sdroot; return 0
@@ -154,6 +154,12 @@ def main(kernal, scenario="basic"):
         cbs.mount = HostStruct.MOUNT(h_mount); cbs.unmount = HostStruct.UNMOUNT(h_unmount); cbs.chdir = HostStruct.CHDIR(h_chdir)
         cbs.dir_open = HostStruct.DIROPEN(h_dir_open); cbs.dir_next = HostStruct.DIRNEXT(h_dir_next)
         cbs.save_devices = HostStruct.SAVEDEV(lambda c, a, b: hs["saved"].append((a, b)))
+        def h_push(ctx, unit): hs["snap"] = (hs["cwd"], hs["cur"])
+        def h_pop(ctx, unit, out):
+            if not out: return 0
+            hs["cwd"], hs["cur"] = hs["snap"]
+            out[0] = ctypes.addressof(hs["cur"].d) if hs["cur"] else None; return 0
+        cbs.push = HostStruct.PUSH(h_push); cbs.pop = HostStruct.POP(h_pop)
         LIB.vdrive_set_host(io.v, ctypes.byref(cbs))
         io.attach(0, disk)
         if scan:
@@ -353,18 +359,23 @@ def main(kernal, scenario="basic"):
         run('RUN\r', "UI= 73 TRVDRIVE V1.0")
         run('NEW\r')
         run('OPEN15,8,15,"CD:/":CLOSE15\r')
-        run('LOAD"$/MOCK.D64",8\r', "SEARCHING FOR $/MOCK.D64")      # mounts the image and lists it
+        run('LOAD"$/MOCK.D64",8\r', "SEARCHING FOR $/MOCK.D64")      # lists the image (mounted only while it is listed)
         run('LIST\r', '0 "MOCKDISK')
+        run('LOAD"$",8\r', "SEARCHING FOR $"); run('LIST\r', '"SD:/')     # nothing stayed selected
         run('LOAD"/MOCK.D64/TEST",8\r', "READY.")                       # a file through a path
         run('LIST\r', '10 PRINT"HI"')
         run('LOAD"BIG.D81",8\r', "FILE NOT FOUND")                      # with an image mounted a bare name is a file inside it
         run('OPEN15,8,15,"CD:_":CLOSE15\r')                                                # nothing mounted: now it is an image to mount,
-        run('LOAD"BIG.D81",8\r', "READY.")                  # and its directory is the "file"
+        run('LOAD"BIG.D81",8\r', "READY.")                  # and its directory is the "file" (listed only, not mounted)
         run('LIST\r', '0 "BIGDISK')
+        run('LOAD"$",8\r', "SEARCHING FOR $"); run('LIST\r', '"SD:/')
+        run('LOAD"$==BIG.D81",8\r', "READY."); run('LIST\r', '0 "BIGDISK')     # $== selects it for good
         run('LOAD"HELLO",8\r', "READY."); run('LIST\r', '10 PRINT"HI"')  # load from the D81 (fast path through the 1581 layout)
         run('NEW\r'); run('10 PRINT"SAVED81"\r'); run('SAVE"S81",8\r', "SAVING S81")
         run('NEW\r'); run('LOAD"S81",8\r', "READY."); run('RUN\r', "SAVED81")
         run('LOAD"$/TWO.D71",8\r', "SEARCHING FOR $/TWO.D71"); run('LIST\r', '0 "TWODISK')
+        run('LOAD"$",8\r', "SEARCHING FOR $"); run('LIST\r', '0 "BIGDISK')    # the D81 is still the selected one
+        run('LOAD"$==TWO.D71",8\r', "READY."); run('LIST\r', '0 "TWODISK')
         run('LOAD"HELLO",8\r', "READY."); run('LIST\r', '10 PRINT"HI"')
         run('LOAD"$/",8\r', "SEARCHING FOR $/"); run('LIST\r', '"SD:/')               # a folder path: the host directory
         run('OPEN15,8,15,"CD:/MOCK.D64":CLOSE15\r')                                       # leave the card as the later tests expect

@@ -112,8 +112,8 @@ Check after each line; keep the trace open.
 | Files vanish after power cycle | write-back flush (250 ms idle) not reached; `File::flush()` semantics on the media |
 | Link error RAM1 | `-DVD_ALLOC_HEAP`, lower `VD_NSLOT`, or move more code to `FLASHMEM` |
 
-## Stage 9 — automatic device numbers, D71/D81, paths (firmware 0.9.0.6, host- and VICE-tested only)
-Build with the new patch (`firmware/REV` 6) and a KERNAL image from the same tree (`make build/kernal-tr.bin`); the image and firmware must match (an old
+## Stage 9 — automatic device numbers, D71/D81, paths (firmware 0.9.0.7, host- and VICE-tested only)
+Build with the new patch (`firmware/REV` 7) and a KERNAL image from the same tree (`make build/kernal-tr.bin`); the image and firmware must match (an old
 image with the new firmware just keeps 8/9 after one ~1 s pause; a new image with the old firmware changes nothing).
 1. No other drive on the bus: `LOAD"$",8` as the first command lists the SD card as before; `PEEK(56854)` is 8 (and `PEEK(56855)` 9 with a stick). Trace:
    `cmd=1` (LISTEN, answered `stat=3c`), `cmd=14`, one or two `cmd=15`, then the original command again. Note how long the first access takes.
@@ -145,6 +145,6 @@ settings and the files on the card.
 | `LOAD"BIG"` 6000 B, wall-clock | |
 | `SAVE` 6000 B, wall-clock | |
 | Mailbox calls per 6000 B load (trace) | expect ~27 |
-| Stage 9 (0.9.0.6: scan, D71/D81, paths) | not run |
+| Stage 9 (0.9.0.7: scan, D71/D81, paths) | not run |
 | Stage 7 items passed (of 9) | owner-verified: 1-6 core path (mount, load small/large, save, verify, error channel, repeated listings). Pending: 7 (USB, device 9), 8 (U0> renumber), 9 (time-out) |
 | Soak: loads without error | |

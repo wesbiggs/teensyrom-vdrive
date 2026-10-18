@@ -41,9 +41,19 @@ typedef struct {
     int  (*dir_open)(void *ctx, int unit, char title[17]);               /* 0 ok */
     int  (*dir_next)(void *ctx, int unit, char name[17], uint32_t *size, int *is_dir); /* 1 entry, 0 end */
     void (*save_devices)(void *ctx, uint8_t pin0, uint8_t pin1);        /* persist after a U0> renumber (0 = automatic) */
+    /* A directory listing by path ($/GAMES/G.D64, $GAMES/) must not change what is selected: push remembers the unit's folder and
+     * mounted image before the walk, pop (when the listing channel closes) goes back; *out = the image to use again (NULL = none).
+     * pop with out == NULL means "keep the new selection": the snapshot is dropped (a file was loaded through the path).
+     * Both optional; without them a listing by path leaves the new folder / image selected. $==path never pops. */
+    void (*push)(void *ctx, int unit);
+    int  (*pop)(void *ctx, int unit, d64_t **out);
 } vd_host_t;
 
+struct vdrive_s;
 typedef struct {
+    struct vdrive_s *owner;     /* back pointer: closing a channel may have to restore the host state */
+    uint8_t  index;             /* this unit's number (0/1) */
+    uint8_t  restore_ch;        /* channel + 1 whose close restores the folder / image selected before a path listing; 0 = none */
     d64_t   *disk;              /* NULL: no image mounted */
     uint8_t  present;           /* device answers on the bus */
     uint8_t  slot_of[16];       /* channel number -> pool slot + 1 (0 = not open) */
@@ -53,7 +63,7 @@ typedef struct {
     uint8_t  err, err_t, err_s; /* DOS status */
 } vd_unit_t;
 
-typedef struct {
+typedef struct vdrive_s {
     vd_host_t host;
     vd_unit_t unit[2];
     uint8_t  dev[2];            /* IEC device number each unit answers to now; 0 = none (not claimed on the bus) */

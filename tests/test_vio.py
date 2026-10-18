@@ -160,8 +160,10 @@ class HostStruct(ctypes.Structure):
     DIRNEXT = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p,
                                ctypes.POINTER(ctypes.c_uint32), ctypes.POINTER(ctypes.c_int))
     SAVEDEV = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_uint8, ctypes.c_uint8)
+    PUSH = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_int)
+    POP = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.POINTER(ctypes.c_void_p))
     _fields_ = [("ctx", ctypes.c_void_p), ("mount", MOUNT), ("unmount", UNMOUNT), ("chdir", CHDIR),
-                ("dir_open", DIROPEN), ("dir_next", DIRNEXT), ("save_devices", SAVEDEV)]
+                ("dir_open", DIROPEN), ("dir_next", DIRNEXT), ("save_devices", SAVEDEV), ("push", PUSH), ("pop", POP)]
 
 
 class HostTests(unittest.TestCase):
@@ -181,14 +183,28 @@ class HostTests(unittest.TestCase):
         self.io.attach(0, None, present=True)
         self.entries = []
 
+        self.cur = None                       # (Disk, name) mounted now
+        self.snap = None
+        self.pops = 0
+
         def mount(ctx, unit, name, out):
             p = self.cwd / name.decode().lower()
             if not p.exists(): return 62
             d = Disk(p.read_bytes()); self.disks[unit] = d
             out[0] = ctypes.addressof(d.d)
+            self.cur = (d, name)
             self.mounted.append(p.name); return 0
 
-        def unmount(ctx, unit): self.unmounted.append(unit)
+        def unmount(ctx, unit): self.unmounted.append(unit); self.cur = None
+
+        def push(ctx, unit): self.snap = (self.cwd, self.cur)
+
+        def pop(ctx, unit, out):
+            if not out: return 0              # keep the new selection
+            self.pops += 1
+            self.cwd, self.cur = self.snap
+            out[0] = ctypes.addressof(self.cur[0].d) if self.cur else None
+            return 0
 
         def chdir(ctx, unit, name):
             n = name.decode().lower()
@@ -210,7 +226,8 @@ class HostTests(unittest.TestCase):
             is_dir[0] = int(p.is_dir()); return 1
 
         self.cb = HostStruct(None, HostStruct.MOUNT(mount), HostStruct.UNMOUNT(unmount), HostStruct.CHDIR(chdir),
-                             HostStruct.DIROPEN(dir_open), HostStruct.DIRNEXT(dir_next), HostStruct.SAVEDEV(lambda c, a, b: None))
+                             HostStruct.DIROPEN(dir_open), HostStruct.DIRNEXT(dir_next), HostStruct.SAVEDEV(lambda c, a, b: None),
+                             HostStruct.PUSH(push), HostStruct.POP(pop))
         LIB.vdrive_set_host(self.io.v, ctypes.byref(self.cb))
 
     def tearDown(self): shutil.rmtree(self.tmp)
@@ -298,12 +315,27 @@ class HostTests(unittest.TestCase):
     def test_load_dollar_path_mounts_the_image_and_lists_it(self):
         rc, addr, d = self.io.fast_load(8, b"$/SUB/INNER.D64")
         self.assertEqual(rc, 0); self.assertIn(b"INNER", d); self.assertNotIn(b'"SD CARD', d)
-        self.assertEqual(self.mounted, ["inner.d64"])
-        self.assertIn(b"INNER", self.io.fast_load(8, b"$")[2])                      # stays mounted afterwards
+        self.assertEqual(self.mounted, ["inner.d64"])                               # it was mounted for the listing ...
+        self.assertIn(b'"SD CARD', self.io.fast_load(8, b"$")[2])                   # ... but nothing stays selected
+        self.assertEqual(self.cwd, self.tmp)
+
+    def test_listing_by_path_restores_what_was_selected(self):
+        self.cmd15(b"CD:SUB"); self.cmd15(b"CD:INNER.D64"); self.status()          # inside sub/inner.d64
+        d = self.io.fast_load(8, b"$/A.D64")[2]; self.assertIn(b"DISKA", d)
+        d = self.io.fast_load(8, b"$")[2]
+        self.assertIn(b"INNER", d); self.assertEqual(self.cwd, self.tmp / "sub")   # back in inner.d64
+        d = self.io.fast_load(8, b"$/")[2]; self.assertIn(b'"SD CARD', d)           # a folder listing too
+        self.assertIn(b"INNER", self.io.fast_load(8, b"$")[2]); self.assertEqual(self.cwd, self.tmp / "sub")
+        d = self.io.fast_load(8, b"$/NOPE/")[0]; self.assertNotEqual(d, 0)         # a failing path restores as well
+        self.assertIn(b"INNER", self.io.fast_load(8, b"$")[2])
+        self.assertEqual(self.pops, 3)
+
+    def test_forced_path_stays_selected(self):
+        self.io.fast_load(8, b"$==SUB/INNER.D64")
+        self.assertIn(b"INNER", self.io.fast_load(8, b"$")[2]); self.assertEqual(self.pops, 0)
 
     def test_load_dollar_bare_image_name_and_wildcards(self):
         self.assertIn(b"DISKA", self.io.fast_load(8, b"$:A.D64")[2])
-        self.cmd15(b"CD:/")
         self.assertEqual(self.mounted, ["a.d64"])
         d = self.io.fast_load(8, b"$:*.D64")[2]                                     # a wildcard is a pattern, never an image to mount
         self.assertIn(b'"A.D64"', d); self.assertIn(b'"B.D64"', d); self.assertIn(b'"SD CARD', d)   # (CBM "*" matches the rest of the name)
@@ -311,7 +343,7 @@ class HostTests(unittest.TestCase):
 
     def test_load_dollar_folder(self):
         d = self.io.fast_load(8, b"$SUB/")[2]
-        self.assertIn(b'"INNER.D64"', d); self.assertIn(b'"SD CARD', d); self.assertEqual(self.cwd, self.tmp / "sub")
+        self.assertIn(b'"INNER.D64"', d); self.assertIn(b'"SD CARD', d); self.assertEqual(self.cwd, self.tmp)      # listed, not entered
         self.assertIn(b"D64", d)
 
     def test_double_equals_forces_a_path(self):
@@ -341,6 +373,7 @@ class HostTests(unittest.TestCase):
     def test_load_image_name_returns_its_directory(self):
         d = self.io.fast_load(8, b"A.D64")[2]
         self.assertIn(b"DISKA", d); self.assertEqual(self.mounted, ["a.d64"])
+        self.assertIn(b'"SD CARD', self.io.fast_load(8, b"$")[2])                   # listed only: not mounted afterwards
 
     def test_load_file_through_a_path(self):
         self.put_file(self.tmp / "sub" / "inner.d64", "HELLO", b"\x01\x08hello world")

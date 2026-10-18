@@ -280,7 +280,11 @@ int main(int argc, char **argv)
     g_ms += 1000; PollingHndlr_VDrive();
     cmd15("CD:/");
     d = fast_load(8, "$/TWO.D71");
-    check("LOAD\"$/TWO.D71\" mounts the D71 and lists it", d.find("TWODISK") != std::string::npos && vdUnit[0].mounted && vdUnit[0].d.fmt == D64_FMT_D71);
+    check("LOAD\"$/TWO.D71\" lists the D71 and leaves nothing mounted", d.find("TWODISK") != std::string::npos && !vdUnit[0].mounted && vdUnit[0].cwd[0] == 0);
+    check("... and the sidecar was not touched by the temporary mount", !fs_::exists(SD.root / ".vdrive"));
+    d = fast_load(8, "$==/TWO.D71");
+    check("LOAD\"$==/TWO.D71\" mounts it for good", d.find("TWODISK") != std::string::npos && vdUnit[0].mounted && vdUnit[0].d.fmt == D64_FMT_D71 && fs_::exists(SD.root / ".vdrive"));
+    cmd15("CD:/");
     check("... 1328 blocks free on a blank 1571 side-by-side count", d.find("BLOCKS FREE") != std::string::npos);
     check("path through an image: LOAD\"/BIG.D81/H81\"", fast_load(8, "/BIG.D81/H81", &rc) == std::string("\x01\x08") + "d81!" && rc == 0 && vdUnit[0].d.fmt == D64_FMT_D81);
     check("a saved D81 file is on the image after the flush (reopen)", (cmd15("CD:/"), cmd15("CD:BIG.D81"), fast_load(8, "SAVED81", &rc).size() == 5002));

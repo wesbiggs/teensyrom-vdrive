@@ -15,7 +15,7 @@ index 6024ccd..2f5cbbf 100644
     else IOHandlerNextInit();
  }
 diff --git a/Source/Teensy/MinimalBoot/Common/Common_Defs.h b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
-index 7feae53..90a78b5 100644
+index 7feae53..8979afc 100644
 --- a/Source/Teensy/MinimalBoot/Common/Common_Defs.h
 +++ b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
 @@ -14,6 +14,7 @@
@@ -31,7 +31,7 @@ index 7feae53..90a78b5 100644
  
  
 -#define TRVersion              "0.9"    //*VERSION*
-+#define TRVersion              "0.9.0.6"    //*VERSION*  (stock 0.9 + VDrive rev 6)
++#define TRVersion              "0.9.0.7"    //*VERSION*  (stock 0.9 + VDrive rev 7)
  #ifdef Fab04_Features
     char strVersionNumber[] = "TeensyROM+ v" TRVersion; 
  #else
@@ -82,10 +82,10 @@ index 88bc75b..26e4a01 100644
        
 diff --git a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c
 new file mode 100644
-index 0000000..09008b2
+index 0000000..d5c957b
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c
-@@ -0,0 +1,365 @@
+@@ -0,0 +1,407 @@
 +// "VDrive" Special IO for TeensyROM+: replacement KERNAL + virtual IEC drive.
 +//   unit 0 = SD card, unit 1 = USB drive. Device numbers are automatic by default: the first free numbers from 8 up
 +//   (the KERNAL probes the real serial bus on the first disk access of a run, see vdrive_io.h), so 8 (SD) and 9 (USB) when
@@ -139,6 +139,10 @@ index 0000000..09008b2
 +   d64_t    d;
 +   bool     mounted;
 +   bool     dirty;
++   bool     quiet;           // temporary selection for a listing by path: leave the /.vdrive sidecar alone
++   char     imgName[VD_CwdLen];   // PETSCII name the mounted image was opened with (in cwd)
++   char     snapCwd[VD_CwdLen];   // folder / image selected before a listing by path (push / pop)
++   char     snapImg[VD_CwdLen];   // "" = nothing was mounted
 +   uint32_t lastWriteMs;
 +   char     cwd[VD_CwdLen];  // "" = root
 +};
@@ -200,11 +204,13 @@ index 0000000..09008b2
 +
 +FLASHMEM static void VD_SidecarClear(stcVDUnit *u)
 +{
++   if (u->quiet) return;
 +   if (u->fs->exists(VD_Sidecar)) u->fs->remove(VD_Sidecar);
 +}
 +
 +FLASHMEM static void VD_SidecarSave(stcVDUnit *u, const char *path)
 +{
++   if (u->quiet) return;
 +   VD_SidecarClear(u);                                   // FILE_WRITE appends: start from an empty file
 +   File f = u->fs->open(VD_Sidecar, FILE_WRITE);
 +   if (!f) return;
@@ -242,10 +248,45 @@ index 0000000..09008b2
 +   if (d64_open_size(&u->d, VD_ReadSector, u, size)) { u->img.close(); return 74; }   // format (d64 / d71 / d81) comes from the size
 +   u->d.write = writable ? VD_WriteSector : NULL;
 +   u->mounted = true; u->dirty = false;
++   strlcpy(u->imgName, name, sizeof u->imgName);
 +   *out = &u->d;
 +   VD_SidecarSave(u, path);
 +   Printf_dbg("VDrive %d: mounted %s%s\n", unit + 8, path, writable ? "" : " (read-only)");
 +   return 0;
++}
++
++// A listing by path (LOAD"$/GAMES/G.D64") must not change what is selected: remember folder and image, put them back afterwards.
++FLASHMEM static void VD_Push(void *ctx, int unit)
++{
++   stcVDUnit *u = &vdUnit[unit];
++   strlcpy(u->snapCwd, u->cwd, sizeof u->snapCwd);
++   strlcpy(u->snapImg, u->mounted ? u->imgName : "", sizeof u->snapImg);
++   u->quiet = true;                                       // the sidecar keeps naming the real selection meanwhile
++}
++
++FLASHMEM static int VD_Pop(void *ctx, int unit, d64_t **out)
++{
++   stcVDUnit *u = &vdUnit[unit];
++   if (!out)                                              // keep what the walk selected (a file is being loaded through the path)
++   {
++      u->quiet = false;
++      if (u->mounted)
++      {
++         char path[VD_CwdLen + 20];
++         VD_PathFor(u, u->imgName, path, sizeof path);
++         VD_SidecarSave(u, path);
++      }
++      else VD_SidecarClear(u);
++      return 0;
++   }
++   VD_Unmount(ctx, unit);
++   strlcpy(u->cwd, u->snapCwd, sizeof u->cwd);
++   *out = NULL;
++   int r = 0;
++   if (u->snapImg[0]) r = VD_Mount(ctx, unit, u->snapImg, out);
++   if (r) *out = NULL;
++   u->quiet = false;
++   return r;
 +}
 +
 +FLASHMEM static int VD_ChDir(void *ctx, int unit, const char *name)
@@ -383,10 +424,11 @@ index 0000000..09008b2
 +   memset(&host, 0, sizeof host);
 +   host.mount = VD_Mount;  host.unmount = VD_Unmount;  host.chdir = VD_ChDir;
 +   host.dir_open = VD_DirOpen;  host.dir_next = VD_DirNext;  host.save_devices = VD_SaveDevices;
++   host.push = VD_Push;  host.pop = VD_Pop;
 +   vdrive_set_host(&vio->vd, &host);
 +   VD_LoadDevices();
 +
-+   for (int i = 0; i < 2; i++) { vdUnit[i].mounted = false; vdUnit[i].dirty = false; vdUnit[i].cwd[0] = 0; }
++   for (int i = 0; i < 2; i++) { vdUnit[i].mounted = false; vdUnit[i].dirty = false; vdUnit[i].quiet = false; vdUnit[i].cwd[0] = 0; }
 +   vdUnit[0].fs = &SD;
 +   vdUnit[1].fs = &firstPartition;
 +   vdrive_attach(&vio->vd, 0, NULL, SDFullInit());
@@ -1416,10 +1458,10 @@ index 0000000..20f3ecc
 +#endif
 diff --git a/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.c b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.c
 new file mode 100644
-index 0000000..20a4f07
+index 0000000..93711d9
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.c
-@@ -0,0 +1,554 @@
+@@ -0,0 +1,595 @@
 +#include "vdrive.h"
 +#include "vd_cfg.h"
 +#include <string.h>
@@ -1475,6 +1517,20 @@ index 0000000..20a4f07
 +    return i ? &u->slot[i - 1] : NULL;
 +}
 +
++VD_COLD static void close_all(vd_unit_t *u);
++
++/* Undo the temporary selection of a listing by path: the folder / image that was selected before is selected again. */
++VD_COLD static void restore_selection(vd_unit_t *u)
++{
++    u->restore_ch = 0;
++    close_all(u);                                                 /* anything opened on the temporary image meanwhile goes with it */
++    vdrive_t *v = u->owner;
++    d64_t *d = NULL;
++    u->disk = NULL;
++    if (v && v->host.pop) v->host.pop(v->host.ctx, u->index, &d);
++    u->disk = d;
++}
++
 +VD_COLD static void chan_close(vd_unit_t *u, int ch)
 +{
 +    vd_chan_t *c = chan_find(u, ch);
@@ -1485,6 +1541,7 @@ index 0000000..20a4f07
 +    }
 +    c->mode = 0;
 +    u->slot_of[ch] = 0;
++    if (u->restore_ch == ch + 1) restore_selection(u);
 +}
 +
 +VD_COLD static vd_chan_t *chan_alloc(vd_unit_t *u, int ch)
@@ -1666,6 +1723,19 @@ index 0000000..20a4f07
 +    if (d->llen == 0) { chan_close(u, ch); set_err(u, 74, 0, 0); }
 +}
 +
++/* A listing by path only shows what is there: the folder / image selected before is restored when its channel closes.
++ * begin_temp remembers it (first closing an earlier listing that is still open), end_temp arms the restore for channel ch. */
++VD_COLD static void begin_temp(vdrive_t *v, int unit, vd_unit_t *u)
++{
++    if (u->restore_ch) chan_close(u, u->restore_ch - 1);
++    v->host.push(v->host.ctx, unit);
++}
++VD_COLD static void end_temp(vd_unit_t *u, int ch)
++{
++    if (chan_find(u, ch)) u->restore_ch = (uint8_t)(ch + 1);     /* restored by that channel's close */
++    else restore_selection(u);                                    /* the listing never opened */
++}
++
 +/* "$[n][:]pattern": the directory of the mounted image, or of the current host folder. A pattern with a "/" in it (or, with
 + * nothing mounted, ending in an image suffix) is a path: LOAD"$/GAMES/DEMO.D64" mounts the image and lists it,
 + * LOAD"$GAMES/" lists that folder, LOAD"$GAMES/DEMO.D64/S*" lists the matching files in the image.
@@ -1684,8 +1754,13 @@ index 0000000..20a4f07
 +    spec[n] = 0;
 +    char *pat = spec;
 +    if (force || strchr(spec, '/') || (!u->disk && !strpbrk(spec, "*?") && image_kind(spec))) {
++        int temp = !force && v->host.push && v->host.pop;
++        if (temp) begin_temp(v, unit, u);
 +        int r = path_walk(v, unit, u, spec, &pat);
-+        if (r) { set_err(u, (uint8_t)r, 0, 0); return; }
++        if (r) { set_err(u, (uint8_t)r, 0, 0); if (temp) restore_selection(u); return; }
++        open_dir_pat(v, unit, u, ch, pat);
++        if (temp) end_temp(u, ch);
++        return;
 +    }
 +    open_dir_pat(v, unit, u, ch, pat);
 +}
@@ -1700,10 +1775,17 @@ index 0000000..20a4f07
 +    /* "DIR/IMAGE.D64/FILE" (or a bare "IMAGE.D64" read with nothing mounted): walk there first, the file name is what is left */
 +    if (strchr(o.name, '/') || (mode == 'R' && !u->disk && image_kind(o.name))) {
 +        char *rest;
++        int temp = mode == 'R' && v->host.push && v->host.pop;
++        if (temp) begin_temp(v, unit, u);
 +        int r = path_walk(v, unit, u, o.name, &rest);
-+        if (r) { set_err(u, (uint8_t)r, 0, 0); return; }
-+        if (!*rest) { open_dir_pat(v, unit, u, ch, ""); return; }            /* it named a folder / image: show what is in it */
-+        memmove(o.name, rest, strlen(rest) + 1);
++        if (r) { set_err(u, (uint8_t)r, 0, 0); if (temp) restore_selection(u); return; }
++        if (!*rest) {                                                         /* it named a folder / image: show what is in it, nothing stays selected */
++            open_dir_pat(v, unit, u, ch, "");
++            if (temp) end_temp(u, ch);
++            return;
++        }
++        memmove(o.name, rest, strlen(rest) + 1);                              /* a file through a path: the folder / image stay selected for the program */
++        if (temp) v->host.pop(v->host.ctx, unit, NULL);                       /* (out == NULL: keep the selection, drop the snapshot) */
 +    }
 +    if (strlen(o.name) > 16) { set_err(u, 33, 0, 0); return; }
 +    if (!u->disk) { set_err(u, 74, 0, 0); return; }
@@ -1839,6 +1921,7 @@ index 0000000..20a4f07
 +{
 +    memset(v, 0, sizeof *v);
 +    v->act = -1;
++    for (int i = 0; i < 2; i++) { v->unit[i].owner = v; v->unit[i].index = (uint8_t)i; }
 +    settle(v);
 +}
 +
@@ -1976,10 +2059,10 @@ index 0000000..20a4f07
 +}
 diff --git a/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.h b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.h
 new file mode 100644
-index 0000000..53d65aa
+index 0000000..928050a
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.h
-@@ -0,0 +1,95 @@
+@@ -0,0 +1,105 @@
 +/* Virtual IEC drive: the Teensy-side state machine behind the KERNAL mailbox.
 + * Units 0/1 = devices 8/9, each backed by an optional mounted d64_t.
 + * One mailbox command in, one result out; no I/O other than the d64 and host callbacks. */
@@ -2023,9 +2106,19 @@ index 0000000..53d65aa
 +    int  (*dir_open)(void *ctx, int unit, char title[17]);               /* 0 ok */
 +    int  (*dir_next)(void *ctx, int unit, char name[17], uint32_t *size, int *is_dir); /* 1 entry, 0 end */
 +    void (*save_devices)(void *ctx, uint8_t pin0, uint8_t pin1);        /* persist after a U0> renumber (0 = automatic) */
++    /* A directory listing by path ($/GAMES/G.D64, $GAMES/) must not change what is selected: push remembers the unit's folder and
++     * mounted image before the walk, pop (when the listing channel closes) goes back; *out = the image to use again (NULL = none).
++     * pop with out == NULL means "keep the new selection": the snapshot is dropped (a file was loaded through the path).
++     * Both optional; without them a listing by path leaves the new folder / image selected. $==path never pops. */
++    void (*push)(void *ctx, int unit);
++    int  (*pop)(void *ctx, int unit, d64_t **out);
 +} vd_host_t;
 +
++struct vdrive_s;
 +typedef struct {
++    struct vdrive_s *owner;     /* back pointer: closing a channel may have to restore the host state */
++    uint8_t  index;             /* this unit's number (0/1) */
++    uint8_t  restore_ch;        /* channel + 1 whose close restores the folder / image selected before a path listing; 0 = none */
 +    d64_t   *disk;              /* NULL: no image mounted */
 +    uint8_t  present;           /* device answers on the bus */
 +    uint8_t  slot_of[16];       /* channel number -> pool slot + 1 (0 = not open) */
@@ -2035,7 +2128,7 @@ index 0000000..53d65aa
 +    uint8_t  err, err_t, err_s; /* DOS status */
 +} vd_unit_t;
 +
-+typedef struct {
++typedef struct vdrive_s {
 +    vd_host_t host;
 +    vd_unit_t unit[2];
 +    uint8_t  dev[2];            /* IEC device number each unit answers to now; 0 = none (not claimed on the bus) */

@@ -37,14 +37,16 @@ OPEN15,8,15,"CD:/GAMES/G.D81"  paths work: absolute (leading /) or relative, fol
 LOAD"$",8 : LIST               directory of the image;  LOAD"NAME",8,1   SAVE"@0:NAME",8   etc.
 OPEN15,8,15,"S:OLD*"           scratch;  "N:NAME,ID" format;  "R:NEW=OLD" rename;  "UI" or "UJ" reset (status 73)
 ```
-Paths also work inside names, so a program can be loaded from an image in one line (the folder and image then stay selected, like `CD`):
+Paths also work inside names. A directory listing by path only *lists*: nothing stays selected afterwards (the folder and image selected
+before are restored when the listing is closed, and `$==` below is what selects):
 ```
-LOAD"$/GAMES/GAME.D64",8       mount the image and list it (so does LOAD"GAME.D64",8 when nothing is mounted)
+LOAD"$/GAMES/GAME.D64",8       list the image (so does LOAD"GAME.D64",8 when nothing is mounted)
 LOAD"$GAMES/",8                list a folder;  LOAD"$/GAMES/GAME.D64/S*",8   only the matching files of the image
-LOAD"GAMES/GAME.D64/START",8,1 mount the image, load a file from it
+LOAD"GAMES/GAME.D64/START",8,1 load a file from the image: this one leaves the folder and image selected, so the program's own LOADs find its files
 ```
-`$==path` (also `$:==path`, `$0:==path`) always means a path, even without a `/` or an image suffix: `LOAD"$==GAMES",8` enters the folder,
-`LOAD"$==DEMO.D64",8` mounts the image, `LOAD"$==/GAMES/DEMO.D64/S*",8` lists matching files of the image, and a folder called `T` or `P` is
+`$==path` (also `$:==path`, `$0:==path`) does the `CD:` and lists: it always means a path (even without a `/` or an image suffix) and the folder / image
+stay selected. `LOAD"$==GAMES",8` enters the folder, `LOAD"$==DEMO.D64",8` mounts the image, `LOAD"$==/GAMES/DEMO.D64/S*",8` mounts it and lists
+matching files, and a folder called `T` or `P` is
 `$==T` (a single `=`, as in `$=T` / `$=P`, stays a CBM listing modifier and is not a path).
 With an image mounted, a bare name is a file inside it; leave with `CD:_` (or use a path containing a `/`).
 
