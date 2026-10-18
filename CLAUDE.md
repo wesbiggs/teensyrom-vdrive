@@ -3,7 +3,7 @@
 ## What this is
 A replacement C64 KERNAL (901227-03 + patches) that the **TeensyROM+ (TR+)** serves live, plus the Teensy-side firmware that makes
 devices 8 (SD) and 9 (USB) behave as IEC drives backed by `.d64` images. KERNAL serial calls for those devices go to a mailbox
-(IO1 `$DE00` registers + a 256-byte IO2 window at `$DF00`) instead of the bit-banged bus; any other device number still uses the real
+(IO1 `$DE10` registers + a 256-byte IO2 window at `$DF00`) instead of the bit-banged bus; any other device number still uses the real
 IEC code, so physical drives keep working. LOAD/SAVE have block-transfer fast paths. Device numbers default to 8/9 and are changed
 from BASIC with `OPEN15,8,15,"U0>"+CHR$(n)` (kept in EEPROM, no reflash).
 
@@ -32,6 +32,10 @@ Firmware integration and usage: `firmware/README.md`.
   (5) `npm run flash` needs the Teensy program button (the TR exposes no soft reboot); copying the `.hex` to the card and pressing
   RETURN on it in the TR menu is easier. (6) The TeensyROM checkout may hold the owner's own edits (`TeensyROM.h`, `old*.hex`): never
   `git stash -u`/`clean` it; restore only the patch-owned files and re-apply `firmware/teensyrom-vdrive.patch`.
+* **VDrive+SwiftLink (firmware 0.9.0.4, host-tested only):** mailbox moved to `$DE10` so the SwiftLink ACIA keeps `$DE00-$DE07`; new Special IO
+  "VDrive+SwiftLink" (`firmware/IOH_VDriveSwift.c`) runs both, and menu programs paired with SwiftLink (CCGMS...) get it when VDrive is the
+  default Special IO. Builds with the real toolchain (`node tools/build-firmware.mjs --target tr-plus`, RAM1 padding unchanged at 12,840). **KERNAL images built before this change (mailbox `$DE00`) no longer match the firmware: rebuild and re-copy
+  `kernal-tr.bin`.** Check on hardware: BRINGUP.md stage 8.
 * Known open risks:
   C128 not supported (see above); `File::seek/read/write/flush` semantics on the
   real SD/USB classes, IO1/IO2 ISR timing, tape (device 1) intentionally broken (its code space was reclaimed).

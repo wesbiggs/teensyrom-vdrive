@@ -3,10 +3,20 @@
 Turns SD (device 8) and USB (device 9) into virtual IEC drives backed by `.d64` images, using the TR+ live
 KERNAL replacement. Status: **host-tested only** — see "What is and isn't verified" at the end.
 
+
+## VDrive+SwiftLink
+`IOH_VDriveSwift.c` ("VDrive+SwiftLink") runs the virtual drive and the SwiftLink / Turbo232 modem together: IO1 `$DE00-$DE0F` goes to the
+SwiftLink handler, `$DE10-$DE15` to the drive mailbox (this is why the mailbox moved off `$DE00`), IO2 to the drive window, the per-cycle
+callback to SwiftLink, and init/polling run both. When the default Special IO (EEPROM) is VDrive or VDrive+SwiftLink, a built-in menu program
+paired with plain SwiftLink (CCGMS, Retromate, Simple SwiftLink Term) is started with this handler instead (`VDriveSwift_Remap()` in
+`KERNALPreStart()` and `IOHandlerSelectInit()`), so launching it does not drop the drive. `.crt` SwiftLink/Turbo232 images are left alone:
+they run with the C64's own KERNAL. The handler pays SwiftLink's normal start-up cost (about 355 KB of RAM2 buffers, drive menu freed), so it
+is a separate Special IO rather than part of "VDrive KERNAL".
+
 ## Install
 1. Build the patched KERNAL from your own 901227-03 dump (the ROM itself is not in this repo):
    ```
-   make build/kernal-tr.bin STOCK=/path/to/kernal-901227-03.bin     # 8192 bytes, mailbox at $DE00, window at $DF00
+   make build/kernal-tr.bin STOCK=/path/to/kernal-901227-03.bin     # 8192 bytes, mailbox at $DE10, window at $DF00
    ```
    Copy it to the SD card or USB drive.
 2. Patch the firmware source (TeensyROM checkout, FW ≥ 0.9 layout) and build the TR+ target:
@@ -14,7 +24,7 @@ KERNAL replacement. Status: **host-tested only** — see "What is and isn't veri
    cd /path/to/TeensyROM && git apply /path/to/c64exp/firmware/teensyrom-vdrive.patch
    ```
    The patch adds `Fab04_VDrive` (enabled next to `Fab04_KernalReplace` in `Common_Defs.h`), a new Special IO
-   `IOH_VDrive` ("VDrive KERNAL"), the library under `MinimalBoot/Common/vdrive/`, and one condition in
+   `IOH_VDrive` ("VDrive KERNAL") and `IOH_VDriveSwift` ("VDrive+SwiftLink", see below), the library under `MinimalBoot/Common/vdrive/`, and one condition in
    `KERNALPreStart()` so the KERNAL image is loaded when this Special IO is selected.
 3. On the C64: in the TR file browser select the image and press `<Shift-K>`; in Settings choose Special IO
    **VDrive KERNAL** (`a`/`A`); then start BASIC (`F2`) or launch a PRG.

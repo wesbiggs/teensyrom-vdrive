@@ -86,7 +86,8 @@ struct stcIOHandlers {
 
 struct EEPROMStub { uint8_t m[8192]; uint8_t read(int a) { return m[a]; } void write(int a, uint8_t v) { m[a] = v; } };
 extern EEPROMStub EEPROM;
-enum { eepAdVDriveDevs = 4235 };
+enum { eepAdVDriveDevs = 4235, eepAdNextIOHndlr = 6 };
+enum { IOH_None = 0, IOH_Swiftlink, IOH_VDrive, IOH_VDriveSwift, IOH_Other };   // only the order within the real enum is irrelevant here
 
 enum { rWRegCurrMenuWAIT = 3, rmtUSBDrive = 0, rmtSD = 1, rmtTeensy = 2 };
 extern volatile uint8_t *IO1;

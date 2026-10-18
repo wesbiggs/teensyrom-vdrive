@@ -19,6 +19,7 @@
 #include "../vdrive/vdrive_io.c"
 
 void VDrive_PreStart();   // called from KERNALPreStart(), see StatusFunctions.c
+uint8_t VDriveSwift_Remap(uint8_t ioh);   // IOH_VDriveSwift.c; used by KERNALPreStart() and IOHandlerSelectInit()
 void InitHndlr_VDrive();
 void PollingHndlr_VDrive();
 void IO1Hndlr_VDrive(uint8_t Address, bool R_Wn);
@@ -36,6 +37,7 @@ stcIOHandlers IOHndlr_VDrive =
   NULL,                     //called at the end of EVERY c64 cycle
 };
 
+#define VD_MboxBase    0x10  // mailbox at $DE10-$DE15: $DE00-$DE07 stays free for the SwiftLink ACIA (see IOH_VDriveSwift.c)
 #define VD_CwdLen      96
 #define VD_FlushIdleMs 250   // write the image back this long after the last sector write
 
@@ -338,6 +340,7 @@ FLASHMEM void PollingHndlr_VDrive()
 
 FASTRUN void IO1Hndlr_VDrive(uint8_t Address, bool R_Wn)
 {
+   Address -= VD_MboxBase;                                 // wraps for offsets below the base
    if (!vioReady || Address >= VIO_NREGS) return;         // not mapped: open bus
    if (R_Wn) DataPortWriteWaitLog(vio_io1_read(&vioHot, Address));
    else

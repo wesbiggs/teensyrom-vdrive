@@ -3,7 +3,8 @@
 ; (the device numbers are configured in the firmware, d64/vd_cfg.h). If not ("not mine"), the displaced original instructions run
 ; and flow continues in the stock routine, so real drives still work.
 ;
-; Mailbox (IO1 on hardware; RAM in the VICE mock build, see Makefile):
+; Mailbox (IO1 on hardware; RAM in the VICE mock build, see Makefile). It sits at $DE10, clear of the
+; SwiftLink/Turbo232 ACIA at $DE00-$DE07 so both can be active together (firmware handler "VDrive+SwiftLink"):
 ;   MBX+0 CMD   W  write triggers the Teensy; sets BUSY at once
 ;   MBX+1 ARG   RW argument (device / secondary / byte)
 ;   MBX+2 DATA  R  result byte (ACPTR)
@@ -13,7 +14,7 @@
 ; Reclaims tape bit-timing code $F8E2-$FB8D (device 1 tape I/O stops working).
 
 .ifndef MBX
-MBX = $DE00
+MBX = $DE10
 .endif
 .ifndef WIN
 WIN = $DF00                 ; 256-byte IO2 window: file names and data blocks

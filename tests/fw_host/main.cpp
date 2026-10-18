@@ -20,11 +20,19 @@ void InitHndlr_KernalReplace() {}
 
 #include "glue.c"          // = firmware/IOH_VDrive.c (with ../vdrive/*.c resolved by the build script)
 
+// stand-ins for IOH_Swiftlink.c: record which entry points the combined handler reaches
+static int g_sw_io1 = 0, g_sw_init = 0, g_sw_poll = 0, g_sw_cycle = 0; static uint8_t g_sw_last = 0xEE;
+void InitHndlr_SwiftLink() { g_sw_init++; }
+void IO1Hndlr_SwiftLink(uint8_t a, bool) { g_sw_io1++; g_sw_last = a; }
+void PollingHndlr_SwiftLink() { g_sw_poll++; }
+void CycleHndlr_SwiftLink(bool) { g_sw_cycle++; }
+#include "IO_Handlers/swift.c"   // = firmware/IOH_VDriveSwift.c
+
 static int fails = 0;
 static void check(const char *what, bool ok) { printf("%s %s\n", ok ? "PASS" : "FAIL", what); if (!ok) fails++; }
 
-static void w1(uint8_t reg, uint8_t v) { g_bus_in = v; IO1Hndlr_VDrive(reg, false); }
-static uint8_t r1(uint8_t reg) { IO1Hndlr_VDrive(reg, true); return g_bus_out; }
+static void w1(uint8_t reg, uint8_t v) { g_bus_in = v; IO1Hndlr_VDrive(VD_MboxBase + reg, false); }     // reg = mailbox offset
+static uint8_t r1(uint8_t reg) { IO1Hndlr_VDrive(VD_MboxBase + reg, true); return g_bus_out; }
 static void ww(uint8_t off, uint8_t v) { g_bus_in = v; IO2Hndlr_VDrive(off, false); }
 static uint8_t wr_(uint8_t off) { IO2Hndlr_VDrive(off, true); return g_bus_out; }
 
@@ -106,6 +114,30 @@ int main(int argc, char **argv)
     // IO1 reads of unmapped registers must not drive the bus
     g_bus_out = 0x77; IO1Hndlr_VDrive(0x40, true);
     check("unmapped IO1 register left alone", g_bus_out == 0x77);
+
+    // the mailbox lives at $DE10; the ACIA range below it is not ours
+    g_bus_out = 0x77; IO1Hndlr_VDrive(0x00, true); IO1Hndlr_VDrive(0x03, true); IO1Hndlr_VDrive(0x07, true); IO1Hndlr_VDrive(0x16, true);
+    check("mailbox is not mapped at $DE00-$DE07 or past $DE15", g_bus_out == 0x77);
+    g_bus_in = 0x42; IO1Hndlr_VDrive(0x00, false);
+    check("a write to $DE00 does not touch the mailbox", vioHot.arg != 0x42 && !vioHot.pending);
+
+    // combined VDrive+SwiftLink handler
+    check("combined entry named and fully wired", strcmp(IOHndlr_VDriveSwift.Name, "VDrive+SwiftLink") == 0 && strlen(IOHndlr_VDriveSwift.Name) < IOHNameLength
+          && IOHndlr_VDriveSwift.IO2Hndlr == IO2Hndlr_VDrive && IOHndlr_VDriveSwift.CycleHndlr == CycleHndlr_SwiftLink);
+    for (int a : {0x00, 0x01, 0x02, 0x03, 0x07, 0x0F}) { g_sw_last = 0xEE; IOHndlr_VDriveSwift.IO1Hndlr(a, true); check("ACIA offset goes to SwiftLink", g_sw_last == a); }
+    g_sw_io1 = 0; g_bus_in = 0x31; IOHndlr_VDriveSwift.IO1Hndlr(VD_MboxBase + VIO_ARG, false);
+    check("mailbox offset goes to VDrive, not SwiftLink", g_sw_io1 == 0 && vioHot.arg == 0x31);
+    IOHndlr_VDriveSwift.InitHndlr(); IOHndlr_VDriveSwift.PollingHndlr();
+    check("init and polling run both handlers", g_sw_init == 1 && g_sw_poll == 1);
+    EEPROM.write(eepAdNextIOHndlr, IOH_None);
+    check("remap: default Special IO not VDrive -> SwiftLink program stays plain", VDriveSwift_Remap(IOH_Swiftlink) == IOH_Swiftlink);
+    EEPROM.write(eepAdNextIOHndlr, IOH_VDrive);
+    check("remap: default VDrive -> SwiftLink program gets the combined handler", VDriveSwift_Remap(IOH_Swiftlink) == IOH_VDriveSwift);
+    EEPROM.write(eepAdNextIOHndlr, IOH_VDriveSwift);
+    check("remap: default VDrive+SwiftLink too", VDriveSwift_Remap(IOH_Swiftlink) == IOH_VDriveSwift);
+    check("remap: other handlers pass through", VDriveSwift_Remap(IOH_Other) == IOH_Other && VDriveSwift_Remap(IOH_None) == IOH_None);
+    EEPROM.write(eepAdNextIOHndlr, 0xFF);
+    memset(EEPROM.m + eepAdVDriveDevs, 0xFF, 2);
 
     // nothing mounted: LOAD"$" lists the SD card
     int rc; std::string d = fast_load(8, "$", &rc);

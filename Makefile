@@ -1,7 +1,7 @@
 # make STOCK=/path/to/kernal-901227-03.bin   (your own dump; not stored here)
 STOCK ?= /opt/homebrew/Cellar/vice/3.10/share/vice/C64/kernal-901227-03.bin
 
-# Hardware image: mailbox at IO1 ($DE00)
+# Hardware image: mailbox at IO1 ($DE10, above the SwiftLink ACIA at $DE00-$DE07)
 build/kernal-tr.bin: $(wildcard patches/*.s) tools/build.py
 	python3 -I tools/build.py $(STOCK) $@
 

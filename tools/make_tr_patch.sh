@@ -8,7 +8,7 @@ C=Source/Teensy/MinimalBoot/Common
 W="$(mktemp -d)"; trap 'rm -rf "$W"' EXIT
 mkdir -p "$W/$C/IO_Handlers"
 for f in Common_Defs.h Menu_Regs.h IOHandlers.h IO_Handlers/StatusFunctions.c; do cp "$TR/$C/$f" "$W/$C/$f"; done
-mkdir -p "$W/Source/Teensy"; cp "$TR/Source/Teensy/Teensy.ino" "$W/Source/Teensy/Teensy.ino"
+mkdir -p "$W/Source/Teensy"; cp "$TR/Source/Teensy/Teensy.ino" "$TR/Source/Teensy/IOHandlers.ino" "$W/Source/Teensy/"
 cd "$W"; git init -q; git add -A; git -c user.name=x -c user.email=x@x commit -qm base
 
 python3 -I - "$C" "$HERE/firmware/REV" <<'PY'
@@ -39,7 +39,7 @@ edit("Source/Teensy/Teensy.ino",
 edit(f"{C}/Menu_Regs.h",
      "   #ifdef Fab04_KernalReplace\n      IOH_KernalReplace,\n   #endif  \n",
      "   #ifdef Fab04_KernalReplace\n      IOH_KernalReplace,\n   #endif  \n"
-     "   #ifdef Fab04_VDrive\n      IOH_VDrive,\n   #endif  \n")
+     "   #ifdef Fab04_VDrive\n      IOH_VDrive,\n      IOH_VDriveSwift,\n   #endif  \n")
 edit(f"{C}/IOHandlers.h",
      '   #ifdef Fab04_KernalReplace\n      #include "IO_Handlers/IOH_KernalReplace.c"\n   #endif    \n',
      '   #ifdef Fab04_KernalReplace\n      #include "IO_Handlers/IOH_KernalReplace.c"\n   #endif    \n'
@@ -47,13 +47,25 @@ edit(f"{C}/IOHandlers.h",
 edit(f"{C}/IOHandlers.h",
      "   #ifdef Fab04_KernalReplace\n      &IOHndlr_KernalReplace,      //IOH_KernalReplace,\n   #endif  \n",
      "   #ifdef Fab04_KernalReplace\n      &IOHndlr_KernalReplace,      //IOH_KernalReplace,\n   #endif  \n"
-     "   #ifdef Fab04_VDrive\n      &IOHndlr_VDrive,             //IOH_VDrive,\n   #endif  \n")
+     "   #ifdef Fab04_VDrive\n      &IOHndlr_VDrive,             //IOH_VDrive,\n      &IOHndlr_VDriveSwift,        //IOH_VDriveSwift,\n   #endif  \n")
+edit(f"{C}/IOHandlers.h",
+     '      #include "IO_Handlers/IOH_Swiftlink.c"\n',
+     '      #include "IO_Handlers/IOH_Swiftlink.c"\n'
+     '   #ifdef Fab04_VDrive\n      #include "IO_Handlers/IOH_VDriveSwift.c"   //needs IOH_VDrive.c and IOH_Swiftlink.c above\n   #endif\n')
+edit(f"{C}/IO_Handlers/StatusFunctions.c",
+     "      NextIOHndlr = MenuSource[SelItemFullIdx].IOHndlrAssoc;\n",
+     "      NextIOHndlr = MenuSource[SelItemFullIdx].IOHndlrAssoc;\n"
+     "#ifdef Fab04_VDrive\n      NextIOHndlr = VDriveSwift_Remap(NextIOHndlr);   //SwiftLink programs keep the virtual drive\n#endif\n")
 edit(f"{C}/IO_Handlers/StatusFunctions.c",
      "   if (NextIOHndlr == IOH_KernalReplace)\n   {\n      InitHndlr_KERNALReplace_PreStart(); //separate function so it doesn't get called twice\n",
-     "   if (NextIOHndlr == IOH_KernalReplace\n#ifdef Fab04_VDrive\n       || NextIOHndlr == IOH_VDrive\n#endif\n      )\n   {\n      InitHndlr_KERNALReplace_PreStart(); //separate function so it doesn't get called twice\n"
-     "#ifdef Fab04_VDrive\n      if (NextIOHndlr == IOH_VDrive) VDrive_PreStart(); //SD/USB probing now, while the C64 still waits\n#endif\n")
+     "   if (NextIOHndlr == IOH_KernalReplace\n#ifdef Fab04_VDrive\n       || NextIOHndlr == IOH_VDrive || NextIOHndlr == IOH_VDriveSwift\n#endif\n      )\n   {\n      InitHndlr_KERNALReplace_PreStart(); //separate function so it doesn't get called twice\n"
+     "#ifdef Fab04_VDrive\n      if (NextIOHndlr == IOH_VDrive || NextIOHndlr == IOH_VDriveSwift) VDrive_PreStart(); //SD/USB probing now, while the C64 still waits\n#endif\n")
+edit("Source/Teensy/IOHandlers.ino",
+     "      IOHandlerInit(MenuSource[SelItemFullIdx].IOHndlrAssoc); \n",
+     "#ifdef Fab04_VDrive\n      IOHandlerInit(VDriveSwift_Remap(MenuSource[SelItemFullIdx].IOHndlrAssoc));   //SwiftLink programs keep the virtual drive\n#else\n"
+     "      IOHandlerInit(MenuSource[SelItemFullIdx].IOHndlrAssoc); \n#endif\n")
 PY
-cp "$HERE/firmware/IOH_VDrive.c" "$C/IO_Handlers/IOH_VDrive.c"
+cp "$HERE/firmware/IOH_VDrive.c" "$HERE/firmware/IOH_VDriveSwift.c" "$C/IO_Handlers/"
 mkdir -p "$C/vdrive"
 cp "$HERE"/d64/d64.c "$HERE"/d64/d64.h "$HERE"/d64/vdrive.c "$HERE"/d64/vdrive.h \
    "$HERE"/d64/vdrive_io.c "$HERE"/d64/vdrive_io.h "$HERE"/d64/vd_cfg.h "$C/vdrive/"

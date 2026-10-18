@@ -1,6 +1,6 @@
 /* Mailbox register engine for the TR+ virtual drive.
  *
- *   IO1 ($DE00): +0 CMD (W: trigger)  +1 ARG (RW)  +2 DATA (R)  +3 STAT (R)  +4 ST (R)  +5 LEN (RW)
+ *   IO1 ($DE10, offsets below are relative to it): +0 CMD (W: trigger)  +1 ARG (RW)  +2 DATA (R)  +3 STAT (R)  +4 ST (R)  +5 LEN (RW)
  *   IO2 ($DF00): 256-byte window (RW): file name in, data blocks in/out
  *
  * ISR side (vio_io*_read/write) is O(1) and never touches storage. Everything

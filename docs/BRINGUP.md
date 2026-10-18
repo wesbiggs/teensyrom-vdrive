@@ -77,7 +77,7 @@ F2 to BASIC.
 - **Pass:** new banner shows right after F2/PRG launch and the keyboard works. Quick re-check from BASIC: `FORI=0TO31:PRINTPEEK(58483+I);:NEXT` must print the bytes of `TRVDRIVE` (84 82 86 68 82 73 86 69 at positions 11-18), not `COMMODORE` (67 79 77 77 ...), which would mean the C64's own ROM is answering.
 
 ## Stage 7 — the real image, drive path in order of risk
-`make build/kernal-tr.bin` (mailbox at `$DE00`, window `$DF00`). The firmware logs by default during bring-up (`VD_TRACE`; define `VD_NO_TRACE` to silence) so every mailbox command prints
+`make build/kernal-tr.bin` (mailbox at `$DE10`, window `$DF00`). The firmware logs by default during bring-up (`VD_TRACE`; define `VD_NO_TRACE` to silence) so every mailbox command prints
 `vd cmd=.. arg=.. len=.. -> stat=.. data=.. st=..` on the serial console (`stat=5a` answered, `stat=a5` not mine) (the 6502 spins on BUSY, so printing is safe, just slow).
 Check after each line; keep the trace open.
 1. Banner and BASIC still fine; a plain `PRINT`, `POKE`, `LOAD"X",11` → `?DEVICE NOT PRESENT` (stock IEC path through the hook, ~instant, trace shows `stat=a5` not-mine on LISTEN).
@@ -106,12 +106,20 @@ Check after each line; keep the trace open.
 |---|---|
 | `?DEVICE NOT PRESENT` for 8, SD inserted | `SDFullInit()` false at init (re-launch with card in), `vdrive_attach(...present)`; serial line at startup |
 | ~1 s pause then `?DEVICE NOT PRESENT` on every device-8/9 access | mailbox never answers: wrong Special IO selected, KERNAL image not from the same build (`MBX/WIN` addresses), polling handler not running |
-| Garbage data, wrong file contents | IO2 window read timing (stage 4), `WIN` base differs from firmware (`$DF00`), block count byte |
+| Garbage data, wrong file contents | IO2 window read timing (stage 4), `WIN` base differs from firmware (`$DF00`), `MBX` base differs from firmware (`$DE10`), block count byte |
 | Hang during LOAD | `BUSY` stuck: firmware blocked in SD/USB call (the 6502 will give up after ~1 s), `USBFileSystemWait` |
 | Directory OK, LOAD fails with `FILE NOT FOUND` | PETSCII↔ASCII conversion on host side (`VD_ToAscii`), long names, wildcard in name |
 | Files vanish after power cycle | write-back flush (250 ms idle) not reached; `File::flush()` semantics on the media |
 | Link error RAM1 | `-DVD_ALLOC_HEAP`, lower `VD_NSLOT`, or move more code to `FLASHMEM` |
 
+## Stage 8 — VDrive+SwiftLink (firmware 0.9.0.4, host-tested only)
+Select Special IO **VDrive+SwiftLink** (or keep VDrive as the default Special IO and launch a program the menu pairs with SwiftLink, e.g. CCGMS).
+The mailbox is at `$DE10`; the SwiftLink ACIA stays at `$DE00-$DE07`.
+1. Stage 7 items 1-3 still pass with this Special IO selected (device 8 directory/`LOAD`).
+2. Launch CCGMS (built-in menu entry) with VDrive as the default Special IO: it starts, the serial trace says `Loading IO handler: VDrive+SwiftLink`, `AT` answers `OK`, and `LOAD"$",8` in a second session still works (or use CCGMS's own disk directory).
+3. Download a file over the modem to device 8, then check it with `c1541`. Repeat at a higher baud rate (Turbo232 / 9600+) and watch for dropped bytes: SD sector writes mask interrupts, so this is the timing risk.
+4. A `.crt` SwiftLink/Turbo232 cart is **not** remapped (carts run with the C64's own KERNAL).
+**Stop** if the C64 hangs at the start of a modem session or bytes drop only while the drive is busy: `IO1`/ISR timing (stage 4) or SD writes masking the NMI.
 ## Rollback
 `<Shift-K>` to a stock KERNAL (or none) and choose another Special IO; or reflash the stage-0 firmware. Nothing is stored outside EEPROM
 settings and the files on the card.
@@ -121,6 +129,7 @@ settings and the files on the card.
 |---|---|
 | Stage 0 RAM1 padding / flash (stock, `[main]`, TeensyROM FW 0.9 tree, Teensyduino core 1.61.0) | padding 13,816; flash code 277,892; RAM2 vars 17,600 |
 | Stage 1 RAM1 padding / flash (delta) | padding 12,840 (−976); flash code 293,604 (+15,712); RAM1 code +976; RAM1 vars +352; RAM2 vars 22,144 (+4,544). **Stage 1 passed** (builds, links, padding ≫ 4 KB) |
+| Stage 8 build (0.9.0.4, VDrive+SwiftLink, real toolchain) | builds and links; RAM1 padding 12,840 (unchanged from stage 1), flash code 294,988 (+1,384 vs stage 1) |
 | `LOAD"BIG"` 6000 B, wall-clock | |
 | `SAVE` 6000 B, wall-clock | |
 | Mailbox calls per 6000 B load (trace) | expect ~27 |
