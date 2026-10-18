@@ -37,7 +37,7 @@ Firmware integration and usage: `firmware/README.md`.
   "VDrive+SwiftLink" (`firmware/IOH_VDriveSwift.c`) runs both, and menu programs paired with SwiftLink (CCGMS...) get it when VDrive is the
   default Special IO. Builds with the real toolchain (`node tools/build-firmware.mjs --target tr-plus`, RAM1 padding unchanged at 12,840). **KERNAL images built before this change (mailbox `$DE00`) no longer match the firmware: rebuild and re-copy
   `kernal-tr.bin`.** Check on hardware: BRINGUP.md stage 8.
-* **0.9.0.5 (host + VICE tested only, nothing of it on hardware):** automatic device numbers by a lazy bus scan (SCANREQ token `$3C`, `bus_scan` in
+* **0.9.0.6 (host + VICE tested only, nothing of it on hardware):** automatic device numbers by a lazy bus scan (SCANREQ token `$3C`, `bus_scan` in
   `patches/vdrive.s`, `VIO_SCAN`/`VIO_FREE`, `DEV0`/`DEV1` registers `$DE16/$DE17`; DESIGN.md 16), `.d71`/`.d81` images (17), paths in `CD` and
   in names including `LOAD"$/dir/image.d64"` (18), `UI`/`UJ`/`U9` (status 73), `U1`.. now `31`. A `U0>` number is a *fixed* number now (0 = automatic);
   `vdrive_set_devices()` takes pins. To check on hardware: the scan with a real drive at 8 (SD must become 9; `PEEK(56854)`), a first access that is a
@@ -108,7 +108,7 @@ build/          generated, git-ignored (kernal images derived from the ROM, libd
 
 ## Next steps
 1. **Finish bring-up** (`docs/BRINGUP.md`, stages 7-9): the unchecked items listed under Status (USB device 9, `U0>`, `CD:/`, time-out, soak, sequential
-   files, scratch/rename/`N:`) and now the 0.9.0.5 items (bus scan with a real drive, `.d81`, paths). The core path has passed, so the items below can
+   files, scratch/rename/`N:`) and now the 0.9.0.6 items (bus scan with a real drive, `.d81`, paths). The core path has passed, so the items below can
    start once the owner agrees; mind that the patch changes under any build in progress.
 2. **Create new images** (agreed design, not started): with nothing mounted, `N:FILE.D64,ID` (or `.D71`/`.D81`) creates a blank image on the host file
    system and mounts it (glue + `vdrive.c` `N` command; today `N` only formats the mounted disk, and nothing creates an image file). Remembering mounts

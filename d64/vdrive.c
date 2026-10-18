@@ -246,7 +246,9 @@ VD_COLD static void open_dir_pat(vdrive_t *v, int unit, vd_unit_t *u, int ch, co
 
 /* "$[n][:]pattern": the directory of the mounted image, or of the current host folder. A pattern with a "/" in it (or, with
  * nothing mounted, ending in an image suffix) is a path: LOAD"$/GAMES/DEMO.D64" mounts the image and lists it,
- * LOAD"$GAMES/" lists that folder, LOAD"$GAMES/DEMO.D64/S*" lists the matching files in the image. */
+ * LOAD"$GAMES/" lists that folder, LOAD"$GAMES/DEMO.D64/S*" lists the matching files in the image.
+ * "$==path" (also "$:==" / "$0:==") is always a path, even without a "/" or an image suffix: $==GAMES enters the folder GAMES,
+ * $==T a folder called T (a single "=" is a CBM listing modifier, $=T / $=P, and is left alone). */
 VD_COLD static void open_dir(vdrive_t *v, int unit, vd_unit_t *u, int ch, const uint8_t *raw, uint8_t len)
 {
     char spec[VD_CMDBUF];
@@ -254,10 +256,12 @@ VD_COLD static void open_dir(vdrive_t *v, int unit, vd_unit_t *u, int ch, const 
     uint8_t i = 1;
     while (i < len && raw[i] >= '0' && raw[i] <= '9') i++;
     if (i < len && raw[i] == ':') i++;
+    int force = i + 1 < len && raw[i] == '=' && raw[i + 1] == '=';     /* "$==path": always a path (a single "=" is a CBM listing modifier: $=T, $=P) */
+    if (force) i += 2;
     while (i < len && raw[i] != ',' && n < sizeof spec - 1) spec[n++] = (char)raw[i++];
     spec[n] = 0;
     char *pat = spec;
-    if (strchr(spec, '/') || (!u->disk && !strpbrk(spec, "*?") && image_kind(spec))) {
+    if (force || strchr(spec, '/') || (!u->disk && !strpbrk(spec, "*?") && image_kind(spec))) {
         int r = path_walk(v, unit, u, spec, &pat);
         if (r) { set_err(u, (uint8_t)r, 0, 0); return; }
     }

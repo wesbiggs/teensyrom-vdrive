@@ -314,6 +314,30 @@ class HostTests(unittest.TestCase):
         self.assertIn(b'"INNER.D64"', d); self.assertIn(b'"SD CARD', d); self.assertEqual(self.cwd, self.tmp / "sub")
         self.assertIn(b"D64", d)
 
+    def test_double_equals_forces_a_path(self):
+        d = self.io.fast_load(8, b"$==SUB")[2]                                   # a folder, no slash needed
+        self.assertIn(b'"INNER.D64"', d); self.assertEqual(self.cwd, self.tmp / "sub")
+        self.cmd15(b"CD:/")
+        d = self.io.fast_load(8, b"$:==A.D64")[2]; self.assertIn(b"DISKA", d)     # an image, with the ':' form
+        self.cmd15(b"CD:/")
+        d = self.io.fast_load(8, b"$0:==/SUB/INNER.D64")[2]; self.assertIn(b"INNER", d)
+        self.cmd15(b"CD:/")
+        self.put_file(self.tmp / "sub" / "inner.d64", "HELLO", b"\x01\x08hi")
+        self.put_file(self.tmp / "sub" / "inner.d64", "OTHER", b"\x01\x08ot")
+        d = self.io.fast_load(8, b"$==/SUB/INNER.D64/H*")[2]
+        self.assertIn(b'"HELLO"', d); self.assertNotIn(b'"OTHER"', d)
+
+    def test_forced_path_makes_pattern_like_folder_names_unambiguous(self):
+        (self.tmp / "t").mkdir()
+        self.io.fast_load(8, b"$==T")
+        self.assertEqual(self.cwd.name, "t")
+
+    def test_single_equals_is_not_a_path(self):
+        before = len(self.mounted)
+        d = self.io.fast_load(8, b"$=T")[2]                                      # listing modifier: a pattern, nothing is entered
+        self.assertEqual(self.cwd, self.tmp); self.assertEqual(len(self.mounted), before)
+        self.assertIn(b'"SD CARD', d)
+
     def test_load_image_name_returns_its_directory(self):
         d = self.io.fast_load(8, b"A.D64")[2]
         self.assertIn(b"DISKA", d); self.assertEqual(self.mounted, ["a.d64"])

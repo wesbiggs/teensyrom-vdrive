@@ -43,6 +43,9 @@ LOAD"$/GAMES/GAME.D64",8       mount the image and list it (so does LOAD"GAME.D6
 LOAD"$GAMES/",8                list a folder;  LOAD"$/GAMES/GAME.D64/S*",8   only the matching files of the image
 LOAD"GAMES/GAME.D64/START",8,1 mount the image, load a file from it
 ```
+`$==path` (also `$:==path`, `$0:==path`) always means a path, even without a `/` or an image suffix: `LOAD"$==GAMES",8` enters the folder,
+`LOAD"$==DEMO.D64",8` mounts the image, `LOAD"$==/GAMES/DEMO.D64/S*",8` lists matching files of the image, and a folder called `T` or `P` is
+`$==T` (a single `=`, as in `$=T` / `$=P`, stays a CBM listing modifier and is not a path).
 With an image mounted, a bare name is a file inside it; leave with `CD:_` (or use a path containing a `/`).
 
 Image formats: `.d64` (35/40 tracks), `.d71` (1571, 70 tracks) and `.d81` (1581; root directory only, no sub-directories) are recognised by file size and extension; files may carry the trailing error-info bytes.
