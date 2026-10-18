@@ -2,10 +2,11 @@
 
 ## What this is
 A replacement C64 KERNAL (901227-03 + patches) that the **TeensyROM+ (TR+)** serves live, plus the Teensy-side firmware that makes
-devices 8 (SD) and 9 (USB) behave as IEC drives backed by `.d64` images. KERNAL serial calls for those devices go to a mailbox
-(IO1 `$DE10` registers + a 256-byte IO2 window at `$DF00`) instead of the bit-banged bus; any other device number still uses the real
-IEC code, so physical drives keep working. LOAD/SAVE have block-transfer fast paths. Device numbers default to 8/9 and are changed
-from BASIC with `OPEN15,8,15,"U0>"+CHR$(n)` (kept in EEPROM, no reflash).
+the SD card and the USB drive behave as IEC drives backed by `.d64` / `.d71` / `.d81` images. KERNAL serial calls for those devices go to
+a mailbox (IO1 `$DE10` registers + a 256-byte IO2 window at `$DF00`) instead of the bit-banged bus; any other device number still uses the
+real IEC code, so physical drives keep working. LOAD/SAVE have block-transfer fast paths. Device numbers are automatic (SD first, USB
+second, the first free numbers from 8 up: the KERNAL probes the real bus on the first disk access of a run) or fixed from BASIC with
+`OPEN15,8,15,"U0>"+CHR$(n)` (kept in EEPROM, `CHR$(0)` = automatic, no reflash). Names and `CD` take paths: `LOAD"$/GAMES/G.D64",8`.
 
 Full design and per-milestone notes: `DESIGN.md` (sections 1-14, in order of construction). Hardware plan: `docs/BRINGUP.md`.
 Firmware integration and usage: `firmware/README.md`.
@@ -36,6 +37,11 @@ Firmware integration and usage: `firmware/README.md`.
   "VDrive+SwiftLink" (`firmware/IOH_VDriveSwift.c`) runs both, and menu programs paired with SwiftLink (CCGMS...) get it when VDrive is the
   default Special IO. Builds with the real toolchain (`node tools/build-firmware.mjs --target tr-plus`, RAM1 padding unchanged at 12,840). **KERNAL images built before this change (mailbox `$DE00`) no longer match the firmware: rebuild and re-copy
   `kernal-tr.bin`.** Check on hardware: BRINGUP.md stage 8.
+* **0.9.0.5 (host + VICE tested only, nothing of it on hardware):** automatic device numbers by a lazy bus scan (SCANREQ token `$3C`, `bus_scan` in
+  `patches/vdrive.s`, `VIO_SCAN`/`VIO_FREE`, `DEV0`/`DEV1` registers `$DE16/$DE17`; DESIGN.md 16), `.d71`/`.d81` images (17), paths in `CD` and
+  in names including `LOAD"$/dir/image.d64"` (18), `UI`/`UJ`/`U9` (status 73), `U1`.. now `31`. A `U0>` number is a *fixed* number now (0 = automatic);
+  `vdrive_set_devices()` takes pins. To check on hardware: the scan with a real drive at 8 (SD must become 9; `PEEK(56854)`), a first access that is a
+  `LOAD`, the time of the first access, `.d81` mounting on SD, paths.
 * Known open risks:
   C128 not supported (see above); `File::seek/read/write/flush` semantics on the
   real SD/USB classes, IO1/IO2 ISR timing, tape (device 1) intentionally broken (its code space was reclaimed).
@@ -50,12 +56,12 @@ Firmware integration and usage: `firmware/README.md`.
 ## Layout
 ```
 d64/            portable C99 library, also compiled as C++ by the firmware (keep it C++-clean!)
-  d64.c/.h        D64 engine: geometry, BAM, directory, file chains, create/write/scratch/rename/format, BASIC listing builder
-  vdrive.c/.h     virtual IEC drive: channel pool, OPEN/LOAD/SAVE/command channel, CD:/mount hooks, U0> renumber
-  vdrive_io.c/.h  mailbox register engine (ISR-side O(1) accessors + vio_poll) and the fast LOAD/SAVE commands
+  d64.c/.h        D64/D71/D81 engine: geometry, BAM, directory, file chains, create/write/scratch/rename/format, BASIC listing builder
+  vdrive.c/.h     virtual IEC drive: channel pool, OPEN/LOAD/SAVE/command channel, CD:/path walking/mount hooks, U0> pins, bus-scan numbers
+  vdrive_io.c/.h  mailbox register engine (ISR-side O(1) accessors + vio_poll), the fast LOAD/SAVE commands and the bus-scan protocol
   vd_cfg.h        build knobs: VD_COLD (FLASHMEM), VD_NSLOT, VD_DEV0/VD_DEV1 defaults
 patches/        ca65 sources overlaid on the stock KERNAL by tools/build.py; segment name P_XXXX = load address
-  vdrive.s        serial entry hooks, fast LOAD ($F4C8) / SAVE ($F605), code placed in reclaimed tape space $F8E2-$FB8D
+  vdrive.s        serial entry hooks, fast LOAD ($F4C8) / SAVE ($F605), bus scan, code placed in reclaimed tape space $F8E2-$FB8D (578 of 683 bytes used)
   banner.s        proof patch (changes the power-on banner)
 firmware/       TeensyROM integration: IOH_VDrive.c (Special IO) and teensyrom-vdrive.patch (git apply onto TeensyROM)
 tools/          build.py (patch overlay), make_tr_patch.sh (regenerate the TeensyROM patch), vdrive_mock.py (VICE mock),
@@ -66,7 +72,8 @@ build/          generated, git-ignored (kernal images derived from the ROM, libd
 ```
 
 ## Commands
-* `make test` — everything (rebuilds `build/libd64.dylib`, runs unit tests, device-number check, firmware host test, VICE run).
+* `make test` — everything (rebuilds `build/libd64.dylib`, runs unit tests, device-number check, firmware host test, two VICE runs: `basic` and
+  `scan`, the latter with true-drive 1541s at 8 and 10; about 4 minutes).
 * `make build/kernal-tr.bin STOCK=/path/to/kernal-901227-03.bin` — hardware image (mailbox `$DE00`, window `$DF00`).
   `STOCK` defaults to VICE's bundled ROM under Homebrew. `make build/kernal-banner.bin`, `build/kernal-stock.bin` are bring-up images.
 * `tools/make_tr_patch.sh /path/to/TeensyROM` — regenerate `firmware/teensyrom-vdrive.patch` after changing `firmware/IOH_VDrive.c`
@@ -89,22 +96,27 @@ build/          generated, git-ignored (kernal images derived from the ROM, libd
   byte. STAT is a token handshake (`$80` busy, `$5A` answered, `$A5` not mine; never a bare flag) so a floating-bus misread (`$DE`)
   can't look like "done". The 6502 aborts a load/save with an error if any answer fails mid-transfer.
 * `U0>` is parsed before the CR/LF strip because devices 10 and 13 are LF and CR.
-* The KERNAL stubs write `$A5-$A7` (vcall) and `$A3/$A4` (fast paths); these are serial-bus scratch bytes, free outside bit-banging.
+* The KERNAL stubs write `$A5-$A7` (vcall) and `$A3/$A4` (fast paths); these are serial-bus scratch bytes, free outside bit-banging. Nothing else in
+  zero page is free once a user program runs (the bus scan keeps its state on the stack).
+* **The mailbox is not live during BASIC init:** the TeensyROM's own IO1 handler runs until the program has loaded, so nothing may call the mailbox at reset
+  (the first design put the scan in the reset routine; it moved to the first transaction, see DESIGN.md 16). A probe must be `LISTEN` + `SECOND`: with any
+  drive on the bus `LISTEN` alone never fails.
+* The device-number model: `pin[]` (user, EEPROM) and `dev[]` (current, 0 = none). Tests that call `vdrive_set_devices()` / `VIO.set_devices()` set pins.
+  The Teensy glue calls `vio_arm_scan()` after attaching the units; leave it out in tests that do not want the SCANREQ answer.
 * Names are PETSCII throughout the C code; the glue converts to/from ASCII for the host file system.
 * PETSCII quirk when building fixtures with `c1541`: give it lower-case names to get unshifted (default-mode upper-case) PETSCII.
 
 ## Next steps
-1. **Finish bring-up** (`docs/BRINGUP.md`): the unchecked items listed under Status (USB device 9, `U0>`, `CD:/`, time-out, soak, sequential
-   files, scratch/rename/`N:`). The core path has passed, so the items below can start once the owner agrees; mind that the patch changes
-   under any build in progress.
-2. **Create new images + remember mounts** (agreed design, not started):
-   * With nothing mounted, `N:FILE.D64,ID` creates a blank 35-track image on the host file system and mounts it (glue + `vdrive.c`
-     `N` command; today `N` only formats the mounted disk, and nothing creates a `.d64` file).
-   * (Remembering mounts in a `/.vdrive` sidecar is done, see Status.)
-3. **BASIC utility** (~40 lines, kept as `.bas` text and converted with `petcat` in the Makefile): list the current directory, pick by
-   number (mount an image, open a folder, `..`), "new image", "unmount". No menu or KERNAL changes needed.
+1. **Finish bring-up** (`docs/BRINGUP.md`, stages 7-9): the unchecked items listed under Status (USB device 9, `U0>`, `CD:/`, time-out, soak, sequential
+   files, scratch/rename/`N:`) and now the 0.9.0.5 items (bus scan with a real drive, `.d81`, paths). The core path has passed, so the items below can
+   start once the owner agrees; mind that the patch changes under any build in progress.
+2. **Create new images** (agreed design, not started): with nothing mounted, `N:FILE.D64,ID` (or `.D71`/`.D81`) creates a blank image on the host file
+   system and mounts it (glue + `vdrive.c` `N` command; today `N` only formats the mounted disk, and nothing creates an image file). Remembering mounts
+   in a `/.vdrive` sidecar is done (see Status).
+3. **BASIC utility** (~40 lines, kept as `.bas` text and converted with `petcat` in the Makefile): list the current directory, pick by number (mount an
+   image, open a folder, `..`), "new image", "unmount", and show the device numbers (`PEEK(56854)`). Much of what it would do is now one `LOAD"$path"`.
 4. **TeensyROM menu integration** (last, only if the BASIC utility feels clumsy): a `Shift-D` hotkey like the existing `Shift-K`
    (KERNAL image) / `Shift-R` (REU) that sets the highlighted file as the disk for device 8/9. Needs changes to the 6502 menu
    (`Source/C64/MainMenuCRT`, ACME) and regenerated headers, and probably an EEPROM map extension that upstream must agree to.
-5. Smaller follow-ups: append mode (`,A`), `V`alidate, REL files, plain `.prg` loading straight from the card, file names > 16
-   characters in host listings, refusing to claim a device number that a physical drive already uses.
+5. Smaller follow-ups: append mode (`,A`), `V`alidate, REL files, D81 sub-directories/partitions, plain `.prg` loading straight from the card, file names > 16
+   characters in host listings, `MD:`/`RD:`, a scan that re-runs after a device is switched on later.

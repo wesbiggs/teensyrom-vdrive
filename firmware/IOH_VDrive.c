@@ -1,7 +1,9 @@
 // "VDrive" Special IO for TeensyROM+: replacement KERNAL + virtual IEC drive.
-//   unit 0 = SD card, unit 1 = USB drive. Device numbers default to 8/9 and are kept in EEPROM; change them from
-//   BASIC with  OPEN15,8,15,"U0>"+CHR$(10):CLOSE15  (this drive becomes device 10; CHR$(0) restores the default); each serves a mounted .d64 (or lists the host
-//   directory so one can be picked with  OPEN15,8,15,"CD:GAME.D64"  /  "CD:_" to unmount).
+//   unit 0 = SD card, unit 1 = USB drive. Device numbers are automatic by default: the first free numbers from 8 up
+//   (the KERNAL probes the real serial bus on the first disk access of a run, see vdrive_io.h), so 8 (SD) and 9 (USB) when
+//   no other drive is attached. A number can be fixed from BASIC with  OPEN15,8,15,"U0>"+CHR$(10):CLOSE15  (this drive becomes
+//   device 10, kept in EEPROM; CHR$(0) makes it automatic again). Each unit serves a mounted .d64 / .d71 / .d81 (or lists the host
+//   directory so one can be picked with  OPEN15,8,15,"CD:GAME.D64"  /  "CD:_" to unmount, or  LOAD"$/GAMES/GAME.D64",8).
 // Includes the KERNAL bus hook from IOH_KernalReplace.c (select the patched 8K image with
 // <Shift-K> as usual) and adds the IO1/IO2 mailbox the patched KERNAL talks to.
 //
@@ -149,7 +151,7 @@ FLASHMEM static int VD_Mount(void *ctx, int unit, const char *name, d64_t **out)
    u->img = u->fs->open(path, FILE_WRITE);                                        // exists now, so nothing is created
    if (!u->img) { writable = false; u->img = u->fs->open(path, FILE_READ); }
    if (!u->img) return 62;
-   d64_open(&u->d, VD_ReadSector, u, size >= 196608 ? 40 : 35);
+   if (d64_open_size(&u->d, VD_ReadSector, u, size)) { u->img.close(); return 74; }   // format (d64 / d71 / d81) comes from the size
    u->d.write = writable ? VD_WriteSector : NULL;
    u->mounted = true; u->dirty = false;
    *out = &u->d;
@@ -209,20 +211,16 @@ FLASHMEM static int VD_DirNext(void *ctx, int unit, char name[17], uint32_t *siz
    return 0;
 }
 
-// ---- device numbers in EEPROM (0 / out of range = default VD_DEV0/VD_DEV1) --------------------------
-FLASHMEM static void VD_SaveDevices(void *ctx, uint8_t dev0, uint8_t dev1)
+// ---- fixed device numbers in EEPROM (0 / out of range = automatic, see vdrive_set_devices) --------------------
+FLASHMEM static void VD_SaveDevices(void *ctx, uint8_t pin0, uint8_t pin1)
 {
-   EEPROM.write(eepAdVDriveDevs, dev0);        // written by "U0>"+CHR$(n) on the drive's command channel
-   EEPROM.write(eepAdVDriveDevs + 1, dev1);
+   EEPROM.write(eepAdVDriveDevs, pin0);        // written by "U0>"+CHR$(n) on the drive's command channel
+   EEPROM.write(eepAdVDriveDevs + 1, pin1);
 }
 
 FLASHMEM static void VD_LoadDevices()
 {
-   uint8_t d0 = EEPROM.read(eepAdVDriveDevs), d1 = EEPROM.read(eepAdVDriveDevs + 1);
-   if (d0 < 8 || d0 > 30) d0 = VD_DEV0;        // 0 (unset) or garbage -> default
-   if (d1 < 8 || d1 > 30) d1 = VD_DEV1;
-   if (d0 == d1) { d0 = VD_DEV0; d1 = VD_DEV1; }
-   vdrive_set_devices(&vio->vd, d0, d1);
+   vdrive_set_devices(&vio->vd, EEPROM.read(eepAdVDriveDevs), EEPROM.read(eepAdVDriveDevs + 1));   // validates: unset / garbage / duplicate = automatic
 }
 
 // ---- mount at start-up: the image opened in the TeensyROM menu, else the one remembered in the sidecar ------------------
@@ -307,10 +305,13 @@ FLASHMEM void VDrive_PreStart()
    vdrive_attach(&vio->vd, 1, NULL, USBFileSystemWait());
    VD_StartupMount(0, IO1[rWRegCurrMenuWAIT] == rmtSD);
    VD_StartupMount(1, IO1[rWRegCurrMenuWAIT] == rmtUSBDrive);
+   int scanPending = vio_arm_scan(vio);   // automatic numbers: the KERNAL probes the real bus on the run's first disk access
+   vio_publish_devices(vio);
    vioReady = true;                 // only now may the bus handlers answer
-   Serial.printf("VDrive: dev %d (SD) %s, dev %d (USB) %s\n",
+   Serial.printf("VDrive: dev %d (SD) %s, dev %d (USB) %s%s\n",
                  vio->vd.dev[0], vio->vd.unit[0].present ? "ready" : "absent",
-                 vio->vd.dev[1], vio->vd.unit[1].present ? "ready" : "absent");
+                 vio->vd.dev[1], vio->vd.unit[1].present ? "ready" : "absent",
+                 scanPending ? " (numbers are settled by the first bus scan)" : "");
 }
 
 // Handler start (the C64 is already running): only re-stage the KERNAL bus hook. No storage access here.

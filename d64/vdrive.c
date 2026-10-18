@@ -10,7 +10,7 @@
 static const struct { uint8_t code; const char *msg; } MSGS[] = {
     {0, " OK"}, {1, "FILES SCRATCHED"}, {26, "WRITE PROTECT ON"}, {30, "SYNTAX ERROR"},
     {31, "SYNTAX ERROR"}, {33, "SYNTAX ERROR"}, {62, "FILE NOT FOUND"}, {63, "FILE EXISTS"},
-    {70, "NO CHANNEL"}, {72, "DISK FULL"}, {74, "DRIVE NOT READY"},
+    {70, "NO CHANNEL"}, {72, "DISK FULL"}, {73, "TRVDRIVE V1.0"}, {74, "DRIVE NOT READY"},
 };
 
 VD_COLD static void set_err(vd_unit_t *u, uint8_t code, uint8_t t, uint8_t s)
@@ -86,7 +86,7 @@ VD_COLD static const char *strip_prefix(const char *p, const char *end)
     return p;
 }
 
-typedef struct { char name[17]; int has_name; uint8_t type; char mode; int replace; int ok; } open_spec_t;
+typedef struct { char name[VD_CMDBUF]; int has_name; uint8_t type; char mode; int replace; int ok; } open_spec_t;
 
 VD_COLD static open_spec_t parse_open(const uint8_t *raw, uint8_t len)
 {
@@ -99,7 +99,6 @@ VD_COLD static open_spec_t parse_open(const uint8_t *raw, uint8_t len)
     const char *comma = p;
     while (comma < end && *comma != ',') comma++;
     size_t nl = (size_t)(comma - p);
-    if (nl > 16) { o.ok = 0; return o; }
     memcpy(o.name, p, nl); o.name[nl] = 0; o.has_name = nl > 0;
     o.ok = 1;
     while (comma < end) {
@@ -120,12 +119,60 @@ VD_COLD static open_spec_t parse_open(const uint8_t *raw, uint8_t len)
 
 static const char *const DIRTYPES[8] = { "DEL", "SEQ", "PRG", "USR", "REL", "???", "???", "???" };
 
-VD_COLD static int has_d64_suffix(const char *s)
+/* 64, 71 or 81 for a name ending in .D64 / .D71 / .D81 (PETSCII or ASCII, either case), else 0 */
+VD_COLD static int image_kind(const char *s)
 {
     size_t l = strlen(s);
     if (l < 4) return 0;
-    const char *e = s + l - 4;
-    return e[0] == '.' && (e[1] | 0x20) == 'd' && e[2] == '6' && e[3] == '4';
+    const uint8_t *e = (const uint8_t *)s + l - 4;
+    if ((e[0] & 0x7F) != '.' || ((e[1] & 0x7F) | 0x20) != 'd') return 0;
+    if (e[2] == '6' && e[3] == '4') return 64;
+    if (e[2] == '7' && e[3] == '1') return 71;
+    if (e[2] == '8' && e[3] == '1') return 81;
+    return 0;
+}
+
+VD_COLD static const char *image_tag(const char *s) { int k = image_kind(s); return k == 71 ? "D71" : k == 81 ? "D81" : "D64"; }
+
+VD_COLD static void leave_image(vdrive_t *v, int unit, vd_unit_t *u)
+{
+    if (!u->disk) return;
+    close_all(u); u->disk = NULL;
+    if (v->host.unmount) v->host.unmount(v->host.ctx, unit);
+}
+
+/* Follow "[/]dir/dir/image.d64[/rest]" on the host: a leading "/" starts at the card root, ".." (or the left arrow "_") goes
+ * up, a component with an image suffix is mounted, any other component is a folder. A component with a wildcard is not
+ * entered: it ends the walk as the pattern. *rest points at what is left (the file name after an image, a pattern, or ""
+ * when the path ended on the folder / image). Returns 0 or a DOS error code. Modifies p. */
+VD_COLD static int path_walk(vdrive_t *v, int unit, vd_unit_t *u, char *p, char **rest)
+{
+    const vd_host_t *h = &v->host;
+    int r;
+    *rest = p + strlen(p);
+    if (!h->chdir || !h->mount) return 33;
+    if (*p == '/') { leave_image(v, unit, u); if ((r = h->chdir(h->ctx, unit, "/"))) return r; }
+    while (*p) {
+        char *c = p, *sl = strchr(p, '/');
+        if (sl) { *sl = 0; p = sl + 1; } else p += strlen(p);
+        if (!*c) continue;                                                  /* "//" or a trailing "/" */
+        if (strpbrk(c, "*?")) { if (sl) *sl = '/'; *rest = c; return 0; }
+        if (!strcmp(c, "..") || !strcmp(c, "_")) {
+            if (u->disk) leave_image(v, unit, u);                           /* up from an image = unmount */
+            else if ((r = h->chdir(h->ctx, unit, ".."))) return r;
+        } else if (image_kind(c)) {
+            d64_t *d = NULL;
+            leave_image(v, unit, u);
+            if ((r = h->mount(h->ctx, unit, c, &d))) return r;
+            u->disk = d;
+            *rest = p;
+            return 0;
+        } else {
+            leave_image(v, unit, u);
+            if ((r = h->chdir(h->ctx, unit, c))) return r;
+        }
+    }
+    return 0;
 }
 
 /* One line of the directory per call into d->line; sets d->phase = 3 and llen = 0 when finished. */
@@ -156,7 +203,7 @@ VD_COLD static void dir_gen(vdrive_t *v, int unit, vd_unit_t *u, vd_dirstream_t 
                     if (d->has_pat && !d64_match(name, d->pat)) continue;
                     uint32_t blocks = is_dir ? 0 : (size + 253) / 254;
                     d64_bas_entry(&b, (uint16_t)(blocks > 65535 ? 65535 : blocks), name,
-                                  is_dir ? "DIR" : has_d64_suffix(name) ? "D64" : "PRG", 1, 0);
+                                  is_dir ? "DIR" : image_kind(name) ? image_tag(name) : "PRG", 1, 0);
                     got = 1; break;
                 } else {
                     d64_entry_t e;
@@ -182,7 +229,7 @@ VD_COLD static void dir_gen(vdrive_t *v, int unit, vd_unit_t *u, vd_dirstream_t 
     }
 }
 
-VD_COLD static void open_dir(vdrive_t *v, int unit, vd_unit_t *u, int ch, const uint8_t *raw, uint8_t len)
+VD_COLD static void open_dir_pat(vdrive_t *v, int unit, vd_unit_t *u, int ch, const char *pat)
 {
     vd_chan_t *c = chan_alloc(u, ch);
     if (!c) return;
@@ -190,25 +237,50 @@ VD_COLD static void open_dir(vdrive_t *v, int unit, vd_unit_t *u, int ch, const 
     memset(d, 0, sizeof *d);
     d->host = u->disk == NULL;
     size_t n = 0;
-    uint8_t i = 1;
-    while (i < len && raw[i] >= '0' && raw[i] <= '9') i++;
-    if (i < len && raw[i] == ':') i++;
-    while (i < len && raw[i] != ',' && n < 16) d->pat[n++] = (char)raw[i++];
+    while (pat[n] && n < 16) { d->pat[n] = pat[n]; n++; }
     d->pat[n] = 0; d->has_pat = n != 0;
     c->mode = 4;
     dir_gen(v, unit, u, d);                            /* first line now, so failures report at OPEN time */
     if (d->llen == 0) { chan_close(u, ch); set_err(u, 74, 0, 0); }
 }
 
+/* "$[n][:]pattern": the directory of the mounted image, or of the current host folder. A pattern with a "/" in it (or, with
+ * nothing mounted, ending in an image suffix) is a path: LOAD"$/GAMES/DEMO.D64" mounts the image and lists it,
+ * LOAD"$GAMES/" lists that folder, LOAD"$GAMES/DEMO.D64/S*" lists the matching files in the image. */
+VD_COLD static void open_dir(vdrive_t *v, int unit, vd_unit_t *u, int ch, const uint8_t *raw, uint8_t len)
+{
+    char spec[VD_CMDBUF];
+    size_t n = 0;
+    uint8_t i = 1;
+    while (i < len && raw[i] >= '0' && raw[i] <= '9') i++;
+    if (i < len && raw[i] == ':') i++;
+    while (i < len && raw[i] != ',' && n < sizeof spec - 1) spec[n++] = (char)raw[i++];
+    spec[n] = 0;
+    char *pat = spec;
+    if (strchr(spec, '/') || (!u->disk && !strpbrk(spec, "*?") && image_kind(spec))) {
+        int r = path_walk(v, unit, u, spec, &pat);
+        if (r) { set_err(u, (uint8_t)r, 0, 0); return; }
+    }
+    open_dir_pat(v, unit, u, ch, pat);
+}
 VD_COLD static void chan_open(vdrive_t *v, int unit, vd_unit_t *u, int ch, const uint8_t *raw, uint8_t len)
 {
     chan_close(u, ch);
     if (len && raw[0] == '$' && (u->disk || (v->host.dir_open && v->host.dir_next))) { open_dir(v, unit, u, ch, raw, len); return; }
-    if (!u->disk) { set_err(u, 74, 0, 0); return; }
     open_spec_t o = parse_open(raw, len);
-    if (!o.ok || !o.has_name) { set_err(u, 33, 0, 0); return; }
+    if (!o.has_name) { set_err(u, u->disk ? 33 : 74, 0, 0); return; }
     char mode = o.mode ? o.mode : (ch == 1 ? 'W' : 'R');
     if (mode != 'R' && mode != 'W') { set_err(u, 33, 0, 0); return; }   /* append not supported */
+    /* "DIR/IMAGE.D64/FILE" (or a bare "IMAGE.D64" read with nothing mounted): walk there first, the file name is what is left */
+    if (strchr(o.name, '/') || (mode == 'R' && !u->disk && image_kind(o.name))) {
+        char *rest;
+        int r = path_walk(v, unit, u, o.name, &rest);
+        if (r) { set_err(u, (uint8_t)r, 0, 0); return; }
+        if (!*rest) { open_dir_pat(v, unit, u, ch, ""); return; }            /* it named a folder / image: show what is in it */
+        memmove(o.name, rest, strlen(rest) + 1);
+    }
+    if (strlen(o.name) > 16) { set_err(u, 33, 0, 0); return; }
+    if (!u->disk) { set_err(u, 74, 0, 0); return; }
     vd_chan_t *c = chan_alloc(u, ch);
     if (!c) return;
     if (mode == 'R') {
@@ -227,40 +299,50 @@ VD_COLD static void chan_open(vdrive_t *v, int unit, vd_unit_t *u, int ch, const
 }
 
 /* ---- command channel ---------------------------------------------------- */
+/* CD[n]:path -- same path syntax as a LOAD name (see path_walk): CD:/GAMES/DEMO.D64, CD:.., CD:_ (left arrow), CD:/ (root). */
 VD_COLD static void cmd_cd(vdrive_t *v, int unit, vd_unit_t *u, const char *p, const char *end)
 {
-    if (p < end && *p == ':') p++;
-    char name[VD_CMDBUF]; size_t n = (size_t)(end - p);
-    memcpy(name, p, n); name[n] = 0;
-    const vd_host_t *h = &v->host;
-    int up = (!strcmp(name, "..") || !strcmp(name, "_") || (n == 1 && (uint8_t)name[0] == 0x5F));
-    int root = (n == 1 && name[0] == '/');                     /* CD:/ = unmount (if mounted) and go to the card root */
-    if (u->disk && (up || root)) {
-        close_all(u); u->disk = NULL;
-        if (h->unmount) h->unmount(h->ctx, unit);
-        if (root && h->chdir) h->chdir(h->ctx, unit, "/");
-    } else if (n && has_d64_suffix(name)) {
-        d64_t *d = NULL;
-        if (!h->mount) { set_err(u, 33, 0, 0); return; }
-        int r = h->mount(h->ctx, unit, name, &d);
-        if (r) set_err(u, (uint8_t)r, 0, 0);
-        else { close_all(u); u->disk = d; }
-    } else {
-        if (!h->chdir) { set_err(u, 33, 0, 0); return; }
-        int r = h->chdir(h->ctx, unit, name);
-        if (r) set_err(u, (uint8_t)r, 0, 0);
+    const char *q = p;
+    while (q < end && *q >= '0' && *q <= '9') q++;
+    if (q < end && *q == ':') p = q + 1;                         /* "CD:" and "CD0:" */
+    char path[VD_CMDBUF]; size_t n = (size_t)(end - p);
+    if (n >= sizeof path) { set_err(u, 33, 0, 0); return; }
+    memcpy(path, p, n); path[n] = 0;
+    if (!n) return;
+    char *rest;
+    int r = path_walk(v, unit, u, path, &rest);
+    if (r) set_err(u, (uint8_t)r, 0, 0);
+    else if (*rest) set_err(u, 33, 0, 0);                        /* something after the image / a wildcard: not a directory */
+}
+
+/* UI / UJ / U9: reset the drive. Closes every channel, keeps the mounted image, answers the "73" power-on message. */
+VD_COLD static void cmd_reset(vd_unit_t *u)
+{
+    close_all(u);
+    set_err(u, 73, 0, 0);
+}
+
+/* Device numbers: a unit uses its pinned number, or else the default / next free one until the start-up scan moves it. */
+VD_COLD static void settle(vdrive_t *v)
+{
+    for (int i = 0; i < 2; i++) {
+        uint8_t n = v->pin[i];
+        if (!n) {
+            n = i ? VD_DEV1 : VD_DEV0;
+            while (n <= 30 && (n == v->pin[0] || n == v->pin[1] || (i == 1 && n == v->dev[0]))) n++;
+            if (n > 30) n = 0;
+        }
+        v->dev[i] = n;
     }
 }
 
-/* "U0>"+CHR$(n): this drive answers as device n from now on (n = 0 restores the default). Persisted via the host. */
+/* "U0>"+CHR$(n): this drive answers as device n from now on (n = 0: automatic again). Persisted via the host. */
 VD_COLD static void cmd_renumber(vdrive_t *v, int unit, vd_unit_t *u, uint8_t n)
 {
-    uint8_t def[2] = { VD_DEV0, VD_DEV1 };
-    uint8_t eff = n ? n : def[unit];
-    if (eff < 8 || eff > 30 || eff == v->dev[1 - unit]) { set_err(u, 33, 0, 0); return; }
-    v->dev[unit] = eff;
-    if (v->host.save_devices)
-        v->host.save_devices(v->host.ctx, v->dev[0] == def[0] ? 0 : v->dev[0], v->dev[1] == def[1] ? 0 : v->dev[1]);
+    if (n && (n < 8 || n > 30 || n == v->dev[1 - unit])) { set_err(u, 33, 0, 0); return; }
+    v->pin[unit] = n;
+    settle(v);
+    if (v->host.save_devices) v->host.save_devices(v->host.ctx, v->pin[0], v->pin[1]);
 }
 
 VD_COLD static void exec_command(vdrive_t *v, int unit, vd_unit_t *u, uint8_t *cmd, uint8_t len)
@@ -271,6 +353,8 @@ VD_COLD static void exec_command(vdrive_t *v, int unit, vd_unit_t *u, uint8_t *c
     if (!len) return;
     cmd[len] = 0;
     if (len >= 2 && cmd[0] == 'C' && cmd[1] == 'D') { cmd_cd(v, unit, u, (const char *)cmd + 2, (const char *)cmd + len); return; }
+    if (cmd[0] == 'U' && len == 2 && (cmd[1] == 'I' || cmd[1] == 'J' || cmd[1] == '9')) { cmd_reset(u); return; }
+    if (cmd[0] == 'U' && len == 3 && cmd[1] == 'I' && (cmd[2] == '+' || cmd[2] == '-')) return;   /* VIC-20 / C64 bus speed: nothing to do */
     if (!u->disk) { set_err(u, 74, 0, 0); return; }
     const char *p = (const char *)cmd + 1, *end = (const char *)cmd + len;
     while (p < end && *p >= '0' && *p <= '9') p++;       /* optional drive number */
@@ -317,8 +401,6 @@ VD_COLD static void exec_command(vdrive_t *v, int unit, vd_unit_t *u, uint8_t *c
         int r = d64_rename(u->disk, on, nn);
         if (r) err_from(u, r);
         break; }
-    case 'U':                                          /* UI / UJ etc.: nothing to do */
-        break;
     case 'I': case 'V':                                /* initialize / validate: nothing to do */
         break;
     default:
@@ -331,7 +413,7 @@ VD_COLD void vdrive_init(vdrive_t *v)
 {
     memset(v, 0, sizeof *v);
     v->act = -1;
-    v->dev[0] = VD_DEV0; v->dev[1] = VD_DEV1;
+    settle(v);
 }
 
 VD_COLD void vdrive_attach(vdrive_t *v, int unit, d64_t *disk, int present)
@@ -342,8 +424,33 @@ VD_COLD void vdrive_attach(vdrive_t *v, int unit, d64_t *disk, int present)
     set_err(u, 0, 0, 0);
 }
 
-VD_COLD void vdrive_set_devices(vdrive_t *v, uint8_t dev0, uint8_t dev1) { v->dev[0] = dev0; v->dev[1] = dev1; }
-VD_COLD int vdrive_unit_for(const vdrive_t *v, uint8_t dev) { return dev == v->dev[0] ? 0 : dev == v->dev[1] ? 1 : -1; }
+VD_COLD void vdrive_set_devices(vdrive_t *v, uint8_t pin0, uint8_t pin1)
+{
+    if (pin0 < 8 || pin0 > 30) pin0 = 0;                /* 0 (unset) or garbage: automatic */
+    if (pin1 < 8 || pin1 > 30 || pin1 == pin0) pin1 = 0;
+    v->pin[0] = pin0; v->pin[1] = pin1;
+    settle(v);
+}
+
+VD_COLD int vdrive_scan_begin(vdrive_t *v)
+{
+    int need = 0;
+    for (int i = 0; i < 2; i++)
+        if (!v->pin[i]) { v->dev[i] = 0; need += v->unit[i].present != 0; }
+    return need;
+}
+
+VD_COLD int vdrive_scan_free(vdrive_t *v, uint8_t dev)
+{
+    int left = 0;
+    if (dev >= 8 && dev <= 30 && dev != v->pin[0] && dev != v->pin[1] && dev != v->dev[0] && dev != v->dev[1])
+        for (int i = 0; i < 2; i++)
+            if (!v->pin[i] && v->unit[i].present && !v->dev[i]) { v->dev[i] = dev; break; }
+    for (int i = 0; i < 2; i++) left += !v->pin[i] && v->unit[i].present && !v->dev[i];
+    return left;
+}
+
+VD_COLD int vdrive_unit_for(const vdrive_t *v, uint8_t dev) { return dev && dev == v->dev[0] ? 0 : dev && dev == v->dev[1] ? 1 : -1; }
 VD_COLD void vdrive_set_host(vdrive_t *v, const vd_host_t *host) { v->host = *host; }
 VD_COLD int vdrive_chan_mode(const vdrive_t *v, int unit, int ch)
 {
@@ -351,6 +458,7 @@ VD_COLD int vdrive_chan_mode(const vdrive_t *v, int unit, int ch)
     return i ? v->unit[unit].slot[i - 1].mode : 0;
 }
 VD_COLD int vdrive_pending_err(const vdrive_t *v, int unit) { return v->unit[unit].err; }
+VD_COLD int vdrive_active(const vdrive_t *v) { return v->act; }
 VD_COLD size_t vdrive_sizeof(void) { return sizeof(vdrive_t); }
 
 VD_COLD static int read_byte(vdrive_t *v, int unit, vd_unit_t *u, vd_chan_t *c, uint8_t *b, int *eoi)

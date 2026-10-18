@@ -1,7 +1,7 @@
 import ctypes, pathlib, random, shutil, subprocess, sys, tempfile, unittest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / 'tools'))
 from d64py import (LIB, Disk, VIO, VDrive, F_LOAD_OPEN, F_LOAD_BLK, F_SAVE_OPEN, F_SAVE_BLK, F_SAVE_CLOSE,
-                   R_STAT, BUSY, OK, NOTMINE)
+                   R_STAT, R_DEV0, R_DEV1, F_SCAN, F_FREE, BUSY, OK, NOTMINE, SCANREQ)
 
 LISTEN, TALK, SECOND, TKSA, CIOUT, ACPTR, UNLSN, UNTLK = range(1, 9)
 
@@ -269,6 +269,77 @@ class HostTests(unittest.TestCase):
     def test_mount_missing_image(self):
         self.cmd15(b"CD:NOPE.D64"); self.assertTrue(self.status().startswith("62,FILE NOT FOUND"))
 
+    # ---- paths: CD:, LOAD"$path" and LOAD"path/image/file" ----
+    def put_file(self, image, name, data):
+        src = self.tmp / ("src_" + name); src.write_bytes(data)
+        c1541(image, "-write", str(src), name.lower())
+
+    def test_cd_absolute_and_nested_paths(self):
+        self.cmd15(b"CD:/SUB/INNER.D64")
+        self.assertEqual(self.status(), "00, OK,00,00\r")
+        self.assertEqual(self.mounted, ["inner.d64"]); self.assertEqual(self.cwd, self.tmp / "sub")
+        self.cmd15(b"CD:/"); self.assertEqual(self.cwd, self.tmp)
+        self.cmd15(b"CD:SUB/INNER.D64"); self.assertEqual(self.status(), "00, OK,00,00\r")      # relative, from the root
+        self.assertEqual(self.mounted, ["inner.d64", "inner.d64"])
+
+    def test_cd_up_from_an_image_only_unmounts_then_goes_on(self):
+        self.cmd15(b"CD:SUB/INNER.D64"); self.status()
+        self.cmd15(b"CD:_"); self.assertEqual(self.cwd, self.tmp / "sub"); self.assertEqual(self.unmounted, [0])
+        self.cmd15(b"CD:INNER.D64"); self.status()
+        self.cmd15(b"CD:../"); self.assertEqual(self.cwd, self.tmp / "sub")        # '..' from a mounted image: unmount only
+        self.cmd15(b"CD:../.."); self.assertEqual(self.cwd, self.tmp.parent)        # now a folder step, twice
+        self.assertEqual(self.status(), "00, OK,00,00\r")
+
+    def test_cd_drive_prefix_and_junk(self):
+        self.cmd15(b"CD0:SUB"); self.assertEqual(self.cwd, self.tmp / "sub")
+        self.cmd15(b"CD:INNER.D64/FILE"); self.assertTrue(self.status().startswith("33,SYNTAX ERROR"))
+        self.cmd15(b"CD:NOPE/X.D64"); self.assertTrue(self.status().startswith("62,FILE NOT FOUND"))
+
+    def test_load_dollar_path_mounts_the_image_and_lists_it(self):
+        rc, addr, d = self.io.fast_load(8, b"$/SUB/INNER.D64")
+        self.assertEqual(rc, 0); self.assertIn(b"INNER", d); self.assertNotIn(b'"SD CARD', d)
+        self.assertEqual(self.mounted, ["inner.d64"])
+        self.assertIn(b"INNER", self.io.fast_load(8, b"$")[2])                      # stays mounted afterwards
+
+    def test_load_dollar_bare_image_name_and_wildcards(self):
+        self.assertIn(b"DISKA", self.io.fast_load(8, b"$:A.D64")[2])
+        self.cmd15(b"CD:/")
+        self.assertEqual(self.mounted, ["a.d64"])
+        d = self.io.fast_load(8, b"$:*.D64")[2]                                     # a wildcard is a pattern, never an image to mount
+        self.assertIn(b'"A.D64"', d); self.assertIn(b'"B.D64"', d); self.assertIn(b'"SD CARD', d)   # (CBM "*" matches the rest of the name)
+        self.assertEqual(self.mounted, ["a.d64"])
+
+    def test_load_dollar_folder(self):
+        d = self.io.fast_load(8, b"$SUB/")[2]
+        self.assertIn(b'"INNER.D64"', d); self.assertIn(b'"SD CARD', d); self.assertEqual(self.cwd, self.tmp / "sub")
+        self.assertIn(b"D64", d)
+
+    def test_load_image_name_returns_its_directory(self):
+        d = self.io.fast_load(8, b"A.D64")[2]
+        self.assertIn(b"DISKA", d); self.assertEqual(self.mounted, ["a.d64"])
+
+    def test_load_file_through_a_path(self):
+        self.put_file(self.tmp / "sub" / "inner.d64", "HELLO", b"\x01\x08hello world")
+        self.put_file(self.tmp / "sub" / "inner.d64", "HEX", b"\x01\x08hex")
+        rc, addr, data = self.io.fast_load(8, b"SUB/INNER.D64/HELLO")
+        self.assertEqual((rc, addr, data), (0, 0x0801, b"hello world"))
+        self.assertEqual(self.mounted, ["inner.d64"])
+        self.assertEqual(self.io.fast_load(8, b"HEX")[2], b"hex")           # the image stays mounted
+        d = self.io.fast_load(8, b"$/SUB/INNER.D64/HE*")[2]
+        self.assertIn(b'"HELLO"', d); self.assertIn(b'"HEX"', d)
+        d = self.io.fast_load(8, b"$/SUB/INNER.D64/HEL*")[2]
+        self.assertIn(b'"HELLO"', d); self.assertNotIn(b'"HEX"', d)
+        self.assertEqual(self.io.fast_load(8, b"/SUB/INNER.D64/NOPE")[0], 4)         # not found inside the image
+
+    def test_save_through_a_path(self):
+        self.assertEqual(self.io.fast_save(8, b"/SUB/INNER.D64/NEWFILE", 0x0801, b"abc"), 0)
+        self.assertEqual(self.io.fast_load(8, b"NEWFILE")[2], b"abc")
+
+    def test_a_file_inside_a_mounted_image_named_like_an_image_is_not_remounted(self):
+        self.cmd15(b"CD:A.D64"); self.status()
+        self.assertEqual(self.io.fast_load(8, b"X.D64")[0], 4)                       # looked up as a plain file name
+        self.assertEqual(self.mounted, ["a.d64"])
+
     def test_file_ops_without_image_not_ready(self):
         self.assertEqual(self.io.fast_load(8, b"X")[0], 4)
         self.assertTrue(self.status().startswith("74,DRIVE NOT READY") or True)
@@ -361,6 +432,116 @@ class DeviceNumberTests(unittest.TestCase):
             self.assertTrue(self.status(8).startswith("33,SYNTAX ERROR"), bad)
         self.assertEqual(self.saved, [])
         self.assertEqual(self.io.fast_load(8, b"HI")[0], 0)
+
+    # ---- reset-time scan: the KERNAL probes the real bus; numbers nobody answers at go to SD, then USB ----
+    def scan(self, occupied):
+        """what the 6502 does: SCAN, then probe 8,9,... and report each free number until nobody is waiting"""
+        nm, need, _ = self.io.call(F_SCAN)
+        self.assertFalse(nm)
+        dev = 8
+        while need and dev <= 30:
+            if dev not in occupied:
+                nm, need, _ = self.io.call(F_FREE, dev)
+            dev += 1
+        return need
+
+    def devs(self): return self.io.r(R_DEV0), self.io.r(R_DEV1)
+
+    # ---- the request: the first transaction of a run is answered "scan first", the KERNAL scans and asks again ----
+    def test_first_transaction_asks_for_a_scan_and_is_not_executed(self):
+        self.assertEqual(self.io.arm_scan(), 1)
+        for first in (lambda: self.io.call(LISTEN, 8, allow_scan=True), lambda: self.io.call(TALK, 8, allow_scan=True),
+                      lambda: self.io.call(F_LOAD_OPEN, 8, 2, allow_scan=True), lambda: self.io.call(F_SAVE_OPEN, 8, 2, allow_scan=True)):
+            self.io.arm_scan()
+            first()
+            self.assertEqual(self.io.stat, SCANREQ)
+            self.assertEqual(self.io.r(R_DEV0), 8)                              # nothing happened yet
+            self.assertEqual(self.io.vd_act(), -1)                              # ... and no transaction is open
+        self.io.arm_scan()
+        self.io.call(LISTEN, 8, allow_scan=True)                                # SCANREQ again (re-armed)
+        self.assertEqual(self.scan({8}), 0)                                     # drive 8 is real
+        nm, _, _ = self.io.call(LISTEN, 8); self.assertTrue(nm)                 # the repeated command goes to the real bus
+        nm, _, _ = self.io.call(UNLSN)
+        nm, _, _ = self.io.call(LISTEN, 9); self.assertFalse(nm)                # ... and 9 is ours
+        self.assertEqual(self.io.stat, OK)
+
+    def test_the_request_is_made_once_only(self):
+        self.io.arm_scan()
+        self.io.call(LISTEN, 8, allow_scan=True); self.assertEqual(self.io.stat, SCANREQ)
+        nm, _, _ = self.io.call(LISTEN, 8)                                      # an old KERNAL ignored the request: carry on with the defaults
+        self.assertFalse(nm); self.assertEqual(self.io.stat, OK)
+        self.io.call(UNLSN)
+        self.io.call(LISTEN, 8); self.assertEqual(self.io.stat, OK)             # and never ask again
+        self.io.call(UNLSN)
+        self.assertEqual(self.devs(), (8, 9))
+
+    def test_no_request_when_nothing_needs_a_number(self):
+        self.io.set_devices(10, 11)
+        self.assertEqual(self.io.arm_scan(), 0)                                 # both fixed by the user
+        self.io.call(LISTEN, 10); self.assertEqual(self.io.stat, OK)
+        io = VIO(); io.attach(0, None, present=False); io.attach(1, None, present=False)
+        self.assertEqual(io.arm_scan(), 0)                                      # no card, no stick
+        self.assertEqual(VIO().arm_scan(), 0)
+
+    def test_request_only_for_the_automatic_present_units(self):
+        self.io.set_devices(10, 0)                                              # SD fixed, USB automatic and present
+        self.assertEqual(self.io.arm_scan(), 1)
+        io = VIO(); io.attach(0, None, present=False); io.attach(1, None, present=True)
+        self.assertEqual(io.arm_scan(), 1)
+
+    def test_scan_with_an_empty_bus_keeps_8_and_9(self):
+        self.assertEqual(self.scan(set()), 0)
+        self.assertEqual(self.devs(), (8, 9))
+
+    def test_scan_skips_physical_drives_and_fills_gaps(self):
+        self.assertEqual(self.scan({8}), 0); self.assertEqual(self.devs(), (9, 10))
+        self.assertEqual(self.scan({8, 9, 10}), 0); self.assertEqual(self.devs(), (11, 12))
+        self.assertEqual(self.scan({9, 10, 12}), 0); self.assertEqual(self.devs(), (8, 11))     # a gap below, one above
+        self.assertEqual(self.io.fast_load(9, b"HI")[0], "notmine")                              # 9 now belongs to the real drive
+        self.assertEqual(self.io.fast_load(8, b"HI")[0], 0)
+
+    def test_scan_releases_the_numbers_so_probes_reach_the_real_bus(self):
+        self.io.call(F_SCAN)
+        for dev in (8, 9):
+            nm, _, _ = self.io.call(LISTEN, dev); self.assertTrue(nm, dev)                     # unassigned: not mine, even though 8/9 were defaults
+        self.assertEqual(self.devs(), (0, 0))
+
+    def test_scan_gives_numbers_only_to_units_that_are_present(self):
+        io = VIO(); io.attach(0, None, present=False); io.attach(1, None, present=True)
+        nm, need, _ = io.call(F_SCAN); self.assertEqual(need, 1)                                 # only the USB unit needs one
+        nm, need, _ = io.call(F_FREE, 8); self.assertEqual(need, 0)
+        self.assertEqual((io.r(R_DEV0), io.r(R_DEV1)), (0, 8))
+        io2 = VIO(); io2.attach(0, None, present=False); io2.attach(1, None, present=False)
+        self.assertEqual(io2.call(F_SCAN)[1], 0)                                                 # nothing to scan for: the 6502 skips the probing
+
+    def test_pinned_units_are_not_scanned_and_their_number_is_never_handed_out(self):
+        self.io.set_devices(9, 0)                       # SD pinned to 9, USB automatic
+        self.assertEqual(self.devs(), (9, 10))          # USB's default 9 is taken, so it starts on the next number
+        nm, need, _ = self.io.call(F_SCAN); self.assertEqual(need, 1)
+        self.assertEqual(self.devs(), (9, 0))
+        nm, need, _ = self.io.call(F_FREE, 9); self.assertEqual(need, 1)                         # 9 is ours already: probing it must not hand it out
+        nm, need, _ = self.io.call(F_FREE, 10); self.assertEqual(need, 0)
+        self.assertEqual(self.devs(), (9, 10))
+
+    def test_scan_from_an_old_firmware_or_a_stray_free_report_is_harmless(self):
+        nm, need, _ = self.io.call(F_FREE, 20)          # without SCAN first nobody is waiting
+        self.assertEqual((need, self.devs()), (0, (8, 9)))
+        self.io.call(F_SCAN); self.io.call(F_FREE, 5)   # out of range: ignored
+        self.assertEqual(self.devs(), (0, 0))
+
+    def test_pin_survives_and_zero_means_automatic(self):
+        self.hook_save()
+        self.renumber(8, 8)                              # an explicit 8 is a pin now, no longer "the default"
+        self.assertEqual(self.saved, [(8, 0)])
+        self.renumber(8, 0)
+        self.assertEqual(self.saved[-1], (0, 0))
+        self.assertEqual(self.devs(), (8, 9))
+
+    def test_pinned_number_wins_over_the_default_of_the_other_unit(self):
+        self.io.set_devices(0, 8)                       # USB pinned to 8: SD, automatic, must not also claim 8
+        self.assertEqual(self.devs(), (9, 8))
+        self.assertEqual(self.io.fast_load(8, b"X")[0], 4)                                      # unit 1 (no disk mounted): file not found
+        self.assertEqual(self.io.fast_load(9, b"HI")[0], 0)                                     # unit 0 holds the test disk
 
     def test_unit_one_independent_numbering(self):
         self.io.set_devices(8, 12)

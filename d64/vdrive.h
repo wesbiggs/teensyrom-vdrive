@@ -40,7 +40,7 @@ typedef struct {
     int  (*chdir)(void *ctx, int unit, const char *name);                /* "..", subdir; 0 ok else DOS error */
     int  (*dir_open)(void *ctx, int unit, char title[17]);               /* 0 ok */
     int  (*dir_next)(void *ctx, int unit, char name[17], uint32_t *size, int *is_dir); /* 1 entry, 0 end */
-    void (*save_devices)(void *ctx, uint8_t dev0, uint8_t dev1);        /* persist after a U0> renumber (0 = default) */
+    void (*save_devices)(void *ctx, uint8_t pin0, uint8_t pin1);        /* persist after a U0> renumber (0 = automatic) */
 } vd_host_t;
 
 typedef struct {
@@ -56,7 +56,8 @@ typedef struct {
 typedef struct {
     vd_host_t host;
     vd_unit_t unit[2];
-    uint8_t  dev[2];            /* IEC device number of each unit (VD_DEV0/VD_DEV1 by default) */
+    uint8_t  dev[2];            /* IEC device number each unit answers to now; 0 = none (not claimed on the bus) */
+    uint8_t  pin[2];            /* the number the user chose with U0> (kept in EEPROM); 0 = automatic */
     int8_t   act;               /* -1 none, 0/1 unit, 2 = absent device */
     uint8_t  talking;
     uint8_t  sa;
@@ -66,10 +67,20 @@ typedef struct {
 
 void vdrive_init(vdrive_t *v);
 void vdrive_attach(vdrive_t *v, int unit, d64_t *disk, int present);
-void vdrive_set_devices(vdrive_t *v, uint8_t dev0, uint8_t dev1);   /* change the device numbers at run time */
+/* pin0/pin1: device numbers the user fixed (8..30), 0 = automatic. Automatic units start on VD_DEV0/VD_DEV1 (or the next
+ * free number) and are moved by the start-up scan below. */
+void vdrive_set_devices(vdrive_t *v, uint8_t pin0, uint8_t pin1);
+/* Start-up scan (the KERNAL probes the real serial bus for 8,9,... after reset):
+ *   scan_begin  releases the numbers of all automatic units, so the probes reach the real bus; returns how many present
+ *               units still need a number (0 = nothing to scan for).
+ *   scan_free   the probe found nothing at `dev`: give it to the next automatic present unit (SD first, then USB).
+ *               Returns how many units are still waiting. */
+int  vdrive_scan_begin(vdrive_t *v);
+int  vdrive_scan_free(vdrive_t *v, uint8_t dev);
 int  vdrive_unit_for(const vdrive_t *v, uint8_t dev);                /* unit 0/1 serving this device number, or -1 */
 void vdrive_set_host(vdrive_t *v, const vd_host_t *host);
 int  vdrive_chan_mode(const vdrive_t *v, int unit, int ch);   /* 0 closed, 1 file-read, 3 file-write, 4 directory */
+int  vdrive_active(const vdrive_t *v);                        /* unit of the open bus transaction: 0/1, 2 absent device, -1 none */
 int  vdrive_pending_err(const vdrive_t *v, int unit);         /* DOS error code waiting on the status channel (0 = none) */
 
 /* Returns 1 if the transaction is not ours (fall back to the real IEC bus);

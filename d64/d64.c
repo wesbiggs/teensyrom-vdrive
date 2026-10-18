@@ -2,7 +2,8 @@
 #include "vd_cfg.h"
 #include <string.h>
 
-VD_COLD static int spt(uint8_t t)
+/* sectors per track of a 1541 (also each side of a 1571) */
+VD_COLD static int spt35(uint8_t t)
 {
     if (t >= 1 && t <= 17)  return 21;
     if (t >= 18 && t <= 24) return 19;
@@ -10,21 +11,46 @@ VD_COLD static int spt(uint8_t t)
     if (t >= 31 && t <= 40) return 17;
     return 0;
 }
-VD_COLD int d64_sectors_in_track(uint8_t t) { return spt(t); }
+
+VD_COLD static int spt(const d64_t *d, uint8_t t)
+{
+    if (d->fmt == D64_FMT_D81) return (t >= 1 && t <= 80) ? 40 : 0;
+    if (d->fmt == D64_FMT_D71) return t > 35 ? (t <= 70 ? spt35((uint8_t)(t - 35)) : 0) : spt35(t);
+    return spt35(t);
+}
+VD_COLD int d64_sectors_in_track(const d64_t *d, uint8_t t) { return spt(d, t); }
 
 VD_COLD long d64_sector_offset(const d64_t *d, uint8_t t, uint8_t s)
 {
-    if (t < 1 || t > d->tracks || s >= spt(t)) return -1;
+    if (t < 1 || t > d->tracks || s >= spt(d, t)) return -1;
     long off = 0;
-    for (uint8_t i = 1; i < t; i++) off += spt(i);
+    if (d->fmt == D64_FMT_D81) off = (long)(t - 1) * 40;
+    else for (uint8_t i = 1; i < t; i++) off += spt(d, i);
     return (off + s) * D64_SECTOR;
+}
+
+/* file size -> format and track count (images may carry one error byte per sector after the data) */
+VD_COLD static int classify(size_t len, uint8_t *tracks, uint8_t *fmt)
+{
+    if (len >= 819200)      { *fmt = D64_FMT_D81; *tracks = 80; }
+    else if (len >= 349696) { *fmt = D64_FMT_D71; *tracks = 70; }
+    else if (len >= 196608) { *fmt = D64_FMT_D64; *tracks = 40; }
+    else if (len >= 174848) { *fmt = D64_FMT_D64; *tracks = 35; }
+    else return -1;
+    return 0;
+}
+
+VD_COLD static void geometry(d64_t *d, uint8_t tracks)
+{
+    d->fmt = tracks == 80 ? D64_FMT_D81 : tracks == 70 ? D64_FMT_D71 : D64_FMT_D64;
+    d->tracks = tracks == 80 || tracks == 70 || tracks == 40 ? tracks : 35;
 }
 
 VD_COLD static int mem_write(void *ctx, uint8_t t, uint8_t s, const uint8_t *buf)
 {
     d64_mem_t *m = (d64_mem_t *)ctx;
-    uint8_t tracks = (m->len >= 196608) ? 40 : 35;
-    d64_t tmp = { 0, 0, 0, tracks };
+    d64_t tmp = { 0, 0, 0, 0, 0 };
+    if (classify(m->len, &tmp.tracks, &tmp.fmt)) return -1;
     long off = d64_sector_offset(&tmp, t, s);
     if (off < 0 || (size_t)off + D64_SECTOR > m->len) return -1;
     memcpy(m->data + off, buf, D64_SECTOR);
@@ -34,8 +60,8 @@ VD_COLD static int mem_write(void *ctx, uint8_t t, uint8_t s, const uint8_t *buf
 VD_COLD static int mem_read(void *ctx, uint8_t t, uint8_t s, uint8_t *buf)
 {
     d64_mem_t *m = (d64_mem_t *)ctx;
-    uint8_t tracks = (m->len >= 196608) ? 40 : 35;
-    d64_t tmp = { 0, 0, 0, tracks };
+    d64_t tmp = { 0, 0, 0, 0, 0 };
+    if (classify(m->len, &tmp.tracks, &tmp.fmt)) return -1;
     long off = d64_sector_offset(&tmp, t, s);
     if (off < 0 || (size_t)off + D64_SECTOR > m->len) return -1;
     memcpy(buf, m->data + off, D64_SECTOR);
@@ -44,15 +70,22 @@ VD_COLD static int mem_read(void *ctx, uint8_t t, uint8_t s, uint8_t *buf)
 VD_COLD void d64_mem_init(d64_mem_t *m, uint8_t *data, size_t len) { m->data = data; m->len = len; }
 VD_COLD int d64_open(d64_t *d, d64_read_fn rd, void *ctx, uint8_t tracks)
 {
-    d->read = rd; d->write = NULL; d->ctx = ctx; d->tracks = (tracks == 40) ? 40 : 35;
+    d->read = rd; d->write = NULL; d->ctx = ctx;
+    geometry(d, tracks);
     return 0;
+}
+VD_COLD int d64_open_size(d64_t *d, d64_read_fn rd, void *ctx, size_t size)
+{
+    uint8_t tracks, fmt;
+    if (classify(size, &tracks, &fmt)) return -1;
+    return d64_open(d, rd, ctx, tracks);
 }
 VD_COLD int d64_open_mem(d64_t *d, d64_mem_t *m)
 {
-    if (m->len < 174848) return -1;
-    int r = d64_open(d, mem_read, m, m->len >= 196608 ? 40 : 35);
+    int r = d64_open_size(d, mem_read, m, m->len);
+    if (r) return r;
     d->write = mem_write;
-    return r;
+    return 0;
 }
 
 VD_COLD static int rd(d64_t *d, uint8_t t, uint8_t s, uint8_t *b)
@@ -67,6 +100,60 @@ VD_COLD static int wr(d64_t *d, uint8_t t, uint8_t s, const uint8_t *b)
     return d->write(d->ctx, t, s, b) ? D64_E_IO : 0;
 }
 
+/* ---- layout of the three formats ----
+ *   d64: header + BAM 18/0 (name $90, id $A2, DOS $A5), directory 18/1.., 4 bytes per track at $04 (count + 3 bitmap bytes)
+ *   d71: as d64 for tracks 1-35, flag $80 at 18/0 byte 3; side 2 counts at 18/0 $DD.., bitmaps (3 bytes per track) in 53/0
+ *   d81: header 40/0 (name $04, id $16, DOS $19), BAM 40/1 (tracks 1-40) and 40/2 (41-80), 6 bytes per track from $10
+ *        (count + 5 bitmap bytes), directory 40/3..
+ * A set bitmap bit = free sector; sector s is bit (s % 8) of byte (s / 8). */
+/* a file can't have more sectors than the disk: longer chains are loops */
+VD_COLD static uint16_t chain_limit(const d64_t *d) { return d->fmt == D64_FMT_D81 ? 3300 : d->fmt == D64_FMT_D71 ? 1400 : 800; }
+VD_COLD static uint8_t dir_track(const d64_t *d) { return d->fmt == D64_FMT_D81 ? 40 : 18; }
+VD_COLD static uint8_t dir_sector0(const d64_t *d) { return d->fmt == D64_FMT_D81 ? 3 : 1; }   /* first directory sector */
+VD_COLD static uint8_t bam_tracks(const d64_t *d) { return d->fmt == D64_FMT_D81 ? 80 : d->fmt == D64_FMT_D71 ? 70 : 35; }
+VD_COLD static uint8_t bam_reserved(const d64_t *d, uint8_t t)   /* tracks never given to files: directory (and the d71 side-2 BAM) */
+{
+    return t == dir_track(d) || (d->fmt == D64_FMT_D71 && t == 53);
+}
+
+typedef struct { uint8_t ct, cs, co, bt, bs, bo, nb; } bamloc_t;   /* count byte at (ct,cs)+co, bitmap at (bt,bs)+bo, nb bytes */
+
+VD_COLD static void bam_loc(const d64_t *d, uint8_t t, bamloc_t *b)
+{
+    if (d->fmt == D64_FMT_D81) {
+        uint8_t u = t > 40 ? (uint8_t)(t - 40) : t;
+        b->ct = b->bt = 40; b->cs = b->bs = t > 40 ? 2 : 1;
+        b->co = (uint8_t)(16 + 6 * (u - 1)); b->bo = (uint8_t)(b->co + 1); b->nb = 5;
+    } else if (d->fmt == D64_FMT_D71 && t > 35) {
+        b->ct = 18; b->cs = 0; b->co = (uint8_t)(0xDD + (t - 36));
+        b->bt = 53; b->bs = 0; b->bo = (uint8_t)(3 * (t - 36)); b->nb = 3;
+    } else {
+        b->ct = b->bt = 18; b->cs = b->bs = 0;
+        b->co = (uint8_t)(4 * t); b->bo = (uint8_t)(4 * t + 1); b->nb = 3;
+    }
+}
+
+/* Read the BAM sector(s) for track t; *cnt / *bits point into bufA / bufB. */
+VD_COLD static int bam_load(d64_t *d, uint8_t t, bamloc_t *L, uint8_t *bufA, uint8_t *bufB, uint8_t **cnt, uint8_t **bits)
+{
+    bam_loc(d, t, L);
+    int r = rd(d, L->bt, L->bs, bufA);
+    if (r) return r;
+    *bits = bufA + L->bo;
+    if (L->ct == L->bt && L->cs == L->bs) { *cnt = bufA + L->co; return 0; }
+    if ((r = rd(d, L->ct, L->cs, bufB))) return r;
+    *cnt = bufB + L->co;
+    return 0;
+}
+
+VD_COLD static int bam_store(d64_t *d, const bamloc_t *L, const uint8_t *bufA, const uint8_t *bufB)
+{
+    int r = wr(d, L->bt, L->bs, bufA);
+    if (r) return r;
+    if (L->ct != L->bt || L->cs != L->bs) r = wr(d, L->ct, L->cs, bufB);
+    return r;
+}
+
 VD_COLD static void strip(char *dst, const uint8_t *src, int n)
 {
     int len = n;
@@ -78,28 +165,33 @@ VD_COLD static void strip(char *dst, const uint8_t *src, int n)
 VD_COLD int d64_header(d64_t *d, char name[17], char id[3], char dos[3])
 {
     uint8_t b[D64_SECTOR];
-    if (rd(d, 18, 0, b)) return -1;
-    strip(name, b + 0x90, 16);
-    id[0] = b[0xA2]; id[1] = b[0xA3]; id[2] = 0;
-    dos[0] = b[0xA5]; dos[1] = b[0xA6]; dos[2] = 0;
+    int n = d->fmt == D64_FMT_D81 ? 0x04 : 0x90, i = d->fmt == D64_FMT_D81 ? 0x16 : 0xA2, o = d->fmt == D64_FMT_D81 ? 0x19 : 0xA5;
+    if (rd(d, dir_track(d), 0, b)) return -1;
+    strip(name, b + n, 16);
+    id[0] = b[i]; id[1] = b[i + 1]; id[2] = 0;
+    dos[0] = b[o]; dos[1] = b[o + 1]; dos[2] = 0;
     return 0;
 }
 
 VD_COLD int d64_blocks_free(d64_t *d)
 {
-    uint8_t b[D64_SECTOR];
-    if (rd(d, 18, 0, b)) return -1;
+    uint8_t b[D64_SECTOR], held_t = 0, held_s = 0xFF;
     int free_ = 0;
-    for (int t = 1; t <= 35; t++) if (t != 18) free_ += b[4 * t];
+    for (uint8_t t = 1; t <= bam_tracks(d); t++) {
+        bamloc_t L;
+        bam_loc(d, t, &L);
+        if (L.ct != held_t || L.cs != held_s) { if (rd(d, L.ct, L.cs, b)) return -1; held_t = L.ct; held_s = L.cs; }
+        if (!bam_reserved(d, t)) free_ += b[L.co];
+    }
     return free_;
 }
 
 VD_COLD int d64_dir_first(d64_t *d, d64_dir_t *it)
 {
     uint8_t b[D64_SECTOR];
-    if (rd(d, 18, 0, b)) return -1;
-    it->track = b[0] ? b[0] : 18;
-    it->sector = b[0] ? b[1] : 1;
+    if (rd(d, dir_track(d), 0, b)) return -1;
+    it->track = b[0] ? b[0] : dir_track(d);
+    it->sector = b[0] ? b[1] : dir_sector0(d);
     it->slot = 8;               /* force load on first next() */
     it->guard = 0;
     return 0;
@@ -110,7 +202,7 @@ VD_COLD int d64_dir_next(d64_t *d, d64_dir_t *it, d64_entry_t *e)
     for (;;) {
         if (it->slot >= 8) {
             if (it->track == 0) return 0;
-            if (++it->guard > 40) return -2;               /* loop in chain */
+            if (++it->guard > 64) return -2;               /* loop in chain */
             if (rd(d, it->track, it->sector, it->buf)) return -1;
             it->cur_t = it->track; it->cur_s = it->sector;
             it->track = it->buf[0]; it->sector = it->buf[1];   /* next sector in chain */
@@ -167,7 +259,7 @@ VD_COLD int d64_file_read(d64_t *d, d64_file_t *f, uint8_t *out, size_t n)
     while (got < n) {
         if (f->pos >= f->end) {
             if (f->next_t == 0) break;                       /* EOF (or empty file) */
-            if (++f->guard > 800) return -2;                 /* chain loop */
+            if (++f->guard > chain_limit(d)) return -2;      /* chain loop */
             if (rd(d, f->next_t, f->next_s, f->buf)) return -1;
             uint8_t lt = f->buf[0], ls = f->buf[1];
             f->pos = 2;
@@ -186,57 +278,75 @@ VD_COLD int d64_file_read(d64_t *d, d64_file_t *f, uint8_t *out, size_t n)
 
 /* ---- write support ------------------------------------------------------ */
 
-VD_COLD static int next_data_track(uint8_t t)
-{   /* allocation order: 17..1 then 19..35 (nearest the directory first); 0 = exhausted */
+/* allocation order: nearest the directory first, one side then the other; 0 = exhausted */
+VD_COLD static int next_data_track(const d64_t *d, uint8_t t)
+{
+    if (d->fmt == D64_FMT_D81) {
+        if (t == 0) return 39;
+        if (t >= 2 && t <= 39) return t - 1;
+        if (t == 1) return 41;
+        if (t >= 41 && t <= 79) return t + 1;
+        return 0;
+    }
     if (t == 0) return 17;
     if (t >= 2 && t <= 17) return t - 1;
     if (t == 1) return 19;
     if (t >= 19 && t <= 34) return t + 1;
+    if (d->fmt == D64_FMT_D71) {
+        if (t == 35) return 52;
+        if (t >= 37 && t <= 52) return t - 1;
+        if (t == 36) return 54;
+        if (t >= 54 && t <= 69) return t + 1;
+    }
     return 0;
 }
 
-/* Allocate one sector. In: *t,*s = hint (t==0: none). dirmode: track 18 only, never sector 0. */
+/* Allocate one sector. In: *t,*s = hint (t==0: none). dirmode: the directory track only, never sector 0. */
 VD_COLD static int alloc_sector(d64_t *d, uint8_t *t, uint8_t *s, int interleave, int dirmode)
 {
-    uint8_t bam[D64_SECTOR];
-    int r = rd(d, 18, 0, bam);
-    if (r) return r;
+    uint8_t bufA[D64_SECTOR], bufB[D64_SECTOR], *cnt, *bits;
+    bamloc_t L;
     uint8_t tr; int hint;
-    if (dirmode)   { tr = 18; hint = (*t == 18) ? *s + interleave : 1; }
+    if (dirmode)   { tr = dir_track(d); hint = (*t == tr) ? *s + interleave : dir_sector0(d); }
     else if (*t)   { tr = *t; hint = *s + interleave; }
-    else           { tr = next_data_track(0); hint = 0; }
+    else           { tr = (uint8_t)next_data_track(d, 0); hint = 0; }
     for (;;) {
-        if (tr == 0 || tr > 35) return D64_E_FULL;
-        if ((tr != 18 || dirmode) && bam[4 * tr] > 0) {
-            int n = spt(tr);
-            for (int i = 0; i < n; i++) {
-                int sec = (hint + i) % n;
-                if (dirmode && sec == 0) continue;
-                if (bam[4 * tr + 1 + sec / 8] & (1 << (sec % 8))) {
-                    bam[4 * tr + 1 + sec / 8] &= (uint8_t)~(1 << (sec % 8));
-                    bam[4 * tr]--;
-                    r = wr(d, 18, 0, bam);
-                    if (r) return r;
-                    *t = tr; *s = (uint8_t)sec;
-                    return 0;
+        if (tr == 0 || tr > bam_tracks(d)) return D64_E_FULL;
+        if (dirmode || !bam_reserved(d, tr)) {
+            int r = bam_load(d, tr, &L, bufA, bufB, &cnt, &bits);
+            if (r) return r;
+            if (*cnt > 0) {
+                int n = spt(d, tr);
+                for (int i = 0; i < n; i++) {
+                    int sec = (hint + i) % n;
+                    if (dirmode && sec == 0) continue;
+                    if (bits[sec / 8] & (1 << (sec % 8))) {
+                        bits[sec / 8] &= (uint8_t)~(1 << (sec % 8));
+                        (*cnt)--;
+                        r = bam_store(d, &L, bufA, bufB);
+                        if (r) return r;
+                        *t = tr; *s = (uint8_t)sec;
+                        return 0;
+                    }
                 }
             }
         }
         if (dirmode) return D64_E_FULL;
-        tr = (uint8_t)next_data_track(tr);
+        tr = (uint8_t)next_data_track(d, tr);
         hint = 0;
     }
 }
 
 VD_COLD static int free_sector(d64_t *d, uint8_t t, uint8_t s)
 {
-    uint8_t bam[D64_SECTOR];
-    if (t < 1 || t > 35 || s >= spt(t)) return D64_E_IO;
-    int r = rd(d, 18, 0, bam);
+    uint8_t bufA[D64_SECTOR], bufB[D64_SECTOR], *cnt, *bits;
+    bamloc_t L;
+    if (t < 1 || t > bam_tracks(d) || s >= spt(d, t)) return D64_E_IO;
+    int r = bam_load(d, t, &L, bufA, bufB, &cnt, &bits);
     if (r) return r;
-    uint8_t bit = (uint8_t)(1 << (s % 8)), *p = &bam[4 * t + 1 + s / 8];
-    if (!(*p & bit)) { *p |= bit; bam[4 * t]++; }
-    return wr(d, 18, 0, bam);
+    uint8_t bit = (uint8_t)(1 << (s % 8)), *p = &bits[s / 8];
+    if (!(*p & bit)) { *p |= bit; (*cnt)++; }
+    return bam_store(d, &L, bufA, bufB);
 }
 
 VD_COLD static int valid_name(const char *n)
@@ -266,7 +376,7 @@ VD_COLD int d64_scratch_entry(d64_t *d, const d64_entry_t *e)
     if (!d->write) return D64_E_RO;
     if (e->type & 0x40) return D64_E_LOCKED;
     uint8_t t = e->track, s = e->sector, b[D64_SECTOR];
-    for (int guard = 0; t && guard < 800; guard++) {
+    for (int guard = 0; t && guard < chain_limit(d); guard++) {
         int r = rd(d, t, s, b);
         if (r) break;                       /* broken chain: free what we can */
         uint8_t nt = b[0], ns = b[1];
@@ -313,10 +423,10 @@ VD_COLD int d64_rename(d64_t *d, const char *oldn, const char *newn)
 VD_COLD static int dir_slot_alloc(d64_t *d, uint8_t *dt, uint8_t *ds, uint8_t *slot)
 {
     uint8_t b[D64_SECTOR], t, s;
-    int r = rd(d, 18, 0, b);
+    int r = rd(d, dir_track(d), 0, b);
     if (r) return r;
-    t = b[0] ? b[0] : 18; s = b[0] ? b[1] : 1;
-    for (int guard = 0; guard < 40; guard++) {
+    t = b[0] ? b[0] : dir_track(d); s = b[0] ? b[1] : dir_sector0(d);
+    for (int guard = 0; guard < 64; guard++) {
         if ((r = rd(d, t, s, b))) return r;
         for (int i = 0; i < 8; i++)
             if (b[i * 32 + 2] == 0) { *dt = t; *ds = s; *slot = (uint8_t)i; return 0; }
@@ -410,6 +520,9 @@ VD_COLD int d64_format(d64_t *d, const char *name, const char *id)
 {
     uint8_t b[D64_SECTOR];
     uint8_t idb[2];
+    const int d81 = d->fmt == D64_FMT_D81, d71 = d->fmt == D64_FMT_D71;
+    const uint8_t dt = dir_track(d);
+    const int name_off = d81 ? 0x04 : 0x90, id_off = d81 ? 0x16 : 0xA2;
     if (!d->write) return D64_E_RO;
     if (!valid_name(name)) return D64_E_NAME;
     if (id) {
@@ -417,29 +530,60 @@ VD_COLD int d64_format(d64_t *d, const char *name, const char *id)
         idb[0] = (uint8_t)id[0]; idb[1] = (uint8_t)id[1];
         memset(b, 0, sizeof b);
         for (uint8_t t = 1; t <= d->tracks; t++)
-            for (int sct = 0; sct < spt(t); sct++)
-                if ((t != 18 || sct > 1)) { int r = wr(d, t, (uint8_t)sct, b); if (r) return r; }
+            for (int sct = 0; sct < spt(d, t); sct++)
+                if (t != dt || sct > (d81 ? 3 : 1)) { int r = wr(d, t, (uint8_t)sct, b); if (r) return r; }
     } else {
-        int r = rd(d, 18, 0, b);
+        int r = rd(d, dt, 0, b);
         if (r) return r;
-        idb[0] = b[0xA2]; idb[1] = b[0xA3];
+        idb[0] = b[id_off]; idb[1] = b[id_off + 1];
     }
-    memset(b, 0, sizeof b);
-    b[0] = 18; b[1] = 1; b[2] = 'A';
-    for (int t = 1; t <= 35; t++) {
-        int n = spt(t);
-        uint8_t *p = &b[4 * t];
-        p[0] = (uint8_t)n;
-        for (int sct = 0; sct < n; sct++) p[1 + sct / 8] |= (uint8_t)(1 << (sct % 8));
+    /* BAM: every sector free, then the system sectors taken */
+    uint8_t bam[3][D64_SECTOR];                                 /* d64/d71: [0] = 18/0, [1] = 53/0.  d81: [1] = 40/1, [2] = 40/2 */
+    memset(bam, 0, sizeof bam);
+    for (uint8_t t = 1; t <= bam_tracks(d); t++) {
+        bamloc_t L;
+        bam_loc(d, t, &L);
+        uint8_t *cs = bam[d81 ? L.cs : (L.ct == 18 ? 0 : 1)], *bs = bam[d81 ? L.bs : (L.bt == 18 ? 0 : 1)];
+        int n = spt(d, t);
+        cs[L.co] = (uint8_t)n;
+        for (int sct = 0; sct < n; sct++) bs[L.bo + sct / 8] |= (uint8_t)(1 << (sct % 8));
     }
-    b[4 * 18] -= 2; b[4 * 18 + 1] &= 0xFC;                  /* 18/0 and 18/1 in use */
-    memset(b + 0x90, 0xA0, 16); memcpy(b + 0x90, name, strlen(name));
-    b[0xA0] = b[0xA1] = 0xA0;
-    b[0xA2] = idb[0]; b[0xA3] = idb[1];
-    b[0xA4] = 0xA0; b[0xA5] = '2'; b[0xA6] = 'A';
-    b[0xA7] = b[0xA8] = b[0xA9] = b[0xAA] = 0xA0;
-    int r = wr(d, 18, 0, b);
+    if (d81) {
+        bamloc_t L; bam_loc(d, 40, &L);
+        bam[1][L.co] = 36; bam[1][L.bo] &= 0xF0;                /* 40/0..40/3 in use */
+        for (int k = 1; k <= 2; k++) {
+            bam[k][0] = k == 1 ? 40 : 0; bam[k][1] = k == 1 ? 2 : 0xFF;
+            bam[k][2] = 'D'; bam[k][3] = 0xBB; bam[k][4] = idb[0]; bam[k][5] = idb[1]; bam[k][6] = 0xC0;
+        }
+        memset(b, 0, sizeof b);
+        b[0] = 40; b[1] = 3; b[2] = 'D';
+        memset(b + 0x04, 0xA0, 16); memcpy(b + 0x04, name, strlen(name));
+        b[0x14] = b[0x15] = 0xA0;
+        b[0x16] = idb[0]; b[0x17] = idb[1];
+        b[0x18] = 0xA0; b[0x19] = '3'; b[0x1A] = 'D'; b[0x1B] = b[0x1C] = 0xA0;
+        int r = wr(d, 40, 0, b); if (r) return r;
+        if ((r = wr(d, 40, 1, bam[1]))) return r;
+        if ((r = wr(d, 40, 2, bam[2]))) return r;
+        memset(b, 0, sizeof b); b[1] = 0xFF;
+        return wr(d, 40, 3, b);
+    }
+    uint8_t *h = bam[0];                                        /* header sector 18/0 = the first BAM sector */
+    h[0] = 18; h[1] = 1; h[2] = 'A'; h[3] = d71 ? 0x80 : 0;
+    bamloc_t L; bam_loc(d, 18, &L);
+    h[L.co] -= 2; h[L.bo] &= 0xFC;                              /* 18/0 and 18/1 in use */
+    if (d71) {
+        bam_loc(d, 53, &L);
+        bam[0][L.co] = 0;                                       /* track 53 holds the side-2 BAM: no file sectors */
+        memset(bam[1] + L.bo, 0, 3);
+    }
+    memset(h + name_off, 0xA0, 16); memcpy(h + name_off, name, strlen(name));
+    h[0xA0] = h[0xA1] = 0xA0;
+    h[0xA2] = idb[0]; h[0xA3] = idb[1];
+    h[0xA4] = 0xA0; h[0xA5] = '2'; h[0xA6] = 'A';
+    h[0xA7] = h[0xA8] = h[0xA9] = h[0xAA] = 0xA0;
+    int r = wr(d, 18, 0, h);
     if (r) return r;
+    if (d71 && (r = wr(d, 53, 0, bam[1]))) return r;
     memset(b, 0, sizeof b); b[1] = 0xFF;
     return wr(d, 18, 1, b);
 }

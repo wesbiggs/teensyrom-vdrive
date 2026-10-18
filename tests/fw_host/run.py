@@ -30,8 +30,8 @@ try:
 
     sd, usb = tmp / "sdroot", tmp / "usbroot"
     (sd / "SUB").mkdir(parents=True); usb.mkdir()
-    def mk(path, name, ident, files):
-        subprocess.run(["c1541", "-format", f"{name},{ident}", "d64", str(path)], capture_output=True, check=True)
+    def mk(path, name, ident, files, fmt="d64"):
+        subprocess.run(["c1541", "-format", f"{name},{ident}", fmt, str(path)], capture_output=True, check=True)
         for fname, data in files.items():
             p = tmp / ("src_" + fname); p.write_bytes(data)
             subprocess.run(["c1541", "-attach", str(path), "-write", str(p), fname.lower()], capture_output=True, check=True)
@@ -39,6 +39,8 @@ try:
     mk(sd / "GAME.D64", "gamedisk", "gd", {"HELLO": hello})
     mk(sd / "SUB" / "INNER.D64", "inner", "in", {})
     mk(usb / "USB.D64", "usbdisk", "us", {})
+    mk(sd / "BIG.D81", "bigdisk", "bd", {"H81": b"\x01\x08d81!"}, "d81")
+    mk(sd / "TWO.D71", "twodisk", "td", {"H71": b"\x01\x08d71!"}, "d71")
     (sd / ".HIDDEN").write_bytes(b"x")
     (sd / "AVERYLONGFILENAME.PRG").write_bytes(b"x")
     expect = tmp / "hello.bin"; expect.write_bytes(hello)

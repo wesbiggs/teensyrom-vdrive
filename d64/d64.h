@@ -1,6 +1,6 @@
-/* D64 engine (read + write). Portable C99, no malloc: all state lives in caller
- * structs and sectors are fetched through a callback, so the same code runs
- * on the Teensy (SD/USB file backend) and on the host (tests, VICE mock). */
+/* Disk image engine (read + write) for .d64 (1541, 35/40 tracks), .d71 (1571, 70 tracks) and .d81 (1581, 80 tracks).
+ * Portable C99, no malloc: all state lives in caller structs and sectors are fetched through a callback, so the same
+ * code runs on the Teensy (SD/USB file backend) and on the host (tests, VICE mock). Names keep the d64_ prefix. */
 #ifndef D64_H
 #define D64_H
 #include <stddef.h>
@@ -30,11 +30,14 @@ enum {
     D64_E_NOTFOUND = -8  /* file not found             -> DOS 62 */
 };
 
+enum { D64_FMT_D64 = 0, D64_FMT_D71 = 1, D64_FMT_D81 = 2 };
+
 typedef struct {
     d64_read_fn  read;
     d64_write_fn write;
     void       *ctx;
-    uint8_t     tracks;          /* 35 or 40 */
+    uint8_t     tracks;          /* 35 or 40 (d64), 70 (d71), 80 (d81) */
+    uint8_t     fmt;             /* D64_FMT_* */
 } d64_t;
 
 typedef struct {
@@ -74,10 +77,11 @@ typedef struct {
 /* Memory-image backend (host tests / mock). Writable if data is. */
 typedef struct { uint8_t *data; size_t len; } d64_mem_t;
 void d64_mem_init(d64_mem_t *m, uint8_t *data, size_t len);
-int  d64_open_mem(d64_t *d, d64_mem_t *m);          /* image size selects 35/40 tracks */
-int  d64_open(d64_t *d, d64_read_fn rd, void *ctx, uint8_t tracks);
+int  d64_open_mem(d64_t *d, d64_mem_t *m);          /* image size selects the format */
+int  d64_open(d64_t *d, d64_read_fn rd, void *ctx, uint8_t tracks);   /* tracks: 35/40 = d64, 70 = d71, 80 = d81 */
+int  d64_open_size(d64_t *d, d64_read_fn rd, void *ctx, size_t file_size);   /* format from the file size (error bytes allowed); -1 if too small */
 
-int  d64_sectors_in_track(uint8_t track);           /* 0 if invalid */
+int  d64_sectors_in_track(const d64_t *d, uint8_t track);   /* 0 if invalid */
 long d64_sector_offset(const d64_t *d, uint8_t track, uint8_t sector); /* byte offset in image, -1 if invalid */
 
 /* Disk header: name (16 PETSCII, stripped), id (2), dos type (2), NUL terminated. */

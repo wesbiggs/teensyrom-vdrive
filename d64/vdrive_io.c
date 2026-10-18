@@ -9,6 +9,7 @@ VD_COLD void vio_init(vio_t *v, vio_hot_t *hot)
     v->h = hot;
     hot->stat = VIO_OK;                   /* idle, nothing pending */
     vdrive_init(&v->vd);
+    vio_publish_devices(v);
 }
 
 uint8_t vio_io1_read(const vio_hot_t *h, uint8_t off)
@@ -19,6 +20,8 @@ uint8_t vio_io1_read(const vio_hot_t *h, uint8_t off)
     case VIO_STAT: return h->stat;
     case VIO_ST:   return h->st;
     case VIO_LEN:  return h->len;
+    case VIO_DEV0: return h->dev0;
+    case VIO_DEV1: return h->dev1;
     default:       return 0;
     }
 }
@@ -134,12 +137,28 @@ VD_COLD static void fsave_close(vio_t *v)
     v->fs_active = 0;
 }
 
+VD_COLD void vio_publish_devices(vio_t *v) { v->h->dev0 = v->vd.dev[0]; v->h->dev1 = v->vd.dev[1]; }
+
+VD_COLD int vio_arm_scan(vio_t *v)
+{
+    v->scan_state = 0;
+    for (int i = 0; i < 2; i++)
+        if (!v->vd.pin[i] && v->vd.unit[i].present) v->scan_state = 1;
+    return v->scan_state;
+}
+
 VD_COLD int vio_poll(vio_t *v)
 {
     if (!v->h->pending) return 0;
-    uint8_t c = v->h->cmd, notmine = 0;
+    uint8_t c = v->h->cmd, notmine = 0, ask = 0;
     v->h->data = 0; v->h->st = 0;
-    if (c >= VD_LISTEN && c <= VD_UNTLK) {
+    if (c == VD_LISTEN || c == VD_TALK || c == VIO_FLOAD_OPEN || c == VIO_FSAVE_OPEN) {     /* a transaction starts */
+        if (v->scan_state == 1) { v->scan_state = 2; ask = 1; }
+        else if (v->scan_state == 2) v->scan_state = 3;                                    /* asked, not answered: this KERNAL does not scan */
+    }
+    if (ask) {
+        /* answer SCANREQ below, execute nothing */
+    } else if (c >= VD_LISTEN && c <= VD_UNTLK) {
         uint8_t d, st;
         notmine = (uint8_t)vdrive_mailbox(&v->vd, c, v->h->arg, &d, &st);
         v->h->data = d; v->h->st = st;
@@ -149,10 +168,13 @@ VD_COLD int vio_poll(vio_t *v)
         case VIO_FSAVE_OPEN:  if (vdrive_unit_for(&v->vd, v->h->arg) >= 0) fsave_open(v);  else notmine = 1; break;
         case VIO_FSAVE_BLK:   fsave_blk(v); break;
         case VIO_FSAVE_CLOSE: fsave_close(v); break;
+        case VIO_SCAN:        v->scan_state = 3; v->h->data = (uint8_t)vdrive_scan_begin(&v->vd); break;
+        case VIO_FREE:        v->h->data = (uint8_t)vdrive_scan_free(&v->vd, v->h->arg); break;
         default: notmine = 1;
     }
+    vio_publish_devices(v);                             /* a U0> or a scan step may have moved a unit */
     v->h->pending = 0;                                  /* order: results first ... */
-    v->h->stat = notmine ? VIO_NOTMINE : VIO_OK;        /* ... then publish the answer token */
+    v->h->stat = ask ? VIO_SCANREQ : notmine ? VIO_NOTMINE : VIO_OK;   /* ... then publish the answer token */
     return 1;
 }
 

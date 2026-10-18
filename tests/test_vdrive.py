@@ -150,6 +150,28 @@ class VDriveTests(unittest.TestCase):
         self.vd.listen(8, 0x6F, b"X:FOO")
         self.assertTrue(self.vd.status().startswith("31,SYNTAX ERROR"))
 
+    def test_ui_uj_reset_answers_73_and_closes_channels(self):
+        for cmd in (b"UI", b"UJ", b"U9"):
+            self.vd.open(8, 2, b"SEED")
+            self.vd.listen(8, 0x6F, cmd)
+            self.assertEqual(self.vd.status(), "73,TRVDRIVE V1.0,00,00\r", cmd)
+            self.assertEqual(self.vd.talk(8, 0x62)[0], b"", cmd)             # the channel was closed by the reset
+            self.assertEqual(self.vd.load(8, b"SEED"), self.seed[b"SEED"])    # the disk is still mounted
+
+    def test_ui_works_with_nothing_mounted_and_bus_speed_variants_are_ignored(self):
+        vd = VDrive(); vd.attach(0, None, present=True)
+        vd.listen(8, 0x6F, b"UI")
+        self.assertEqual(vd.status(), "73,TRVDRIVE V1.0,00,00\r")
+        for cmd in (b"UI+", b"UI-"):
+            vd.listen(8, 0x6F, cmd)
+            self.assertEqual(vd.status(), "00, OK,00,00\r", cmd)
+        vd.listen(8, 0x6F, b"S:X")                                          # other commands still need a disk
+        self.assertTrue(vd.status().startswith("74,DRIVE NOT READY"))
+
+    def test_block_commands_are_refused_not_silently_accepted(self):
+        self.vd.listen(8, 0x6F, b"U1:2 0 18 0")
+        self.assertTrue(self.vd.status().startswith("31,SYNTAX ERROR"))
+
     def test_unread_status_is_dropped_by_the_next_operation(self):
         # the Q4K pattern: scratch through channel 15, read only the first 2 bytes, then save; the next status read must be the
         # save's own "00", not the unread tail of the scratch message

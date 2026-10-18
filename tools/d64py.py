@@ -147,9 +147,10 @@ LIB.vio_hot_sizeof.restype = ctypes.c_size_t
 LIB.vio_io1_read.restype = ctypes.c_uint8
 LIB.vio_io2_read.restype = ctypes.c_uint8
 LIB.vio_poll.restype = ctypes.c_int
-(R_CMD, R_ARG, R_DATA, R_STAT, R_ST, R_LEN) = range(6)
-(F_LOAD_OPEN, F_LOAD_BLK, F_SAVE_OPEN, F_SAVE_BLK, F_SAVE_CLOSE) = range(9, 14)
-BUSY, OK, NOTMINE = 0x80, 0x5A, 0xA5
+LIB.vdrive_active.restype = ctypes.c_int
+(R_CMD, R_ARG, R_DATA, R_STAT, R_ST, R_LEN, R_DEV0, R_DEV1) = range(8)
+(F_LOAD_OPEN, F_LOAD_BLK, F_SAVE_OPEN, F_SAVE_BLK, F_SAVE_CLOSE, F_SCAN, F_FREE) = range(9, 16)
+BUSY, OK, NOTMINE, SCANREQ = 0x80, 0x5A, 0xA5, 0x3C
 
 
 class VIO:
@@ -172,15 +173,21 @@ class VIO:
         LIB.vdrive_attach(self.v, unit, disk.d if disk else None, int(present))
         self.keep.append(disk)
 
-    def set_devices(self, d0, d1): LIB.vdrive_set_devices(self.v, ctypes.c_uint8(d0), ctypes.c_uint8(d1))
+    def arm_scan(self): return LIB.vio_arm_scan(self.v)
+    def vd_act(self): return LIB.vdrive_active(self.v)
 
-    def call(self, cmd, arg=0, length=0):
+    def set_devices(self, d0, d1):
+        LIB.vdrive_set_devices(self.v, ctypes.c_uint8(d0), ctypes.c_uint8(d1))
+        LIB.vio_publish_devices(self.v)
+
+    def call(self, cmd, arg=0, length=0, allow_scan=False):
         """write regs like the 6502, poll like the main loop; returns (notmine, data, st)"""
         self.w(R_ARG, arg); self.w(R_LEN, length); self.w(R_CMD, cmd)
         assert self.r(R_STAT) == BUSY, "BUSY must be visible immediately after the CMD write"
         assert LIB.vio_poll(self.v) == 1
         stat = self.r(R_STAT)
-        assert stat in (OK, NOTMINE), hex(stat)
+        self.stat = stat
+        assert stat in (OK, NOTMINE) or (stat == SCANREQ and allow_scan), hex(stat)
         return stat == NOTMINE, self.r(R_DATA), self.r(R_ST)
 
     def fast_load(self, dev, name):

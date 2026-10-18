@@ -7,13 +7,15 @@ transport is faked here.
 Drives x64sc through its binary monitor: a store-checkpoint on MBX+0 (CMD)
 stops the CPU, this script plays the Teensy (state machine for IEC devices
 8/9 backed by a tiny in-memory 'disk'), writes DATA/STAT/ST and resumes.
-usage: vdrive_mock.py KERNAL.bin
+usage: vdrive_mock.py KERNAL.bin [basic|scan]
+  basic  the whole feature test, no physical drives (the SD drive ends up as device 8 after the start-up scan)
+  scan   physical 1541s at 8 and 10: the SD and USB drives must end up at 9 and 11
 """
 import socket, struct, subprocess, sys, time, threading, queue
 
 MBX = 0xC800
 WIN = 0xCA00                      # IO2 window (RAM here)
-CMD, ARG, DATA, STAT, ST, LEN = (MBX + i for i in range(6))
+CMD, ARG, DATA, STAT, ST, LEN, DEV0, DEV1 = (MBX + i for i in range(8))
 (C_LISTEN, C_TALK, C_SECOND, C_TKSA, C_CIOUT, C_ACPTR, C_UNLSN, C_UNTLK) = range(1, 9)
 NOT_MINE = 0xA5                   # STAT answer tokens (see d64/vdrive_io.h)
 ANSWERED = 0x5A
@@ -21,7 +23,7 @@ ANSWERED = 0x5A
 # ---- drive backed by libd64 ------------------------------------------------
 import ctypes, os, random, shutil, tempfile, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from d64py import LIB, Disk, VDrive, VIO
+from d64py import LIB, Disk, VDrive, VIO, R_DEV0, R_DEV1
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "tests"))
 from test_vio import HostStruct               # ctypes layout of vd_host_t
 
@@ -103,11 +105,18 @@ class Mon:
             out.append(row.rstrip())
         return out
 
-def main(kernal):
-    vice = subprocess.Popen(["x64sc", "-warp", "-drive8type", "0", "-kernal", kernal,
+def main(kernal, scenario="basic"):
+    scan = scenario == "scan"
+    workdir = pathlib.Path(tempfile.mkdtemp())
+    drives = ["-drive8type", "0"]
+    if scan:       # real 1541s at 8 and 10, each with a blank disk so that a LOAD gets a quick FILE NOT FOUND instead of a long "no disk" wait
+        for n in (8, 10):
+            subprocess.run(["c1541", "-format", "real%d,r%d" % (n, n), "d64", str(workdir / ("real%d.d64" % n))], check=True, capture_output=True)
+        drives = ["-drive8type", "1541", "-drive8truedrive", "-drive9type", "0", "-drive10type", "1541", "-drive10truedrive", "-drive11type", "0",
+                  "-8", str(workdir / "real8.d64"), "-10", str(workdir / "real10.d64")]
+    vice = subprocess.Popen(["x64sc", "-warp", *drives, "-kernal", kernal,
                              "-binarymonitor", "-binarymonitoraddress", "ip4://127.0.0.1:6502"],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    workdir = pathlib.Path(tempfile.mkdtemp())
     try:
         m = Mon()
         image, big = make_image(workdir)
@@ -116,6 +125,10 @@ def main(kernal):
         # a fake SD card for CD:/mount/renumber tests (cdtest.bas, renum.bas)
         sdroot = workdir / "sdroot"; sdroot.mkdir()
         (sdroot / "mock.d64").write_bytes(image)
+        for fmt, nm_, fn in (("d81", "bigdisk", "big.d81"), ("d71", "twodisk", "two.d71")):
+            subprocess.run(["c1541", "-format", nm_ + ",xx", fmt, str(sdroot / fn)], check=True, capture_output=True)
+            (workdir / "h.prg").write_bytes(b"\x01\x08" + bytes.fromhex("0b08 0a00 99 22 48 49 22 00 00 00".replace(" ", "")))   # 10 PRINT"HI"
+            subprocess.run(["c1541", "-attach", str(sdroot / fn), "-write", str(workdir / "h.prg"), "hello"], check=True, capture_output=True)
         subprocess.run(["c1541", "-format", "vdtest,01", "d64", str(sdroot / "vdtest.d64")], check=True, capture_output=True)
         hs = {"cwd": sdroot, "disks": [], "entries": [], "i": 0, "saved": []}
         def h_mount(ctx, unit, name, out):
@@ -143,8 +156,15 @@ def main(kernal):
         cbs.save_devices = HostStruct.SAVEDEV(lambda c, a, b: hs["saved"].append((a, b)))
         LIB.vdrive_set_host(io.v, ctypes.byref(cbs))
         io.attach(0, disk)
-        io.attach(1, None, present=False)          # device 9 ("USB") not present in the mock
+        if scan:
+            usb = workdir / "usb.d64"
+            subprocess.run(["c1541", "-format", "usbdisk,us", "d64", str(usb)], check=True, capture_output=True)
+            io.attach(1, Disk(usb.read_bytes()), present=True)
+        else:
+            io.attach(1, None, present=False)      # the USB drive is not present in the mock
+        io.arm_scan()                              # the first IEC transaction triggers the bus scan, like on the TR+
         log = []
+        last_devs = [None]
         fault = {"at": 0, "n": 0}               # fault injection: answer NOT_MINE to the Nth FLOAD_BLK of a run
 
         def service(timeout, limit=None):
@@ -157,10 +177,10 @@ def main(kernal):
                 if typ == 0x62:  # stopped
                     regs = m.read(MBX, 6)
                     c, a, ln = regs[0], regs[1], regs[5]
-                    if 1 <= c <= 13:
+                    if 1 <= c <= 15:
                         if c in (9, 11, 12):                    # commands that consume the window
                             io.win_write(bytes(m.read(WIN, 256)))
-                        nm, d, st = io.call(c, a, ln)
+                        nm, d, st = io.call(c, a, ln, allow_scan=True)
                         if c == 10 and fault["at"]:
                             fault["n"] += 1
                             if fault["n"] == fault["at"]: nm = True
@@ -168,7 +188,9 @@ def main(kernal):
                         if c in (9, 10):                        # commands that produce window data
                             m.write(WIN, io.win_read(256))
                         m.write(DATA, [d]); m.write(ST, [st])
-                        m.write(STAT, [NOT_MINE if nm else ANSWERED])
+                        devs = (io.r(R_DEV0), io.r(R_DEV1))
+                        if devs != last_devs[0]: m.write(DEV0, list(devs)); last_devs[0] = devs
+                        m.write(STAT, [NOT_MINE if nm else io.stat])      # (nm may also come from fault injection)
                         m.write(CMD, [0])
                     m.go()
 
@@ -191,8 +213,31 @@ def main(kernal):
             print(("PASS" if cond else "FAIL"), label)
             ok = ok and cond
 
+        if scan:
+            # the first transaction below is a LOAD: the Teensy answers "scan first", the KERNAL probes 8, 9, 10, 11 and reports the free ones
+            run('LOAD"$",9\r', "SEARCHING FOR $")
+            run('LIST\r', '0 "MOCKDISK')
+            check("scan: SD drive is device 9 (8 is a real 1541), USB drive device 11 (10 is a real 1541): regs %r" % (bytes(m.read(DEV0, 2)),),
+                  bytes(m.read(DEV0, 2)) == bytes([9, 11]))
+            check("scan: the bus was probed (SCAN, then FREE for 9 and 11 only)",
+                  [(e[0], e[1]) for e in log if e[0] in (14, 15)] == [(14, 0), (15, 9), (15, 11)])
+            run('LOAD"$",11\r', "SEARCHING FOR $")
+            run('LIST\r', '0 "USBDISK')
+            n0 = len(log)
+            run('LOAD"X",8\r', "FILE NOT FOUND", absent="DEVICE NOT PRESENT")     # the real drive 8 answers (with a DOS error), not us
+            run('LOAD"X",10\r', "FILE NOT FOUND", absent="DEVICE NOT PRESENT")
+            check("scan: nothing for 8 or 10 was handled by the mock", all(e[4] for e in log[n0:] if e[1] in (8, 10)))
+            run('LOAD"X",12\r', "DEVICE NOT PRESENT")
+            # how long does probing an empty number take with drives on the bus? (jiffies = 1/60 s; LISTEN + SECOND as the scan does it)
+            run('T=TI:POKE780,12:SYS65457:POKE780,111:SYS65427:PRINT"P=";PEEK(144);"T=";TI-T\r', "P= 128")
+            import re; ticks = [int(x) for x in re.findall(r"P= 128 T= (\d+)", "".join(m.screen()))]
+            check("scan: probing an empty number takes %s jiffies (< 4 = 66 ms)" % ticks, ticks and ticks[-1] < 4)
+            return 0 if ok else 1
+
         # --- read side ---
         run('LOAD"$",8\r', "SEARCHING FOR $")
+        check("scan: the first transaction made the KERNAL probe the (empty) bus and the SD drive keeps 8",
+              [(e[0], e[1]) for e in log if e[0] in (14, 15)] == [(14, 0), (15, 8)] and bytes(m.read(DEV0, 2)) == bytes([8, 0]))
         run('LIST\r', '0 "MOCKDISK')
         run('LIST\r', '"BIG"')
         run('LOAD"$:T*",8\r', "SEARCHING FOR $:T*")
@@ -296,7 +341,34 @@ def main(kernal):
         ok = prog("renum", ["8", "10"], ["NEW DEVICE 10 ANSWERS: 0 OK"]) and ok
         check("U0> reported the new number for persistence", hs["saved"] and hs["saved"][-1] == (10, 0))
         ok = prog("renum", ["10", "8"], ["NEW DEVICE 8 ANSWERS: 0 OK"], dev=10) and ok
-        check("... and the default again afterwards", hs["saved"][-1] == (0, 0))
+        check("... an explicit 8 is a fixed number now (saved as 8, not as 'automatic')", hs["saved"][-1] == (8, 0))
+        run('OPEN15,8,15,"U0>"+CHR$(0):CLOSE15\r')                    # CHR$(0): back to automatic numbering
+        check("U0>CHR$(0) saves 'automatic'", hs["saved"][-1] == (0, 0))
+        run('LOAD"$",8\r', "SEARCHING FOR $")
+        check("... and the drive still answers as 8", bytes(m.read(DEV0, 1)) == bytes([8]))
+
+        # --- paths in LOAD names, UI, D71 / D81 images ---
+        run('NEW\r')
+        run('10 OPEN15,8,15,"UI":INPUT#15,A,B$:PRINT"UI=";A;B$:CLOSE15\r')
+        run('RUN\r', "UI= 73 TRVDRIVE V1.0")
+        run('NEW\r')
+        run('OPEN15,8,15,"CD:/":CLOSE15\r')
+        run('LOAD"$/MOCK.D64",8\r', "SEARCHING FOR $/MOCK.D64")      # mounts the image and lists it
+        run('LIST\r', '0 "MOCKDISK')
+        run('LOAD"/MOCK.D64/TEST",8\r', "READY.")                       # a file through a path
+        run('LIST\r', '10 PRINT"HI"')
+        run('LOAD"BIG.D81",8\r', "FILE NOT FOUND")                      # with an image mounted a bare name is a file inside it
+        run('OPEN15,8,15,"CD:_":CLOSE15\r')                                                # nothing mounted: now it is an image to mount,
+        run('LOAD"BIG.D81",8\r', "READY.")                  # and its directory is the "file"
+        run('LIST\r', '0 "BIGDISK')
+        run('LOAD"HELLO",8\r', "READY."); run('LIST\r', '10 PRINT"HI"')  # load from the D81 (fast path through the 1581 layout)
+        run('NEW\r'); run('10 PRINT"SAVED81"\r'); run('SAVE"S81",8\r', "SAVING S81")
+        run('NEW\r'); run('LOAD"S81",8\r', "READY."); run('RUN\r', "SAVED81")
+        run('LOAD"$/TWO.D71",8\r', "SEARCHING FOR $/TWO.D71"); run('LIST\r', '0 "TWODISK')
+        run('LOAD"HELLO",8\r', "READY."); run('LIST\r', '10 PRINT"HI"')
+        run('LOAD"$/",8\r', "SEARCHING FOR $/"); run('LIST\r', '"SD:/')               # a folder path: the host directory
+        run('OPEN15,8,15,"CD:/MOCK.D64":CLOSE15\r')                                       # leave the card as the later tests expect
+        run('NEW\r')
 
         # --- handler absent (BUSY never clears): KERNAL must time out and use the real IEC code ---
         m.req(0x13, struct.pack("<I", cp_num))                  # delete the checkpoint: nobody answers any more
@@ -328,4 +400,4 @@ def main(kernal):
         shutil.rmtree(workdir, ignore_errors=True)
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1]))
+    sys.exit(main(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else "basic"))

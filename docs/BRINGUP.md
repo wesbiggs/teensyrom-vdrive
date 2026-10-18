@@ -112,6 +112,18 @@ Check after each line; keep the trace open.
 | Files vanish after power cycle | write-back flush (250 ms idle) not reached; `File::flush()` semantics on the media |
 | Link error RAM1 | `-DVD_ALLOC_HEAP`, lower `VD_NSLOT`, or move more code to `FLASHMEM` |
 
+## Stage 9 — automatic device numbers, D71/D81, paths (firmware 0.9.0.5, host- and VICE-tested only)
+Build with the new patch (`firmware/REV` 5) and a KERNAL image from the same tree (`make build/kernal-tr.bin`); the image and firmware must match (an old
+image with the new firmware just keeps 8/9 after one ~1 s pause; a new image with the old firmware changes nothing).
+1. No other drive on the bus: `LOAD"$",8` as the first command lists the SD card as before; `PEEK(56854)` is 8 (and `PEEK(56855)` 9 with a stick). Trace:
+   `cmd=1` (LISTEN, answered `stat=3c`), `cmd=14`, one or two `cmd=15`, then the original command again. Note how long the first access takes.
+2. A real drive (1541 / SD2IEC / Meatloaf) at 8 and nothing at 9: restart, `LOAD"$",9` lists the SD card, `PEEK(56854)` is 9, `LOAD"$",8` reaches the real drive.
+3. Real drives at 8 and 9: SD must become 10, USB 11. A real drive at 9 only: SD 8, USB 10.
+4. Fix a number with `OPEN15,8,15,"U0>"+CHR$(12):CLOSE15`: restart, the SD drive is 12 and the scan only places the USB drive. `U0>"+CHR$(0)` makes it automatic again.
+5. A `.d81` on the SD card: `OPEN15,8,15,"CD:BIG.D81":CLOSE15`, `LOAD"$",8`, `LOAD"NAME",8,1`, `SAVE"X",8`; same for a `.d71`; `c1541` reads the file back from the image.
+6. Paths: `LOAD"$/FOLDER/GAME.D64",8` (mounts, lists), `LOAD"FOLDER/GAME.D64/NAME",8,1`, `OPEN15,8,15,"UI"` then `INPUT#15,A,B$` gives `73 TRVDRIVE V1.0`.
+7. Slow-starting device: power the real drive after the C64 and see that the numbers collide; pin them with `U0>` and see the problem go away.
+
 ## Stage 8 — VDrive+SwiftLink (firmware 0.9.0.4, host-tested only)
 Select Special IO **VDrive+SwiftLink** (or keep VDrive as the default Special IO and launch a program the menu pairs with SwiftLink, e.g. CCGMS).
 The mailbox is at `$DE10`; the SwiftLink ACIA stays at `$DE00-$DE07`.
@@ -133,5 +145,6 @@ settings and the files on the card.
 | `LOAD"BIG"` 6000 B, wall-clock | |
 | `SAVE` 6000 B, wall-clock | |
 | Mailbox calls per 6000 B load (trace) | expect ~27 |
+| Stage 9 (0.9.0.5: scan, D71/D81, paths) | not run |
 | Stage 7 items passed (of 9) | owner-verified: 1-6 core path (mount, load small/large, save, verify, error channel, repeated listings). Pending: 7 (USB, device 9), 8 (U0> renumber), 9 (time-out) |
 | Soak: loads without error | |

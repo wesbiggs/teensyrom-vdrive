@@ -17,6 +17,7 @@ build/libd64.dylib: $(D64SRC) $(wildcard d64/*.h)
 test-d64: build/libd64.dylib
 	python3 -I tests/test_d64.py
 	python3 -I tests/test_d64_write.py
+	python3 -I tests/test_d71_d81.py
 	python3 -I tests/test_vdrive.py
 	python3 -I tests/test_vio.py
 
@@ -28,6 +29,7 @@ test-fw:
 
 test: build/kernal-vd.bin build/libd64.dylib test-d64 test-devcfg test-fw
 	python3 -I tools/vdrive_mock.py build/kernal-vd.bin
+	python3 -I tools/vdrive_mock.py build/kernal-vd.bin scan
 
 shot: build/kernal-tr.bin
 	x64sc -warp -kernal $(CURDIR)/build/kernal-tr.bin -limitcycles 5000000 -exitscreenshot $(CURDIR)/build/banner.png

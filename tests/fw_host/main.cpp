@@ -3,6 +3,7 @@
 // IO1/IO2 handlers (the ISR entry points) and the polling handler.
 #include "stub.h"
 #include <unistd.h>
+#include <set>
 
 FS SD, firstPartition;
 SerialStub Serial;
@@ -36,13 +37,29 @@ static uint8_t r1(uint8_t reg) { IO1Hndlr_VDrive(VD_MboxBase + reg, true); retur
 static void ww(uint8_t off, uint8_t v) { g_bus_in = v; IO2Hndlr_VDrive(off, false); }
 static uint8_t wr_(uint8_t off) { IO2Hndlr_VDrive(off, true); return g_bus_out; }
 
-// returns (notmine<<8)|data ; st in *st
-static int call(uint8_t cmd, uint8_t arg = 0, uint8_t len = 0, uint8_t *st = nullptr)
+static int g_scans = 0;                                    // bus scans the fake KERNAL did
+static std::set<int> g_real_drives;                        // device numbers with a "real drive" on the fake bus
+
+static void raw_call(uint8_t cmd, uint8_t arg, uint8_t len)
 {
     w1(VIO_ARG, arg); w1(VIO_LEN, len); w1(VIO_CMD, cmd);
     if (r1(VIO_STAT) != VIO_BUSY) { puts("BUSY not visible"); fails++; }
     int guard = 0;
     while (r1(VIO_STAT) == VIO_BUSY) { PollingHndlr_VDrive(); if (++guard > 10) { puts("poll stuck"); fails++; break; } }
+}
+
+// returns (notmine<<8)|data ; st in *st. Like the patched KERNAL: a SCANREQ answer is followed by the bus scan, then the command again.
+static int call(uint8_t cmd, uint8_t arg = 0, uint8_t len = 0, uint8_t *st = nullptr)
+{
+    raw_call(cmd, arg, len);
+    if (r1(VIO_STAT) == VIO_SCANREQ) {
+        g_scans++;
+        raw_call(VIO_SCAN, 0, 0);
+        int need = r1(VIO_DATA);
+        for (int dev = 8; need > 0 && dev <= 30; dev++)
+            if (!g_real_drives.count(dev)) { raw_call(VIO_FREE, (uint8_t)dev, 0); need = r1(VIO_DATA); }
+        raw_call(cmd, arg, len);
+    }
     if (st) *st = r1(VIO_ST);
     return ((r1(VIO_STAT) == VIO_NOTMINE) ? 0x100 : 0) | r1(VIO_DATA);
 }
@@ -116,8 +133,9 @@ int main(int argc, char **argv)
     check("unmapped IO1 register left alone", g_bus_out == 0x77);
 
     // the mailbox lives at $DE10; the ACIA range below it is not ours
-    g_bus_out = 0x77; IO1Hndlr_VDrive(0x00, true); IO1Hndlr_VDrive(0x03, true); IO1Hndlr_VDrive(0x07, true); IO1Hndlr_VDrive(0x16, true);
-    check("mailbox is not mapped at $DE00-$DE07 or past $DE15", g_bus_out == 0x77);
+    g_bus_out = 0x77; IO1Hndlr_VDrive(0x00, true); IO1Hndlr_VDrive(0x03, true); IO1Hndlr_VDrive(0x07, true); IO1Hndlr_VDrive(0x08, true);
+    IO1Hndlr_VDrive(VD_MboxBase + 8, true);
+    check("mailbox is not mapped at $DE00-$DE07 or past $DE17", g_bus_out == 0x77);
     g_bus_in = 0x42; IO1Hndlr_VDrive(0x00, false);
     check("a write to $DE00 does not touch the mailbox", vioHot.arg != 0x42 && !vioHot.pending);
 
@@ -210,7 +228,7 @@ int main(int argc, char **argv)
     check("out-of-range/duplicate stored values fall back to defaults", vio->vd.dev[0] == 8 && vio->vd.dev[1] == 9);
     EEPROM.m[eepAdVDriveDevs] = 12; EEPROM.m[eepAdVDriveDevs + 1] = 12;
     VDrive_PreStart();
-    check("duplicate stored values fall back to defaults", vio->vd.dev[0] == 8 && vio->vd.dev[1] == 9);
+    check("duplicate stored values: the first is kept, the second becomes automatic", vio->vd.dev[0] == 12 && vio->vd.dev[1] == 9);
 
     // ---- image opened in the TR menu is mounted at launch (DriveDirPath ends in '*') ----
     EEPROM.m[eepAdVDriveDevs] = 0xFF; EEPROM.m[eepAdVDriveDevs + 1] = 0xFF;
@@ -249,6 +267,48 @@ int main(int argc, char **argv)
     fs_::remove(SD.root / "SUB" / "INNER.D64");
     VDrive_PreStart();
     check("remembered image deleted: starts unmounted, cwd reset", !vdUnit[0].mounted && vdUnit[0].cwd[0] == 0 && !fs_::exists(SD.root / ".vdrive"));
+
+    // ---- D71 / D81 images and paths in names ----
+    EEPROM.m[eepAdVDriveDevs] = 0xFF; EEPROM.m[eepAdVDriveDevs + 1] = 0xFF;
+    IO1[rWRegCurrMenuWAIT] = rmtTeensy; strcpy(DriveDirPath, "/");
+    VDrive_PreStart();
+    cmd15("CD:/"); status15();
+    cmd15("CD:BIG.D81"); check("D81 mounts", status15() == "00, OK,00,00\r" && vdUnit[0].mounted && vdUnit[0].d.fmt == D64_FMT_D81 && vdUnit[0].d.tracks == 80);
+    check("D81 listing", fast_load(8, "$").find("BIGDISK") != std::string::npos);
+    check("fast load from a D81", fast_load(8, "H81", &rc) == std::string("\x01\x08") + "d81!" && rc == 0);
+    check("fast save to a D81", fast_save(8, "SAVED81", std::string(5000, 'R')) == 0);
+    g_ms += 1000; PollingHndlr_VDrive();
+    cmd15("CD:/");
+    d = fast_load(8, "$/TWO.D71");
+    check("LOAD\"$/TWO.D71\" mounts the D71 and lists it", d.find("TWODISK") != std::string::npos && vdUnit[0].mounted && vdUnit[0].d.fmt == D64_FMT_D71);
+    check("... 1328 blocks free on a blank 1571 side-by-side count", d.find("BLOCKS FREE") != std::string::npos);
+    check("path through an image: LOAD\"/BIG.D81/H81\"", fast_load(8, "/BIG.D81/H81", &rc) == std::string("\x01\x08") + "d81!" && rc == 0 && vdUnit[0].d.fmt == D64_FMT_D81);
+    check("a saved D81 file is on the image after the flush (reopen)", (cmd15("CD:/"), cmd15("CD:BIG.D81"), fast_load(8, "SAVED81", &rc).size() == 5002));
+    cmd15("UI"); check("UI answers 73", status15().rfind("73,", 0) == 0);
+    cmd15("CD:/"); status15();
+
+    // ---- bus scan: the fake KERNAL finds real drives at 8 and 9 and the glue hands out 10 / 11 on the first transaction ----
+    g_real_drives = {8, 9};
+    VDrive_PreStart();
+    check("scan pending after start-up", vio->scan_state == 1 && r1(VIO_DEV0) == 8 && r1(VIO_DEV1) == 9);
+    g_scans = 0;
+    nm = call(VD_LISTEN, 8);
+    check("first transaction triggered exactly one scan", g_scans == 1);
+    check("real drive 8 is not ours any more", (nm & 0x100) != 0);
+    call(VD_UNLSN);
+    check("SD drive now 10, USB drive 11 (registers and unit numbers)", r1(VIO_DEV0) == 10 && r1(VIO_DEV1) == 11 && vio->vd.dev[0] == 10 && vio->vd.dev[1] == 11);
+    check("the automatic numbers were not written to EEPROM", EEPROM.m[eepAdVDriveDevs] == 0xFF && EEPROM.m[eepAdVDriveDevs + 1] == 0xFF);
+    check("device 10 serves the SD card", fast_load(10, "$").find("\"SD:/") != std::string::npos);
+    g_real_drives.clear();
+    VDrive_PreStart(); call(VD_LISTEN, 8); call(VD_UNLSN);
+    check("empty bus again: back to 8 / 9", r1(VIO_DEV0) == 8 && r1(VIO_DEV1) == 9);
+    EEPROM.m[eepAdVDriveDevs] = 12; EEPROM.m[eepAdVDriveDevs + 1] = 0;           // SD fixed to 12, USB automatic
+    g_real_drives = {8};
+    VDrive_PreStart(); g_scans = 0; call(VD_LISTEN, 12); call(VD_UNLSN);
+    check("fixed SD number is kept, USB takes the first free one (9)", g_scans == 1 && r1(VIO_DEV0) == 12 && r1(VIO_DEV1) == 9);
+    EEPROM.m[eepAdVDriveDevs] = 12; EEPROM.m[eepAdVDriveDevs + 1] = 13;
+    VDrive_PreStart(); g_scans = 0; call(VD_LISTEN, 12); call(VD_UNLSN);
+    check("both fixed: no scan at all", g_scans == 0 && r1(VIO_DEV0) == 12 && r1(VIO_DEV1) == 13);
 
     printf("%s\n", fails ? "FAILED" : "ALL OK");
     return fails ? 1 : 0;
