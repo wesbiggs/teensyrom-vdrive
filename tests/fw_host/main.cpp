@@ -5,6 +5,9 @@
 
 FS SD, firstPartition;
 SerialStub Serial;
+static uint8_t io1_mem[16];
+volatile uint8_t *IO1 = io1_mem;
+char DriveDirPath[128];
 EEPROMStub EEPROM;
 uint8_t g_bus_in, g_bus_out;
 static uint32_t g_ms = 0;
@@ -175,6 +178,26 @@ int main(int argc, char **argv)
     EEPROM.m[eepAdVDriveDevs] = 12; EEPROM.m[eepAdVDriveDevs + 1] = 12;
     VDrive_PreStart();
     check("duplicate stored values fall back to defaults", vio->vd.dev[0] == 8 && vio->vd.dev[1] == 9);
+
+    // ---- image opened in the TR menu is mounted at launch (DriveDirPath ends in '*') ----
+    EEPROM.m[eepAdVDriveDevs] = 0xFF; EEPROM.m[eepAdVDriveDevs + 1] = 0xFF;
+    IO1[rWRegCurrMenuWAIT] = rmtSD; strcpy(DriveDirPath, "/SUB/INNER.D64*");
+    VDrive_PreStart();
+    check("menu image on SD auto-mounted on unit 0 in its folder", vdUnit[0].mounted && !vdUnit[1].mounted && strcmp(vdUnit[0].cwd, "/SUB") == 0 && vio->vd.unit[0].disk);
+    check("auto-mounted image is listed", fast_load(8, "$").find("\"") != std::string::npos);
+    cmd15("CD:/"); check("CD:/ then unmounts it", status15() == "00, OK,00,00\r" && !vdUnit[0].mounted && vdUnit[0].cwd[0] == 0);
+    IO1[rWRegCurrMenuWAIT] = rmtUSBDrive; strcpy(DriveDirPath, "/USB.D64*");
+    VDrive_PreStart();
+    check("menu image on USB auto-mounted on unit 1", vdUnit[1].mounted && !vdUnit[0].mounted && fast_load(9, "$").find("USBDISK") != std::string::npos);
+    IO1[rWRegCurrMenuWAIT] = rmtSD; strcpy(DriveDirPath, "/SUB");                  // plain folder: nothing to mount
+    VDrive_PreStart();
+    check("plain directory path mounts nothing", !vdUnit[0].mounted && !vdUnit[1].mounted);
+    strcpy(DriveDirPath, "/GONE.D64*");
+    VDrive_PreStart();
+    check("missing image: no mount, no stray cwd", !vdUnit[0].mounted && vdUnit[0].cwd[0] == 0 && !fs_::exists(SD.root / "GONE.D64"));
+    IO1[rWRegCurrMenuWAIT] = rmtTeensy; strcpy(DriveDirPath, "/GAME.D64*");
+    VDrive_PreStart();
+    check("other menu source: nothing mounted", !vdUnit[0].mounted);
 
     printf("%s\n", fails ? "FAILED" : "ALL OK");
     return fails ? 1 : 0;

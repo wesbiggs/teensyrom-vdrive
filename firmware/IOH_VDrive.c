@@ -203,6 +203,34 @@ FLASHMEM static void VD_LoadDevices()
    vdrive_set_devices(&vio->vd, d0, d1);
 }
 
+// ---- auto-mount of the disk image opened in the TeensyROM menu --------------------------------
+// Opening a .d64 in the menu makes DriveDirPath "<dir>/<image>.d64*" (trailing '*' = inside an image). When a program is
+// launched from there, mount that image on the unit of the same storage (SD = unit 0, USB = unit 1) so the program's own
+// LOAD from device 8/9 finds its files.
+extern char DriveDirPath[];
+extern volatile uint8_t* IO1;     // defined in IOH_TeensyROM.c, which is included after this file
+FLASHMEM static void VD_AutoMount(int unit, const char *menuPath)
+{
+   size_t n = strlen(menuPath);
+   if (n < 2 || menuPath[n - 1] != '*' || !vio->vd.unit[unit].present) return;
+   char path[VD_CwdLen + 20];
+   if (n - 1 >= sizeof path) return;
+   memcpy(path, menuPath, n - 1); path[n - 1] = 0;
+   char *slash = strrchr(path, '/');
+   const char *file = slash ? slash + 1 : path;
+   stcVDUnit *u = &vdUnit[unit];
+   size_t dl = slash ? (size_t)(slash - path) : 0;                 // "/a/b/X.D64" -> cwd "/a/b"; root -> ""
+   if (dl >= VD_CwdLen) return;
+   memcpy(u->cwd, path, dl); u->cwd[dl] = 0;
+   char pname[VD_CwdLen];                                           // VD_Mount takes PETSCII names
+   size_t i = 0;
+   for (; file[i] && i + 1 < sizeof pname; i++) pname[i] = (char)VD_ToPetscii(file[i]);
+   pname[i] = 0;
+   d64_t *d = NULL;
+   if (VD_Mount(NULL, unit, pname, &d) == 0) vdrive_attach(&vio->vd, unit, d, 1);
+   else u->cwd[0] = 0;
+}
+
 // ---- handler ---------------------------------------------------------------------------------
 extern bool SDFullInit();
 extern bool USBFileSystemWait();
@@ -234,6 +262,8 @@ FLASHMEM void VDrive_PreStart()
    vdUnit[1].fs = &firstPartition;
    vdrive_attach(&vio->vd, 0, NULL, SDFullInit());
    vdrive_attach(&vio->vd, 1, NULL, USBFileSystemWait());
+   if (IO1[rWRegCurrMenuWAIT] == rmtSD) VD_AutoMount(0, DriveDirPath);
+   else if (IO1[rWRegCurrMenuWAIT] == rmtUSBDrive) VD_AutoMount(1, DriveDirPath);
    vioReady = true;                 // only now may the bus handlers answer
    Serial.printf("VDrive: dev %d (SD) %s, dev %d (USB) %s\n",
                  vio->vd.dev[0], vio->vd.unit[0].present ? "ready" : "absent",

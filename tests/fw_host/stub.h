@@ -86,6 +86,10 @@ struct EEPROMStub { uint8_t m[8192]; uint8_t read(int a) { return m[a]; } void w
 extern EEPROMStub EEPROM;
 enum { eepAdVDriveDevs = 4235 };
 
+enum { rWRegCurrMenuWAIT = 3, rmtUSBDrive = 0, rmtSD = 1, rmtTeensy = 2 };
+extern volatile uint8_t *IO1;
+extern char DriveDirPath[];
+
 inline bool IsDotfile(const char *n) { return n[0] == '.'; }
 bool SDFullInit();
 bool USBFileSystemWait();

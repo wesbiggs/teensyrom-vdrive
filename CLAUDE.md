@@ -36,6 +36,10 @@ Firmware integration and usage: `firmware/README.md`.
   C128 not supported (see above); `File::seek/read/write/flush` semantics on the
   real SD/USB classes, IO1/IO2 ISR timing, tape (device 1) intentionally broken (its code space was reclaimed).
 
+* **Auto-mount (firmware 0.9.0.2, host-tested only):** if a program is launched from inside a `.d64` opened in the TR menu
+  (`DriveDirPath` ends in `*`, menu source SD/USB), `VDrive_PreStart()` mounts that image on the matching unit (SD=8, USB=9) with its
+  folder as the `CD:` directory. Not yet checked on hardware.
+
 ## Layout
 ```
 d64/            portable C99 library, also compiled as C++ by the firmware (keep it C++-clean!)
