@@ -99,11 +99,16 @@ vc_send:
         inc $A6
         bne @wait
         beq @no                 ; timed out
-@ok:    lda MBX_ST
+@ok:    lda MBX_ST              ; every read from the TR is done twice in a row and must agree: now and then the TR answers a
+        cmp MBX_ST              ; few ns late and the 6510 gets a bit-mixed byte (seen on hardware, tests/asm/bustest.s). Two late
+        bne @ok                 ; answers in a row, both wrong the same way, are far less likely (the second read returns the first's byte)
         ora ST
         sta ST
         pla
-        lda MBX_DATA
+@dr:    lda MBX_DATA
+        cmp MBX_DATA
+        bne @dr
+        cmp #0                  ; Z from DATA, as callers expect
         clc
         rts
 @no:    pla
@@ -284,8 +289,10 @@ fl_hook:
         bne fl_slow               ; VERIFY
         stx $A4                 ; original SA: 0 = load to caller's address
         ldy #0
-@nm:    lda ($BB),y             ; file name -> window
+@nm:    lda ($BB),y             ; file name -> window, each byte read back
         sta WIN,y
+        cmp WIN,y
+        bne @nm
         iny
         cpy $B7
         bne @nm
@@ -303,9 +310,13 @@ fl_hook:
         beq @nodev
         jmp $F704               ; FILE NOT FOUND
 @nodev: jmp $F707               ; DEVICE NOT PRESENT
-@ok:    lda WIN
+@ok:    lda WIN                 ; load address: double reads
+        cmp WIN
+        bne @ok
         sta $AE
-        lda WIN+1
+@h1:    lda WIN+1
+        cmp WIN+1
+        bne @h1
         sta $AF
         txa                     ; SA = 0: use the caller's address instead
         bne @go
@@ -320,7 +331,9 @@ fl_hook:
         sta $A3                 ; byte count (0..255)
         beq @chk
         ldy #0
-@cp:    lda WIN,y
+@cp:    lda WIN,y               ; double read: the byte is only taken when two reads in a row agree
+        cmp WIN,y
+        bne @cp
         sta ($AE),y
         iny
         cpy $A3
@@ -337,8 +350,6 @@ fl_hook:
         jmp $F5A9               ; CLC, X/Y = end address, RTS
 
 ; ---- fast SAVE ---------------------------------------------------------------
-fs_fail:
-        jmp $F707               ; mailbox stopped answering mid-save
 fs_slow:
         jsr $F3D5
         jmp $F608
@@ -346,6 +357,8 @@ fs_hook:
         ldy #0
 @nm:    lda ($BB),y
         sta WIN,y
+        cmp WIN,y
+        bne @nm
         iny
         cpy $B7
         bne @nm
@@ -390,6 +403,8 @@ fs_hook:
 @send:  ldy #0
 @c:     lda ($AC),y
         sta WIN,y
+        cmp WIN,y               ; read back: a bad write is sent again
+        bne @c
         iny
         cpy $A3
         bne @c
@@ -397,7 +412,7 @@ fs_hook:
         sta MBX_LEN
         lda #C_FSAVE_BLK
         jsr vcall
-        bcs fs_fail
+        bcs @ff
         lda $AC
         clc
         adc $A3
@@ -409,3 +424,4 @@ fs_hook:
         jsr vcall
 @done:  clc
         rts
+@ff:    jmp $F707               ; mailbox stopped answering mid-save
