@@ -9,11 +9,9 @@
 //
 // This file is included from IOHandlers.h like the other handlers (unity build, compiled as C++).
 
-// Bring-up phase: log every mailbox command on the USB serial port. Define VD_NO_TRACE (e.g. at the top of this
-// file) to silence it once things work: the printing slows the polling loop.
-#if !defined(VD_NO_TRACE) && !defined(VD_TRACE)
-#define VD_TRACE
-#endif
+// Optional bring-up aid: define VD_TRACE (e.g. at the top of this file) to log every mailbox command on the USB serial
+// port. Off by default: the print runs right after the answer is published, i.e. while the C64 is still reading ST / DATA,
+// and the USB serial interrupts then make the bus handler answer late (the C64 reads $00 / the previous bus byte).
 
 #define VD_COLD FLASHMEM          // everything except the bus-ISR register accessors lives in flash
 #include "../vdrive/d64.c"
@@ -478,11 +476,18 @@ FLASHMEM int VDrive_RemoteSet(int unit, const char *path, char *msg, size_t cap)
    return 0;
 }
 
+static_assert(offsetof(vio_hot_t, cmd) == VIO_CMD && offsetof(vio_hot_t, arg) == VIO_ARG && offsetof(vio_hot_t, data) == VIO_DATA &&
+              offsetof(vio_hot_t, stat) == VIO_STAT && offsetof(vio_hot_t, st) == VIO_ST && offsetof(vio_hot_t, len) == VIO_LEN &&
+              offsetof(vio_hot_t, dev0) == VIO_DEV0 && offsetof(vio_hot_t, dev1) == VIO_DEV1, "register bytes must stay in register order");
+
 FASTRUN void IO1Hndlr_VDrive(uint8_t Address, bool R_Wn)
 {
    Address -= VD_MboxBase;                                 // wraps for offsets below the base
    if (!vioReady || Address >= VIO_NREGS) return;         // not mapped: open bus
-   if (R_Wn) DataPortWriteWaitLog(vio_io1_read(&vioHot, Address));
+   // Read straight from the register bytes (cmd..dev1 are laid out in register order): every cycle before the data lines are
+   // driven eats into the 6510's setup time, and the call + switch of vio_io1_read() made this path the slowest one (about one
+   // wrong byte in 8000 reads on a real C64, see tests/asm/bustest.s).
+   if (R_Wn) DataPortWriteWaitLog(reinterpret_cast<volatile uint8_t *>(&vioHot)[Address]);
    else
    {
       uint8_t Data = DataPortWaitRead();

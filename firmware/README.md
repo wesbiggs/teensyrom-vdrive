@@ -97,7 +97,7 @@ trvdrive -H tr.local sd -u                # unmount
 * The mailbox answer is a token (`$5A` / `$A5`); a bad or missing answer in the middle of a transfer aborts it with an error. ~1 s mailbox time-out at the start of a transaction falls back to the stock IEC code, so the image is harmless if the handler isn't active.
 * Space comes from the cassette bit-timing code `$F8E2-$FB8D`: **tape I/O (device 1) no longer works.**
 
-See [docs/BRINGUP.md](../docs/BRINGUP.md) for the staged hardware bring-up plan (build `-DVD_TRACE` for a per-command serial trace).
+See [docs/BRINGUP.md](../docs/BRINGUP.md) for the staged hardware bring-up plan (build `-DVD_TRACE` for a per-command serial trace; it is off by default because the printing makes the bus handler answer late).
 
 ## What is and isn't verified
 Verified on the host (`make test`): the D64 / D71 / D81 engine against `c1541` (contents, BAM equality with `c1541 -validate`,
