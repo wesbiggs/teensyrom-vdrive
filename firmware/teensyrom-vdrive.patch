@@ -15,7 +15,7 @@ index 6024ccd..2f5cbbf 100644
     else IOHandlerNextInit();
  }
 diff --git a/Source/Teensy/MinimalBoot/Common/Common_Defs.h b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
-index 7feae53..12e3c2a 100644
+index 7feae53..b399ce0 100644
 --- a/Source/Teensy/MinimalBoot/Common/Common_Defs.h
 +++ b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
 @@ -14,6 +14,7 @@
@@ -31,7 +31,7 @@ index 7feae53..12e3c2a 100644
  
  
 -#define TRVersion              "0.9"    //*VERSION*
-+#define TRVersion              "0.9.0.11"    //*VERSION*  (stock 0.9 + VDrive rev 11)
++#define TRVersion              "0.9.0.12"    //*VERSION*  (stock 0.9 + VDrive rev 12)
  #ifdef Fab04_Features
     char strVersionNumber[] = "TeensyROM+ v" TRVersion; 
  #else
@@ -91,10 +91,10 @@ index 88bc75b..26e4a01 100644
        
 diff --git a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c
 new file mode 100644
-index 0000000..cf6e93a
+index 0000000..9ffe33f
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c
-@@ -0,0 +1,509 @@
+@@ -0,0 +1,600 @@
 +// "VDrive" Special IO for TeensyROM+: replacement KERNAL + virtual IEC drive.
 +//   unit 0 = SD card, unit 1 = USB drive. Device numbers are automatic by default: the first free numbers from 8 up
 +//   (the KERNAL probes the real serial bus on the first disk access of a run, see vdrive_io.h), so 8 (SD) and 9 (USB) when
@@ -174,9 +174,18 @@ index 0000000..cf6e93a
 +}
 +FLASHMEM static uint8_t VD_ToPetscii(char c) { return (c >= 'a' && c <= 'z') ? c - 0x20 : c; }
 +
++FLASHMEM static void VD_Squeeze(char *p)      // "//a///b" -> "/a/b" (the TR menu hands USB paths over with a doubled slash)
++{
++   char *w = p;
++   for (const char *r = p; *r; r++) if (!(*r == '/' && w > p && w[-1] == '/')) *w++ = *r;
++   *w = 0;
++}
++
 +FLASHMEM static void VD_PathFor(stcVDUnit *u, const char *name, char *out, size_t cap)
 +{
-+   size_t n = snprintf(out, cap, "%s/", u->cwd);
++   size_t n = snprintf(out, cap, "%s", u->cwd);
++   while (n > 0 && n < cap && out[n - 1] == '/') n--;                 // cwd "/" must not give "//name"
++   if (n + 1 < cap) out[n++] = '/';
 +   for (; *name && n + 1 < cap; name++) out[n++] = VD_ToAscii((uint8_t)*name);
 +   out[n] = 0;
 +}
@@ -367,9 +376,14 @@ index 0000000..cf6e93a
 +extern volatile uint8_t* IO1;     // defined in IOH_TeensyROM.c, which is included after this file
 +
 +// path = "/a/b/X.D64" (ASCII, no trailing '*'): folder becomes the unit's cwd, then the image is mounted.
-+FLASHMEM static int VD_MountPath(int unit, const char *path)   // 0 ok, else a DOS error code
++FLASHMEM static int VD_MountPath(int unit, const char *rawPath)   // 0 ok, else a DOS error code
 +{
 +   stcVDUnit *u = &vdUnit[unit];
++   char sq[VD_CwdLen + 20];
++   if (strlen(rawPath) >= sizeof sq) return 33;
++   strlcpy(sq, rawPath, sizeof sq);
++   VD_Squeeze(sq);
++   const char *path = sq;
 +   const char *slash = strrchr(path, '/');
 +   const char *file = slash ? slash + 1 : path;
 +   size_t dl = slash ? (size_t)(slash - path) : 0;                 // "/a/b/X.D64" -> cwd "/a/b"; root -> ""
@@ -531,6 +545,17 @@ index 0000000..cf6e93a
 +   return 0;
 +}
 +
++// 0 = a readable file of at least D64 size; else 62 (not found) / 74 (not a disk image), reason in msg.
++FLASHMEM static int VD_CheckImage(FS *fs, const char *path, char *msg, size_t cap)
++{
++   File probe = fs->open(path, FILE_READ);
++   if (!probe) { snprintf(msg, cap, "file not found"); return 62; }
++   bool bad = probe.isDirectory() || probe.size() < 174848;
++   probe.close();
++   if (bad) { snprintf(msg, cap, "not a disk image"); return 74; }
++   return 0;
++}
++
 +// Select the disk image for a unit: path = "/dir/IMAGE.D64" (ASCII, on that unit's own card), "" = unmount (the folder stays).
 +// Waits for a quiet moment (up to VD_SwapWaitMs, polling the mailbox meanwhile), then closes every channel on the unit and
 +// mounts, exactly as CD: would. Returns 0, or a DOS error code with a short reason in msg; 1 = no such unit, 2 = not quiet in time.
@@ -541,11 +566,8 @@ index 0000000..cf6e93a
 +   if (path[0] && path[0] != '/') { snprintf(msg, cap, "path must start with /"); return 33; }
 +   if (path[0])   // check the image before disturbing anything: a mistyped path must leave the current disk mounted
 +   {
-+      File probe = u->fs->open(path, FILE_READ);
-+      if (!probe) { snprintf(msg, cap, "file not found"); return 62; }
-+      bool bad = probe.isDirectory() || probe.size() < 174848;
-+      probe.close();
-+      if (bad) { snprintf(msg, cap, "not a disk image"); return 74; }
++      int r = VD_CheckImage(u->fs, path, msg, cap);
++      if (r) return r;
 +   }
 +   if (VDrive_RemoteQuiet(msg, cap)) return 2;
 +   if (!path[0])
@@ -568,6 +590,75 @@ index 0000000..cf6e93a
 +      else vdrive_attach(&vio->vd, unit, NULL, 1);
 +      snprintf(msg, cap, "cannot mount (DOS error %d)", r);
 +      return r;
++   }
++   msg[0] = 0;
++   return 0;
++}
++
++// ---- remote control while VDrive is NOT running (the TR menu is showing) ------------------------------------------------------
++// Nothing is mounted then; what a unit will mount at the next start is its /.vdrive sidecar (unless the launch comes from a disk image
++// opened in the menu). So "get" reports that remembered image and "set" rewrites the sidecar: no handler, no mailbox, only the card.
++FLASHMEM static FS *VD_IdleFS(int unit)
++{
++   if (unit == 0) return &SD;
++   if (unit == 1 && USBFileSystemWait()) return &firstPartition;     // waits up to 1.5 s, as the other remote commands do
++   return NULL;
++}
++
++FLASHMEM size_t VDrive_RemoteIdleStatus(int unit, char *out, size_t cap)
++{
++   if (unit < 0 || unit > 1) return 0;
++   FS *fs = VD_IdleFS(unit);
++   char path[VD_CwdLen + 20];
++   path[0] = 0;
++   if (fs)
++   {
++      File f = fs->open(VD_Sidecar, FILE_READ);
++      if (f) { int n = f.read(path, sizeof path - 1); f.close(); path[n > 0 ? n : 0] = 0; }
++      VD_Squeeze(path);
++      if (path[0])
++      {
++         File probe = fs->open(path, FILE_READ);
++         bool ok = probe && !probe.isDirectory();
++         if (probe) probe.close();
++         if (!ok) path[0] = 0;                                        // remembered image is gone: it will start unmounted
++      }
++   }
++   for (char *p = path; *p; p++) if (*p == '"' || *p == '\\') *p = '?';
++   char cwd[VD_CwdLen + 20];
++   const char *slash = strrchr(path, '/');
++   size_t cl = slash ? (size_t)(slash - path) : 0;
++   memcpy(cwd, path, cl); cwd[cl] = 0;
++   uint8_t pin = EEPROM.read(eepAdVDriveDevs + unit);                 // 0 = automatic
++   if (pin < 8 || pin > 30) pin = 0;
++   int n = snprintf(out, cap,
++      "{\"unit\":%d,\"storage\":\"%s\",\"running\":false,\"device\":%u,\"fixed\":%u,\"mounted\":%s,\"writable\":true,\"path\":\"%s\",\"cwd\":\"%s\"}",
++      unit, unit == 0 ? "sd" : "usb", pin, pin, path[0] ? "true" : "false", path, cl ? cwd : "/");
++   return (n > 0 && (size_t)n < cap) ? (size_t)n : 0;
++}
++
++// Same arguments and return codes as VDrive_RemoteSet (1 = no such unit / card, 33, 62, 74), but only the sidecar changes.
++FLASHMEM int VDrive_RemoteIdleSet(int unit, const char *path, char *msg, size_t cap)
++{
++   FS *fs = (unit >= 0 && unit <= 1) ? VD_IdleFS(unit) : NULL;
++   if (!fs) { snprintf(msg, cap, "no such drive"); return 1; }
++   char sq[VD_CwdLen + 20];
++   if (strlen(path) >= sizeof sq) { snprintf(msg, cap, "path too long"); return 33; }
++   strlcpy(sq, path, sizeof sq);
++   VD_Squeeze(sq);
++   if (sq[0] && sq[0] != '/') { snprintf(msg, cap, "path must start with /"); return 33; }
++   if (sq[0])
++   {
++      int r = VD_CheckImage(fs, sq, msg, cap);
++      if (r) return r;
++   }
++   if (fs->exists(VD_Sidecar)) fs->remove(VD_Sidecar);                // FILE_WRITE appends: start from an empty file
++   if (sq[0])
++   {
++      File f = fs->open(VD_Sidecar, FILE_WRITE);
++      if (!f) { snprintf(msg, cap, "cannot write /.vdrive"); return 74; }
++      f.write(sq, strlen(sq));
++      f.close();
 +   }
 +   msg[0] = 0;
 +   return 0;
@@ -2551,7 +2642,7 @@ index 0000000..698301b
 +#endif
 +#endif
 diff --git a/Source/Teensy/SerUSBIO.ino b/Source/Teensy/SerUSBIO.ino
-index 92480e7..4f81e9c 100644
+index 92480e7..dd6a447 100644
 --- a/Source/Teensy/SerUSBIO.ino
 +++ b/Source/Teensy/SerUSBIO.ino
 @@ -600,6 +600,12 @@ FLASHMEM void ProcessCommand()
@@ -2593,7 +2684,7 @@ index 92480e7..4f81e9c 100644
     {
        SendU16(FailToken);
        CmdChannel->print("Busy!\n");
-@@ -805,6 +828,67 @@ FLASHMEM void LaunchFile()
+@@ -805,6 +828,82 @@ FLASHMEM void LaunchFile()
     }
  }
  
@@ -2604,8 +2695,10 @@ index 92480e7..4f81e9c 100644
 +   //   App: VDriveSetToken 0x64E4, Drive(1), ImagePath (null term)  ImagePath: "/dir/IMAGE.D64" on that unit's card, "" = unmount
 +   //Teensy: AckToken 0x64CC and one line of JSON (the unit's state after the change), or
 +   //        FailToken 0x9B7F and a line of text with the reason
-+   //   Works while the VDrive handler runs a C64 program (the handler-busy check lets it through).  A change of disk waits for a
-+   //   quiet moment on the C64's drive (no LOAD/SAVE in flight; up to 3 s) and closes the unit's open channels.
++   //   Works while the VDrive handler runs a C64 program (the handler-busy check lets it through).  With the TR menu showing (VDrive not
++   //   running) the same commands report / rewrite the unit's remembered image (/.vdrive), which is what it mounts at the next start;
++   //   the JSON then has "running":false.  While it runs, a change of disk waits for a quiet moment on the C64's drive (no LOAD/SAVE in
++   //   flight; up to 3 s) and closes the unit's open channels.
 +   uint32_t Drive;
 +   if (!GetUInt(&Drive, 1)) return;
 +   char Path[MaxNamePathLength];
@@ -2626,12 +2719,6 @@ index 92480e7..4f81e9c 100644
 +         }
 +      }
 +   }
-+   if (CurrentIOHandler != IOH_VDrive && CurrentIOHandler != IOH_VDriveSwift)
-+   {
-+      SendU16(FailToken);
-+      CmdChannel->print("VDrive is not running\n");
-+      return;
-+   }
 +   if (Drive != rmtSD && Drive != rmtUSBDrive)
 +   {
 +      SendU16(FailToken);
@@ -2639,14 +2726,33 @@ index 92480e7..4f81e9c 100644
 +      return;
 +   }
 +   int Unit = (Drive == rmtSD) ? 0 : 1;   //VDrive's own numbering: 0 = SD, 1 = USB
++   bool Running = (CurrentIOHandler == IOH_VDrive || CurrentIOHandler == IOH_VDriveSwift);
 +   char Msg[64];
++   char Json[2 * MaxNamePathLength + 160];
++   if (!Running)
++   {  //TR menu showing: report / change what the unit will mount at the next start (its /.vdrive sidecar)
++      if (Set && VDrive_RemoteIdleSet(Unit, Path, Msg, sizeof Msg) != 0)
++      {
++         SendU16(FailToken);
++         CmdChannel->printf("%s\n", Msg);
++         return;
++      }
++      if (VDrive_RemoteIdleStatus(Unit, Json, sizeof Json) == 0)
++      {
++         SendU16(FailToken);
++         CmdChannel->print("No such drive\n");
++         return;
++      }
++      SendU16(AckToken);
++      CmdChannel->printf("%s\n", Json);
++      return;
++   }
 +   if (Set && VDrive_RemoteSet(Unit, Path, Msg, sizeof Msg) != 0)
 +   {
 +      SendU16(FailToken);
 +      CmdChannel->printf("%s\n", Msg);
 +      return;
 +   }
-+   char Json[2 * MaxNamePathLength + 160];
 +   if (VDrive_RemoteStatus(Unit, Json, sizeof Json) == 0)
 +   {
 +      SendU16(FailToken);

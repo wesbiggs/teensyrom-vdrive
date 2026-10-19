@@ -58,9 +58,9 @@ Firmware integration and usage: `firmware/README.md`.
   keeps data in the RAM under the KERNAL (`$E000-$FFF9`, `vault.s`) and switches `$01`, which the TR's KERNAL-replace hook (`KernalCheck`, HIRAM sensing) has to follow, so first
   run the control: Kernal Replace with the *stock* KERNAL image (`build/kernal-stock.bin`) and the same program. If that also breaks, it is not ours. The game's modem is the KERNAL
   RS-232 (user port), not a SwiftLink. VICE cannot show it (an autostart under either KERNAL stays at LOADING).
-  (2) `trvdrive` shows the USB image as `//vdtest.d64` (SD: `/vdtest.d64`); `VD_PathFor` joins `cwd` + `/` and the USB cwd carried a trailing `/`. Cosmetic, but the same string goes into the
-  `/.vdrive` sidecar. (3) `trvdrive` answers `VDrive is not running` while the TR menu is showing (the handler only runs once a program has started). A firmware-only workaround
-  is possible: get = report the remembered image from the unit's `/.vdrive` sidecar (marked as not running), set = validate the image and write the sidecar, so the next start mounts it.
+  (2) `trvdrive` showed the USB image as `//vdtest.d64`: the menu hands USB paths over with a doubled slash. Fixed in 0.9.0.12 (slashes collapsed on mount and in `VD_PathFor`; host-tested only).
+  (3) `trvdrive` answered `VDrive is not running` while the TR menu was showing. 0.9.0.12 (host-tested only): get reports the unit's remembered image from its `/.vdrive` sidecar (`"running":false`),
+  set validates an image and rewrites the sidecar, so the next start mounts it (docs/DESIGN.md 20).
 * Known open risks:
   C128 not supported (see above); `File::seek/read/write/flush` semantics on the
   real SD/USB classes, IO1/IO2 ISR timing, tape (device 1) intentionally broken (its code space was reclaimed).

@@ -392,6 +392,38 @@ int main(int argc, char **argv)
         vioReady = true;
     }
 
+    // ---- remote control with the TR menu showing (VDrive not running): the remembered image in /.vdrive ----
+    {
+        char js[400], msg[64];
+        EEPROM.m[eepAdVDriveDevs] = 0xFF; EEPROM.m[eepAdVDriveDevs + 1] = 12;
+        fs_::remove(SD.root / ".vdrive"); fs_::remove(firstPartition.root / ".vdrive");
+        auto idle = [&](int unit, const char *needle) { return VDrive_RemoteIdleStatus(unit, js, sizeof js) > 0 && strstr(js, needle) != nullptr; };
+        check("idle get: nothing remembered", idle(0, "\"running\":false,\"device\":0,\"fixed\":0,\"mounted\":false,\"writable\":true,\"path\":\"\",\"cwd\":\"/\""));
+        check("idle get: a fixed device number is reported", idle(1, "\"storage\":\"usb\",\"running\":false,\"device\":12,\"fixed\":12"));
+        check("idle get: no unit 2", VDrive_RemoteIdleStatus(2, js, sizeof js) == 0 && VDrive_RemoteIdleStatus(-1, js, sizeof js) == 0);
+        check("idle set: remembers an image on SD", VDrive_RemoteIdleSet(0, "/SUB/COPY.D64", msg, sizeof msg) == 0 && idle(0, "\"mounted\":true,\"writable\":true,\"path\":\"/SUB/COPY.D64\",\"cwd\":\"/SUB\""));
+        { std::ifstream f(SD.root / ".vdrive"); std::string t((std::istreambuf_iterator<char>(f)), {}); check("... the sidecar holds exactly that path", t == "/SUB/COPY.D64"); }
+        check("idle set: a doubled slash is squeezed", VDrive_RemoteIdleSet(1, "//USB.D64", msg, sizeof msg) == 0 && idle(1, "\"path\":\"/USB.D64\",\"cwd\":\"/\""));
+        check("idle set: unknown image 62, sidecar untouched", VDrive_RemoteIdleSet(0, "/NOPE.D64", msg, sizeof msg) == 62 && idle(0, "/SUB/COPY.D64"));
+        check("idle set: a folder is not an image (74)", VDrive_RemoteIdleSet(0, "/SUB", msg, sizeof msg) == 74 && idle(0, "/SUB/COPY.D64"));
+        check("idle set: relative path refused (33)", VDrive_RemoteIdleSet(0, "GAME.D64", msg, sizeof msg) == 33 && idle(0, "/SUB/COPY.D64"));
+        check("idle set: no such unit", VDrive_RemoteIdleSet(2, "/GAME.D64", msg, sizeof msg) == 1);
+        fs_::remove(SD.root / "SUB" / "COPY.D64");
+        check("idle get: a remembered image that is gone shows as unmounted", idle(0, "\"mounted\":false"));
+        fs_::copy_file(SD.root / "TWO.D71", SD.root / "SUB" / "COPY.D64", fs_::copy_options::overwrite_existing);
+        check("idle set: empty path forgets the image", VDrive_RemoteIdleSet(0, "", msg, sizeof msg) == 0 && !fs_::exists(SD.root / ".vdrive") && idle(0, "\"mounted\":false"));
+        // the next start mounts what was set, and a doubled slash in a remembered path no longer leaks into the display
+        VDrive_RemoteIdleSet(0, "/GAME.D64", msg, sizeof msg);
+        IO1[rWRegCurrMenuWAIT] = rmtTeensy; DriveDirPath[0] = 0;
+        VDrive_PreStart();
+        check("idle set then start: the image is mounted", vdUnit[0].mounted && fast_load(8, "$").find("GAMEDISK") != std::string::npos);
+        { std::ofstream f(firstPartition.root / ".vdrive", std::ios::trunc); f << "//USB.D64"; }
+        VDrive_PreStart();
+        check("a sidecar with a doubled slash mounts with cwd root, not //", vdUnit[1].mounted && vdUnit[1].cwd[0] == 0);
+        check("... and the status path has a single slash", VDrive_RemoteStatus(1, js, sizeof js) > 0 && strstr(js, "\"path\":\"/usb.d64\"") && !strstr(js, "//"));
+        fs_::remove(SD.root / ".vdrive"); fs_::remove(firstPartition.root / ".vdrive");
+    }
+
     printf("%s\n", fails ? "FAILED" : "ALL OK");
     return fails ? 1 : 0;
 }

@@ -89,6 +89,8 @@ trvdrive -H tr.local sd /GAMES/DISK2.D64  # mount
 trvdrive -H tr.local sd -u                # unmount
 ```
 
+With the TR menu showing (no program running) the same commands show and change the image each unit will mount at the next start (the `/.vdrive` file on its card; the reply says `VDrive not running`). A program launched from a disk image opened in the menu still mounts that image instead.
+
 ## What changed in the KERNAL (`patches/vdrive.s`)
 * The 8 serial entry points (`LISTEN TALK SECOND TKSA CIOUT ACPTR UNLSN UNTLK`) `JMP` into stubs that ask the mailbox
   whether the transaction is for one of the virtual drives; "not mine" replays the displaced instructions into the stock routine.
