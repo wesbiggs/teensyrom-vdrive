@@ -151,4 +151,5 @@ settings and the files on the card.
 | Bus stress test, `BUSTEST` errors per 8x65536 accesses (0.9.0.9, trace on) | T1 3E, T2 B8, T3 12, T4 0D, T5 0A, T6 3B, T7 0B; T8 (stock KERNAL ROM read) 0 |
 | Same, 0.9.0.11 (IO1 reads straight from the register bytes) | T1 6, T2 C, T3 9, T4 A, T5 A, T6 7, T7 5; T8 0. The raw bus still errs about once in 50,000 accesses, so the KERNAL double-reads |
 | VDrive+SwiftLink (stage 8), `.d81` on the card, bus scan with a real 1541, `STATUS` vs a real drive | not run |
-| *Quest for the King* with VDrive active | fails (starts, does not finish loading, corrupts); control with stock KERNAL not run yet |
+| *Quest for the King* with VDrive active | fails at random (any Kernal Replace image, stock included, by `VAULTTEST`); TR firmware bug, see docs/UPSTREAM-kernal-replace-ram-under-rom.md |
+| `VAULTTEST` errors per column ($D, $E, $F), Kernal Replace, 3 tests each | stock: D 0, E 2-10, F 5-15; K1 banner only: E 2-11, F 4-10; K2 our patch: E 2-18, F 3-13; Special IO "None": all 0 |

@@ -54,10 +54,11 @@ Firmware integration and usage: `firmware/README.md`.
   **Still not checked on hardware:** the bus scan with a real 1541 on the bus, `.d81` mounting on the card, `STATUS` compared with a real drive, VDrive+SwiftLink (the owner ran
   "VDrive KERNAL" only).
   **Open items from that round:**
-  (1) *Quest for the King* (`../q4k/dist/q4k.prg`, and `q4k.d64`) does not run with VDrive active: it starts, does not finish loading and the screen corrupts. Not diagnosed. The game
-  keeps data in the RAM under the KERNAL (`$E000-$FFF9`, `vault.s`) and switches `$01`, which the TR's KERNAL-replace hook (`KernalCheck`, HIRAM sensing) has to follow, so first
-  run the control: Kernal Replace with the *stock* KERNAL image (`build/kernal-stock.bin`) and the same program. If that also breaks, it is not ours. The game's modem is the KERNAL
-  RS-232 (user port), not a SwiftLink. VICE cannot show it (an autostart under either KERNAL stays at LOADING).
+  (1) *Quest for the King* (`../q4k/dist/q4k.prg`) fails at random with VDrive (frozen at start-up, wrong glyphs, NMI on the help screen, wrong game state). **Cause: a TR+ firmware bug in
+  Kernal Replace, not ours** (docs/UPSTREAM-kernal-replace-ram-under-rom.md). The game keeps its map in the RAM under the I/O area and the KERNAL and switches `$01` to `$34` all the time;
+  `VAULTTEST` (tests/asm/vaulttest.s) reproduces it without the game: with Kernal Replace on, reads of RAM at `$E000-$FFFF` are wrong about once in 100,000 (2-18 per run per column) under
+  the *stock* KERNAL image, K1 (banner only) and K2 (our patch) alike; `$Dxxx` and Special IO "None" give zeros. So any program that uses the RAM under the KERNAL can break while
+  Kernal Replace is on, and VDrive needs it. Only an upstream fix in `IOH_KernalReplace.c` (`KernalCheck`) helps. The earlier "works with stock" was probably luck at that rate.
   (2) `trvdrive` showed the USB image as `//vdtest.d64`: the menu hands USB paths over with a doubled slash. Fixed in 0.9.0.12 (slashes collapsed on mount and in `VD_PathFor`; host-tested only).
   (3) `trvdrive` answered `VDrive is not running` while the TR menu was showing. 0.9.0.12 (host-tested only): get reports the unit's remembered image from its `/.vdrive` sidecar (`"running":false`),
   set validates an image and rewrites the sidecar, so the next start mounts it (docs/DESIGN.md 20).
