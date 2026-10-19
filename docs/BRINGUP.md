@@ -77,8 +77,8 @@ F2 to BASIC.
 - **Pass:** new banner shows right after F2/PRG launch and the keyboard works. Quick re-check from BASIC: `FORI=0TO31:PRINTPEEK(58483+I);:NEXT` must print the bytes of `TRVDRIVE` (84 82 86 68 82 73 86 69 at positions 11-18), not `COMMODORE` (67 79 77 77 ...), which would mean the C64's own ROM is answering.
 
 ## Stage 7 — the real image, drive path in order of risk
-`make build/kernal-tr.bin` (mailbox at `$DE10`, window `$DF00`). The firmware logs by default during bring-up (`VD_TRACE`; define `VD_NO_TRACE` to silence) so every mailbox command prints
-`vd cmd=.. arg=.. len=.. -> stat=.. data=.. st=..` on the serial console (`stat=5a` answered, `stat=a5` not mine) (the 6502 spins on BUSY, so printing is safe, just slow).
+`make build/kernal-tr.bin` (mailbox at `$DE10`, window `$DF00`). With `VD_TRACE` defined (off by default since 0.9.0.10: the printing delays the bus handler and corrupts bytes on the C64) every mailbox command prints
+`vd cmd=.. arg=.. len=.. -> stat=.. data=.. st=..` on the serial console (`stat=5a` answered, `stat=a5` not mine) (the print runs after the answer is published, so it can make the C64's next reads late: use it for diagnosis only, never for soak or data tests).
 Check after each line; keep the trace open.
 1. Banner and BASIC still fine; a plain `PRINT`, `POKE`, `LOAD"X",11` → `?DEVICE NOT PRESENT` (stock IEC path through the hook, ~instant, trace shows `stat=a5` not-mine on LISTEN).
 2. `LOAD"$",8` with nothing mounted → SD card listing (title `SD:/`), `DIR`/`D64`/`PRG` types. Trace: `cmd=9` then `cmd=10` blocks.
@@ -145,6 +145,10 @@ settings and the files on the card.
 | `LOAD"BIG"` 6000 B, wall-clock | |
 | `SAVE` 6000 B, wall-clock | |
 | Mailbox calls per 6000 B load (trace) | expect ~27 |
-| Stage 9 (0.9.0.7: scan, D71/D81, paths) | not run |
-| Stage 7 items passed (of 9) | owner-verified: 1-6 core path (mount, load small/large, save, verify, error channel, repeated listings). Pending: 7 (USB, device 9), 8 (U0> renumber), 9 (time-out) |
-| Soak: loads without error | |
+| Stage 9 (0.9.0.7: scan, D71/D81, paths) | paths, auto-mount, remembered mounts, remote get/set: passed (0.9.0.11). Not run: scan with a real 1541, `.d81` on the card |
+| Stage 7 items passed (of 9) | owner-verified: all of 1-9 except the explicit no-handler time-out (0.9.0.11 + double-read KERNAL; USB device 9, `U0>` and its persistence, `DOSTEST`, `CDTEST`, `SEQTEST` pass). Before the double reads `SEQTEST` failed on hardware: see the bus test rows below |
+| Soak: loads without error | `SOAK` with no errors (0.9.0.11 + double-read KERNAL) |
+| Bus stress test, `BUSTEST` errors per 8x65536 accesses (0.9.0.9, trace on) | T1 3E, T2 B8, T3 12, T4 0D, T5 0A, T6 3B, T7 0B; T8 (stock KERNAL ROM read) 0 |
+| Same, 0.9.0.11 (IO1 reads straight from the register bytes) | T1 6, T2 C, T3 9, T4 A, T5 A, T6 7, T7 5; T8 0. The raw bus still errs about once in 50,000 accesses, so the KERNAL double-reads |
+| VDrive+SwiftLink (stage 8), `.d81` on the card, bus scan with a real 1541, `STATUS` vs a real drive | not run |
+| *Quest for the King* with VDrive active | fails (starts, does not finish loading, corrupts); control with stock KERNAL not run yet |

@@ -31,6 +31,13 @@ for src in sorted((root / "tests" / "basic").glob("*.bas")):
     prg = out / (src.stem + ".prg")
     subprocess.run(["petcat", "-w2", "-o", str(prg), "--", str(text)], check=True, capture_output=True)
     c1541("-attach", str(img), "-write", str(prg), src.stem)
+for src in sorted((root / "tests" / "asm").glob("*.s")):      # machine-code tests: PRG with a BASIC SYS stub at $0801
+    obj, prg, cfg = out / (src.stem + ".o"), out / (src.stem + ".prg"), out / "asm.cfg"
+    cfg.write_text("MEMORY { LA: start=$07FF, size=2; M: start=$0801, size=$3000, file=%O; }\n"
+                   "SEGMENTS { LOADADDR: load=LA, type=ro; CODE: load=M, type=ro; RODATA: load=M, type=ro; }\n")
+    subprocess.run(["ca65", "-o", str(obj), str(src)], check=True)
+    subprocess.run(["ld65", "-C", str(cfg), "-o", str(prg), str(obj)], check=True)
+    c1541("-attach", str(img), "-write", str(prg), src.stem)
 print(subprocess.run(["c1541", "-attach", str(img), "-list"], capture_output=True, text=True, encoding="latin1").stdout.split("\n", 2)[2].rsplit("Unit", 1)[0])
 print(f"BIG: 6000 bytes at $2000; full-sum {sum(big)}, stride-8 sum {xx} (the soak program checks the latter)")
 print(f"wrote {img}")

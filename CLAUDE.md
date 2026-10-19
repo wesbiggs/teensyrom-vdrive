@@ -20,7 +20,7 @@ Firmware integration and usage: `firmware/README.md`.
 * **First version works on hardware (real C64, TR+ + this patch).** Verified by the owner: build/fit (RAM1 padding −976 B, flash +15.7 KB,
   RAM2 +4.5 KB vs stock), handler listing and SD/USB detection, mailbox registers, stock and banner KERNAL control (banner shows
   `TRVDRIVE 64 BASIC V2` on F2), then the real image: mounting a `.d64` with `CD:`, directory/`LOAD` of small and 6000-byte files, `SAVE`,
-  `VERIFY`, the error channel, and repeated directory listings without corruption. Not yet checked on hardware: device 9 (USB stick),
+  `VERIFY`, the error channel, and repeated directory listings without corruption. Checked later (see the 0.9.0.11 round below): device 9 (USB stick),
   `U0>` renumbering and its EEPROM persistence, `CD:/`, the no-handler time-out, soak tests, the scope stage, sequential files, scratch /
   rename / `N:`.
 * **BASIC test programs** (`tests/basic/`, built into `build/testdisk/vdtest.d64` by `make testdisk`) run inside VICE in `make test` and on the C64; they
@@ -44,16 +44,33 @@ Firmware integration and usage: `firmware/README.md`.
   `LOAD`, the time of the first access, `.d81` mounting on SD, paths.
 * **0.9.0.8/0.9.0.9 (host-tested, builds with the real toolchain, nothing of it on hardware):** disk changes from outside while a program runs (0.9.0.9 also lets `trls` through, after the quiet wait): remote-control commands `0x64E3` (get) / `0x64E4` (set) on TCP 2112, swap at a quiet point
   (`VDrive_RemoteStatus` / `VDrive_RemoteSet` in `firmware/IOH_VDrive.c`, dispatcher text in `firmware/vdrive_remote.inc`, docs/DESIGN.md 20). No 6502-side flag yet: channels live on the Teensy. Client: `trvdrive` in `../teensyrom-rcp`.
+* **Bus timing margin (found with `tests/asm/bustest.s`, BUSTEST on the test disk):** on a real C64 the IO1/IO2 handlers answered late about once in 8000 (IO1) / 30000 (IO2)
+  reads, giving bit-mixed or `$00` bytes (corrupt `SEQTEST`/`GETRAW`/directory listings); the stock ROM path was clean, so the cause is the number of cycles before the
+  data lines are driven. 0.9.0.11 reads IO1 registers straight from the struct (about 10x fewer errors). The KERNAL now also reads ST/DATA, the fast-LOAD header and every
+  window byte twice in a row until two reads agree, and reads back window writes (host-tested only; check BUSTEST/`GETRAW`/`SEQTEST` on hardware). `VD_TRACE` is off by default
+  (it prints right after the answer, but was not the cause). Keep new bus-handler code as short as possible and never add work before `DataPortWriteWait`.
+* **Hardware round with 0.9.0.11 firmware + the double-read KERNAL (owner-verified, SD and USB):** `SEQTEST`, `GETRAW`, `SOAK` (no errors), `DOSTEST`, `CDTEST`, USB stick as
+  device 9, `RENUM` (`U0>` pin and its EEPROM persistence), paths (`LOAD"$/dir/image.d64"`, `$==`), auto-mount and remembered mounts, remote get/set with `trvdrive`.
+  **Still not checked on hardware:** the bus scan with a real 1541 on the bus, `.d81` mounting on the card, `STATUS` compared with a real drive, VDrive+SwiftLink (the owner ran
+  "VDrive KERNAL" only).
+  **Open items from that round:**
+  (1) *Quest for the King* (`../q4k/dist/q4k.prg`, and `q4k.d64`) does not run with VDrive active: it starts, does not finish loading and the screen corrupts. Not diagnosed. The game
+  keeps data in the RAM under the KERNAL (`$E000-$FFF9`, `vault.s`) and switches `$01`, which the TR's KERNAL-replace hook (`KernalCheck`, HIRAM sensing) has to follow, so first
+  run the control: Kernal Replace with the *stock* KERNAL image (`build/kernal-stock.bin`) and the same program. If that also breaks, it is not ours. The game's modem is the KERNAL
+  RS-232 (user port), not a SwiftLink. VICE cannot show it (an autostart under either KERNAL stays at LOADING).
+  (2) `trvdrive` shows the USB image as `//vdtest.d64` (SD: `/vdtest.d64`); `VD_PathFor` joins `cwd` + `/` and the USB cwd carried a trailing `/`. Cosmetic, but the same string goes into the
+  `/.vdrive` sidecar. (3) `trvdrive` answers `VDrive is not running` while the TR menu is showing (the handler only runs once a program has started). A firmware-only workaround
+  is possible: get = report the remembered image from the unit's `/.vdrive` sidecar (marked as not running), set = validate the image and write the sidecar, so the next start mounts it.
 * Known open risks:
   C128 not supported (see above); `File::seek/read/write/flush` semantics on the
   real SD/USB classes, IO1/IO2 ISR timing, tape (device 1) intentionally broken (its code space was reclaimed).
 
 * **Auto-mount (firmware 0.9.0.2, host-tested only; remembered mounts are 0.9.0.3 and also host-only):** if a program is launched from inside a `.d64` opened in the TR menu
   (`DriveDirPath` ends in `*`, menu source SD/USB), `VDrive_PreStart()` mounts that image on the matching unit (SD=8, USB=9) with its
-  folder as the `CD:` directory. Not yet checked on hardware.
+  folder as the `CD:` directory. Owner-verified on hardware in the 0.9.0.11 round.
 * **Remembered mounts (0.9.0.3):** each unit keeps `/.vdrive` (dot-named, so TR 0.9+ and our listing hide it) on its own card, holding the last
   mounted image path. Written on every successful mount, removed on any unmount (`CD:_`, `CD:/`), read in `VDrive_PreStart()` when the
-  launch did not come from a disk image on that unit. A missing/invalid image just starts unmounted. Not yet checked on hardware.
+  launch did not come from a disk image on that unit. A missing/invalid image just starts unmounted. Owner-verified on hardware in the 0.9.0.11 round.
 
 ## Layout
 ```
@@ -63,7 +80,7 @@ d64/            portable C99 library, also compiled as C++ by the firmware (keep
   vdrive_io.c/.h  mailbox register engine (ISR-side O(1) accessors + vio_poll), the fast LOAD/SAVE commands and the bus-scan protocol
   vd_cfg.h        build knobs: VD_COLD (FLASHMEM), VD_NSLOT, VD_DEV0/VD_DEV1 defaults
 patches/        ca65 sources overlaid on the stock KERNAL by tools/build.py; segment name P_XXXX = load address
-  vdrive.s        serial entry hooks, fast LOAD ($F4C8) / SAVE ($F605), bus scan, code placed in reclaimed tape space $F8E2-$FB8D (578 of 683 bytes used)
+  vdrive.s        serial entry hooks, fast LOAD ($F4C8) / SAVE ($F605), bus scan, code placed in reclaimed tape space $F8E2-$FB8D (629 of 683 bytes used)
   banner.s        proof patch (changes the power-on banner)
 firmware/       TeensyROM integration: IOH_VDrive.c (Special IO) and teensyrom-vdrive.patch (git apply onto TeensyROM)
 tools/          build.py (patch overlay), make_tr_patch.sh (regenerate the TeensyROM patch), vdrive_mock.py (VICE mock),
