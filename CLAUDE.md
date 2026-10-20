@@ -8,21 +8,21 @@ real IEC code, so physical drives keep working. LOAD/SAVE have block-transfer fa
 second, the first free numbers from 8 up: the KERNAL probes the real bus on the first disk access of a run) or fixed from BASIC with
 `OPEN15,8,15,"U0>"+CHR$(n)` (kept in EEPROM, `CHR$(0)` = automatic, no reflash). Names and `CD` take paths: `LOAD"$/GAMES/G.D64",8`.
 
-Full design and per-milestone notes: `docs/DESIGN.md` (sections 1-19, in order of construction). Hardware plan: `docs/BRINGUP.md`.
+Full design and per-milestone notes: `docs/DESIGN.md` (sections 1-19, in order of construction).
 Firmware integration and usage: `firmware/README.md`.
 
 ## Status (read this first)
-* **Host-verified only.** `make test` passes: C unit tests via ctypes against `c1541`, the 6502 patches in VICE through a
-  monitor-driven mailbox mock, and the firmware glue compiled as C++ against host stubs.
-* **Never built against the real Teensy toolchain, never run on a TR+** as of the first commit. The owner is doing the first build
-  and flash now (toolchain: `arduino-cli`, `teensy:avr@1.61.0`, `CRC32@2.0.1`; do NOT use Teensyduino 1.62.0 — SD read stalls).
-  Follow `docs/BRINGUP.md` stage by stage and record results in its table; update this section as stages pass.
-* **First version works on hardware (real C64, TR+ + this patch).** Verified by the owner: build/fit (RAM1 padding −976 B, flash +15.7 KB,
-  RAM2 +4.5 KB vs stock), handler listing and SD/USB detection, mailbox registers, stock and banner KERNAL control (banner shows
-  `TRVDRIVE 64 BASIC V2` on F2), then the real image: mounting a `.d64` with `CD:`, directory/`LOAD` of small and 6000-byte files, `SAVE`,
-  `VERIFY`, the error channel, and repeated directory listings without corruption. Checked later (see the 0.9.0.11 round below): device 9 (USB stick),
-  `U0>` renumbering and its EEPROM persistence, `CD:/`, the no-handler time-out, soak tests, the scope stage, sequential files, scratch /
-  rename / `N:`.
+* **Works on hardware (real C64, TR+ with this patch).** `make test` also passes on the host: C unit tests via ctypes against `c1541`, the 6502 patches in VICE through a
+  monitor-driven mailbox mock, and the firmware glue compiled as C++ against host stubs. Toolchain for the firmware: `arduino-cli`, `teensy:avr@1.61.0`,
+  `CRC32@2.0.1`; do NOT use Teensyduino 1.62.0 (SD read stalls). Build/fit: RAM1 padding −976 B, flash +15.7 KB, RAM2 +4.5 KB vs stock.
+* **Verified on hardware by the owner (SD and USB):** handler listing and SD/USB detection, mailbox registers, stock and banner KERNAL control (banner shows
+  `TRVDRIVE 64 BASIC V2` on F2), mounting with `CD:`, directory/`LOAD` of small and 6000-byte files, `SAVE`, `VERIFY`, the error channel, repeated directory listings,
+  device 9 (USB stick), `U0>` renumbering and its EEPROM persistence, `CD:/`, the no-handler time-out, `SEQTEST`, `GETRAW`, `SOAK`, `DOSTEST`, `CDTEST`, `RENUM`,
+  scratch / rename / `N:`, paths (`LOAD"$/dir/image.d64"`, `$==`), auto-mount and remembered mounts (`/.vdrive` sidecar), VDrive+SwiftLink, remote get/set with
+  `trvdrive` while a program runs, `trls` while a program runs, the image swap, and the sidecar reporting with the TR menu showing (`"running":false`).
+  Also: *Quest for the King* (`VAULTTEST` clean, plays and loads/saves) and CCGMS over TCP (see the Kernal Replace fixes below).
+* **Not yet checked on hardware:** the bus scan with a real 1541 on the bus (the SD drive must become 9; `PEEK(56854)`; a first access that is a `LOAD`; the time of the first access),
+  `.d81` mounting on the card, `.d71` at all, `STATUS` compared with a real drive, IRQ/STOP-key interplay during loads.
 * **BASIC test programs** (`tests/basic/`, built into `build/testdisk/vdtest.d64` by `make testdisk`) run inside VICE in `make test` and on the C64; they
   found two real bugs that unit tests missed: `CIOUT` must return `A` = the byte sent (CHROUT tail-jumps into it; BASIC's PRINT broke after a
   number), and `U0>` must also be accepted with PRINT#'s trailing CR.
@@ -33,47 +33,31 @@ Firmware integration and usage: `firmware/README.md`.
   (5) `npm run flash` needs the Teensy program button (the TR exposes no soft reboot); copying the `.hex` to the card and pressing
   RETURN on it in the TR menu is easier. (6) The TeensyROM checkout may hold the owner's own edits (`TeensyROM.h`, `old*.hex`): never
   `git stash -u`/`clean` it; restore only the patch-owned files and re-apply `firmware/teensyrom-vdrive.patch`.
-* **VDrive+SwiftLink (firmware 0.9.0.4, host-tested only):** mailbox moved to `$DE10` so the SwiftLink ACIA keeps `$DE00-$DE07`; new Special IO
-  "VDrive+SwiftLink" (`firmware/IOH_VDriveSwift.c`) runs both, and menu programs paired with SwiftLink (CCGMS...) get it when VDrive is the
-  default Special IO. Builds with the real toolchain (`node tools/build-firmware.mjs --target tr-plus`, RAM1 padding unchanged at 12,840). **KERNAL images built before this change (mailbox `$DE00`) no longer match the firmware: rebuild and re-copy
-  `kernal-tr.bin`.** Check on hardware: BRINGUP.md stage 8.
-* **0.9.0.7 (host + VICE tested only, nothing of it on hardware):** automatic device numbers by a lazy bus scan (SCANREQ token `$3C`, `bus_scan` in
-  `patches/vdrive.s`, `VIO_SCAN`/`VIO_FREE`, `DEV0`/`DEV1` registers `$DE16/$DE17`; docs/DESIGN.md 16), `.d71`/`.d81` images (17), paths in `CD` and
-  in names (18): `LOAD"$/dir/image.d64"` only lists (selection restored on close), `LOAD"$==path"` selects like `CD`, `UI`/`UJ`/`U9` (status 73), `U1`.. now `31`. A `U0>` number is a *fixed* number now (0 = automatic);
-  `vdrive_set_devices()` takes pins. To check on hardware: the scan with a real drive at 8 (SD must become 9; `PEEK(56854)`), a first access that is a
-  `LOAD`, the time of the first access, `.d81` mounting on SD, paths.
-* **0.9.0.8/0.9.0.9 (host-tested, builds with the real toolchain, nothing of it on hardware):** disk changes from outside while a program runs (0.9.0.9 also lets `trls` through, after the quiet wait): remote-control commands `0x64E3` (get) / `0x64E4` (set) on TCP 2112, swap at a quiet point
-  (`VDrive_RemoteStatus` / `VDrive_RemoteSet` in `firmware/IOH_VDrive.c`, dispatcher text in `firmware/vdrive_remote.inc`, docs/DESIGN.md 20). No 6502-side flag yet: channels live on the Teensy. Client: `trvdrive` in `../teensyrom-rcp`.
+* **Kernal Replace fixes (not VDrive bugs; any Kernal Replace image was affected):** (1) *Quest for the King* (`../q4k/dist/q4k.prg`) failed at random: the game keeps
+  its map in the RAM under the I/O area and the KERNAL and switches `$01` to `$34` all the time, and `KernalCheck` disturbed RAM reads there (`VAULTTEST`, tests/asm/vaulttest.s;
+  docs/UPSTREAM-kernal-replace-ram-under-rom.md). Fixed in 0.9.0.13 (`firmware/kernalreplace-fixes.patch`: no `/GAME` assert when HIRAM is known to be RAM; the image is served from a DTCM copy).
+  (2) With Ethernet initialized (no cable needed) NativeEthernet runs the whole stack from a 1 ms PIT timer ISR, which made ~39 phi2 interrupts/s late; the first read after a `$01` write
+  (the HIRAM sense) then answered late and q4k and CCGMS+SwiftLink over TCP glitched, NMI'd or froze. Masking the ENET interrupt did nothing. 0.9.0.14 masks `IRQ_PIT` and calls
+  `fnet_poll()` from `loop()` while a Kernal Replace/VDrive/SwiftLink handler runs (`ProcessATCommand` turns PIT back on while it runs, since `connect` etc. block). A rare late ISR still
+  shows now and then. Tried and dropped: a partial-serve map (broke disk access). Ideas left: an AT command to stop Ethernet; find the rest of the late ISRs.
+* **Feature notes (all hardware-verified unless listed above as not checked):**
+  * VDrive+SwiftLink (0.9.0.4): mailbox moved to `$DE10` so the SwiftLink ACIA keeps `$DE00-$DE07`; Special IO "VDrive+SwiftLink" (`firmware/IOH_VDriveSwift.c`) runs both, and
+    menu programs paired with SwiftLink (CCGMS...) get it when VDrive is the default Special IO. **KERNAL images built before this change (mailbox `$DE00`) no longer match the firmware: rebuild and re-copy `kernal-tr.bin`.**
+  * 0.9.0.7: automatic device numbers by a lazy bus scan (SCANREQ token `$3C`, `bus_scan` in `patches/vdrive.s`, `VIO_SCAN`/`VIO_FREE`, `DEV0`/`DEV1` registers `$DE16/$DE17`; docs/DESIGN.md 16),
+    `.d71`/`.d81` images (17), paths in `CD` and in names (18): `LOAD"$/dir/image.d64"` only lists (selection restored on close), `LOAD"$==path"` selects like `CD`, `UI`/`UJ`/`U9` (status 73),
+    `U1`.. now `31`. A `U0>` number is a *fixed* number (0 = automatic); `vdrive_set_devices()` takes pins.
+  * 0.9.0.8/0.9.0.9: disk changes from outside while a program runs: remote-control commands `0x64E3` (get) / `0x64E4` (set) on TCP 2112, swap at a quiet point, `trls` allowed after the quiet wait
+    (`VDrive_RemoteStatus` / `VDrive_RemoteSet` in `firmware/IOH_VDrive.c`, dispatcher text in `firmware/vdrive_remote.inc`, docs/DESIGN.md 20). No 6502-side flag: channels live on the Teensy. Client: `trvdrive` in `../teensyrom-rcp`.
+  * 0.9.0.12: slashes collapsed on mount and in `VD_PathFor` (the menu hands USB paths over with a doubled slash); with the menu showing, get reports the unit's `/.vdrive` image (`"running":false`)
+    and set validates an image and rewrites the sidecar, so the next start mounts it.
+  * Auto-mount (0.9.0.2): a program launched from inside a `.d64` opened in the TR menu (`DriveDirPath` ends in `*`, menu source SD/USB) gets that image mounted by `VDrive_PreStart()` on the matching unit (SD=8, USB=9), its folder as the `CD:` directory.
+  * Remembered mounts (0.9.0.3): each unit keeps `/.vdrive` (dot-named, so TR 0.9+ and our listing hide it) on its own card, holding the last mounted image path. Written on every successful mount, removed on any unmount (`CD:_`, `CD:/`), read in `VDrive_PreStart()` when the launch did not come from a disk image on that unit. A missing/invalid image just starts unmounted.
 * **Bus timing margin (found with `tests/asm/bustest.s`, BUSTEST on the test disk):** on a real C64 the IO1/IO2 handlers answered late about once in 8000 (IO1) / 30000 (IO2)
   reads, giving bit-mixed or `$00` bytes (corrupt `SEQTEST`/`GETRAW`/directory listings); the stock ROM path was clean, so the cause is the number of cycles before the
-  data lines are driven. 0.9.0.11 reads IO1 registers straight from the struct (about 10x fewer errors). The KERNAL now also reads ST/DATA, the fast-LOAD header and every
-  window byte twice in a row until two reads agree, and reads back window writes (host-tested only; check BUSTEST/`GETRAW`/`SEQTEST` on hardware). `VD_TRACE` is off by default
-  (it prints right after the answer, but was not the cause). Keep new bus-handler code as short as possible and never add work before `DataPortWriteWait`.
-* **Hardware round with 0.9.0.11 firmware + the double-read KERNAL (owner-verified, SD and USB):** `SEQTEST`, `GETRAW`, `SOAK` (no errors), `DOSTEST`, `CDTEST`, USB stick as
-  device 9, `RENUM` (`U0>` pin and its EEPROM persistence), paths (`LOAD"$/dir/image.d64"`, `$==`), auto-mount and remembered mounts, remote get/set with `trvdrive`.
-  **Still not checked on hardware:** the bus scan with a real 1541 on the bus, `.d81` mounting on the card, `STATUS` compared with a real drive, VDrive+SwiftLink (the owner ran
-  "VDrive KERNAL" only).
-  **Open items from that round:**
-  (1) *Quest for the King* (`../q4k/dist/q4k.prg`) failed at random with VDrive. **Cause: a TR+ firmware bug in Kernal Replace, not ours** (docs/UPSTREAM-kernal-replace-ram-under-rom.md): the game
-  keeps its map in the RAM under the I/O area and the KERNAL and switches `$01` to `$34` all the time, and `KernalCheck` disturbed RAM reads there (`VAULTTEST`, tests/asm/vaulttest.s, reproduces it).
-  **0.9.0.13 fixed it** (`firmware/kernalreplace-fixes.patch`: no `/GAME` assert when HIRAM is known to be RAM; the image is served from a DTCM copy). Owner-verified: VAULTTEST clean, q4k plays and loads/saves.
-  **Ethernet late phi2 interrupts (found with 0.9.0.13, fixed in 0.9.0.14):** with Ethernet initialized (no cable needed) NativeEthernet runs the whole stack from a 1 ms PIT timer ISR, which made ~39 phi2 interrupts/s
-  late; the first read after a `$01` write (the HIRAM sense) then answered late: q4k and CCGMS+SwiftLink over TCP glitched, NMI'd or froze. Masking the ENET interrupt did nothing. 0.9.0.14 masks `IRQ_PIT` and calls
-  `fnet_poll()` from `loop()` while a Kernal Replace/VDrive/SwiftLink handler runs (`ProcessATCommand` turns PIT back on while it runs, since `connect` etc. block). Owner-verified: CCGMS over TCP, q4k, VDrive fine
-  (a rare late ISR still shows now and then). Not VDrive-specific: any Kernal Replace image. Tried and dropped: a partial-serve map (broke disk access). Ideas left: an AT command to stop Ethernet; find the rest of the late ISRs.
-  (2) `trvdrive` showed the USB image as `//vdtest.d64`: the menu hands USB paths over with a doubled slash. Fixed in 0.9.0.12 (slashes collapsed on mount and in `VD_PathFor`; host-tested only).
-  (3) `trvdrive` answered `VDrive is not running` while the TR menu was showing. 0.9.0.12 (host-tested only): get reports the unit's remembered image from its `/.vdrive` sidecar (`"running":false`),
-  set validates an image and rewrites the sidecar, so the next start mounts it (docs/DESIGN.md 20).
-* Known open risks:
-  C128 not supported (see above); `File::seek/read/write/flush` semantics on the
-  real SD/USB classes, IO1/IO2 ISR timing, tape (device 1) intentionally broken (its code space was reclaimed).
-
-* **Auto-mount (firmware 0.9.0.2, host-tested only; remembered mounts are 0.9.0.3 and also host-only):** if a program is launched from inside a `.d64` opened in the TR menu
-  (`DriveDirPath` ends in `*`, menu source SD/USB), `VDrive_PreStart()` mounts that image on the matching unit (SD=8, USB=9) with its
-  folder as the `CD:` directory. Owner-verified on hardware in the 0.9.0.11 round.
-* **Remembered mounts (0.9.0.3):** each unit keeps `/.vdrive` (dot-named, so TR 0.9+ and our listing hide it) on its own card, holding the last
-  mounted image path. Written on every successful mount, removed on any unmount (`CD:_`, `CD:/`), read in `VDrive_PreStart()` when the
-  launch did not come from a disk image on that unit. A missing/invalid image just starts unmounted. Owner-verified on hardware in the 0.9.0.11 round.
+  data lines are driven. 0.9.0.11 reads IO1 registers straight from the struct (about 10x fewer errors) and the KERNAL reads ST/DATA, the fast-LOAD header and every
+  window byte twice in a row until two reads agree, and reads back window writes. `VD_TRACE` is off by default (it prints right after the answer, but was not the cause).
+  Keep new bus-handler code as short as possible and never add work before `DataPortWriteWait`.
+* Known open risks: C128 not supported (see above); tape (device 1) intentionally broken (its code space was reclaimed).
 
 ## Layout
 ```
@@ -89,7 +73,6 @@ firmware/       TeensyROM integration: IOH_VDrive.c (Special IO) and teensyrom-v
 tools/          build.py (patch overlay), make_tr_patch.sh (regenerate the TeensyROM patch), vdrive_mock.py (VICE mock),
                 d64py.py (ctypes wrappers incl. register-level VIO), xref.py (reference finder over a disassembly)
 tests/          test_d64*.py, test_vdrive.py, test_vio.py (unit), fw_host/ (glue vs host stubs), devcfg.c
-docs/BRINGUP.md staged hardware bring-up checklist
 build/          generated, git-ignored (kernal images derived from the ROM, libd64.dylib, disassembly)
 ```
 
@@ -129,8 +112,7 @@ build/          generated, git-ignored (kernal images derived from the ROM, libd
 * PETSCII quirk when building fixtures with `c1541`: give it lower-case names to get unshifted (default-mode upper-case) PETSCII.
 
 ## Next steps
-1. **Finish bring-up** (`docs/BRINGUP.md`, stages 7-9): the unchecked items listed under Status (USB device 9, `U0>`, `CD:/`, time-out, soak, sequential
-   files, scratch/rename/`N:`) and now the 0.9.0.7 items (bus scan with a real drive, `.d81`, paths). The core path has passed, so the items below can
+1. **Finish bring-up**: the "Not yet checked on hardware" list under Status (bus scan with a real drive, `.d81`/`.d71`, `STATUS`, IRQ/STOP-key during loads). The core path has passed, so the items below can
    start once the owner agrees; mind that the patch changes under any build in progress.
 2. **Create new images** (agreed design, not started): with nothing mounted, `N:FILE.D64,ID` (or `.D71`/`.D81`) creates a blank image on the host file
    system and mounts it (glue + `vdrive.c` `N` command; today `N` only formats the mounted disk, and nothing creates an image file). Remembering mounts

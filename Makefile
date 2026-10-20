@@ -34,7 +34,7 @@ test: build/kernal-vd.bin build/libd64.dylib test-d64 test-devcfg test-fw
 shot: build/kernal-tr.bin
 	x64sc -warp -kernal $(CURDIR)/build/kernal-tr.bin -limitcycles 5000000 -exitscreenshot $(CURDIR)/build/banner.png
 
-# Bring-up images (see docs/BRINGUP.md): stock = control, banner = proves the TR+ serves the image
+# Bring-up images: stock = control, banner = proves the TR+ serves the image
 build/kernal-stock.bin:
 	cp $(STOCK) $@
 
