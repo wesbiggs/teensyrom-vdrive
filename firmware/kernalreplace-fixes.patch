@@ -62,6 +62,32 @@ index d7213cf..fc89daa 100644
  }
  
  FLASHMEM void InitHndlr_KernalReplace()
+diff --git a/Source/Teensy/MinimalBoot/Common/IO_Handlers/Swift_ATcommands.c b/Source/Teensy/MinimalBoot/Common/IO_Handlers/Swift_ATcommands.c
+index dc0b583..d0a7c48 100644
+--- a/Source/Teensy/MinimalBoot/Common/IO_Handlers/Swift_ATcommands.c
++++ b/Source/Teensy/MinimalBoot/Common/IO_Handlers/Swift_ATcommands.c
+@@ -410,7 +410,7 @@ FLASHMEM ATRespCode AT_Hook(char* CmdArg)
+ }
+ 
+ 
+-FLASHMEM ATRespCode ProcessATCommand()
++FLASHMEM ATRespCode ProcessATCommandInner()
+ {
+    char* CmdMsg = TxMsg; //local pointer for manipulation
+    stcATCommand ATCommands[] =
+@@ -466,3 +466,12 @@ FLASHMEM ATRespCode ProcessATCommand()
+    AddToPETSCIIStrToRxQueueLN(TxMsg);
+    return ATRC_ERROR;
+ }
++
++extern volatile bool FnetLoopPoll;
++FLASHMEM ATRespCode ProcessATCommand()
++{  //connect/DHCP/DNS block in here waiting for the stack, which then needs its PIT poll timer (masked while the poll runs from loop())
++   if (FnetLoopPoll) NVIC_ENABLE_IRQ(IRQ_PIT);
++   ATRespCode r = ProcessATCommandInner();
++   if (FnetLoopPoll) NVIC_DISABLE_IRQ(IRQ_PIT);
++   return r;
++}
 diff --git a/Source/Teensy/MinimalBoot/Common/ISRs.c b/Source/Teensy/MinimalBoot/Common/ISRs.c
 index 6c82c20..649a16c 100644
 --- a/Source/Teensy/MinimalBoot/Common/ISRs.c
@@ -88,10 +114,18 @@ index 6c82c20..649a16c 100644
        #ifdef DbgCycAdjLog      
           if (BigBuf != NULL)
 diff --git a/Source/Teensy/Teensy.ino b/Source/Teensy/Teensy.ino
-index 99d0514..49b8490 100644
+index 99d0514..7bfbd81 100644
 --- a/Source/Teensy/Teensy.ino
 +++ b/Source/Teensy/Teensy.ino
-@@ -376,6 +376,17 @@ void loop()
+@@ -54,6 +54,7 @@ uint8_t RAM_Image[RAM_ImageSize]; //Main RAM1 file storage buffer
+ volatile uint8_t BtnPressed = false; 
+ volatile uint8_t EmulateVicCycles = false;
+ uint8_t CurrentIOHandler = IOH_None;
++volatile bool FnetLoopPoll = false; //Ethernet stack polled from loop(), PIT timer masked (see loop)
+ StructMenuItem *DriveDirMenu = NULL;
+ uint16_t NumDrvDirMenuItems = 0;
+ char DriveDirPath[MaxPathLength];
+@@ -376,6 +377,45 @@ void loop()
     if (IO1[rwRegPwrUpDefaults2] & rpud2TRContEnabled)
        if (USBHostSerial.available()) ServiceSerial(&USBHostSerial);
  
@@ -104,6 +138,34 @@ index 99d0514..49b8490 100644
 +         lastRepMs = millis(); lastCnt = LateIsrCnt;
 +         Serial.printf("LATE-ISR >1.1us:%lu >1.5us:%lu >3us:%lu >100us:%lu  last at %lu ms (now %lu)\n",
 +            LateIsrBkt[0], LateIsrBkt[1], LateIsrBkt[2], LateIsrBkt[3], LateIsrLastMs, millis());
++      }
++   }
++   {  //While a handler that snoops the bus is active, run the Ethernet stack poll from here instead of NativeEthernet's 1ms PIT timer ISR:
++      //measured with the Kernal Replace late-ISR counters, the poll in the PIT interrupt made ~39 phi2 interrupts/s late (>1.1us) even with
++      //the GPIO interrupt at a higher priority; called from loop() they are down to about one every 2s. (The PIT is only used by that timer,
++      //except for ASID, which is not in this list.)
++      static uint32_t lastPollUs = 0;
++      bool want = (CurrentIOHandler == IOH_Swiftlink)
++#ifdef Fab04_GlobalKernalReplace
++                  || (fKernRepl != NULL)
++#endif
++#ifdef Fab04_KernalReplace
++                  || (CurrentIOHandler == IOH_KernalReplace)
++#endif
++#ifdef Fab04_VDrive
++                  || (CurrentIOHandler == IOH_VDrive) || (CurrentIOHandler == IOH_VDriveSwift)
++#endif
++                  ;
++      want = want && (fnet_netif_get_default() != 0); //stack initialized
++      if (want != FnetLoopPoll)
++      {
++         FnetLoopPoll = want;
++         if (want) NVIC_DISABLE_IRQ(IRQ_PIT); else NVIC_ENABLE_IRQ(IRQ_PIT);
++      }
++      if (FnetLoopPoll && micros() - lastPollUs >= 1000)
++      {
++         lastPollUs = micros();
++         fnet_poll();
 +      }
 +   }
  #ifdef FeatTCPListen

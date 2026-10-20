@@ -42,10 +42,15 @@ Three more findings from that work, useful for the Kernal Replace code in genera
 * **Serve the image from DTCM.** `KernalBin` is malloc'ed in cached RAM2; a cold cache line in the ISR costs 100 ns or more. A `uint8_t KernalFast[8192]` copy in
   RAM1 removed one class of wrong first bytes.
 * **The Ethernet stack makes phi2 interrupts late.** Once Ethernet is initialized (a cable is not needed), about 39 per second take 1.1-1.5 us longer
-  than the ISR can afford, a few take 3 us or more. Masking the Ethernet interrupt and skipping TCP polling did not remove them. With Ethernet
-  auto-start off there are none. Late ISRs hit hardest at the first read after a `$01` write (the sense above): programs that switch `$01` constantly
-  (Quest for the King, CCGMS with SwiftLink NMIs) get corrupt reads, NMIs or freezes. CCGMS/SwiftLink over TCP freezes or glitches eventually. The
-  TeensyROM developer terminal in Rx polling mode (rather than interrupt mode) works well. The counters are in `ISRs.c` (`LateIsrCnt`, `LateIsrBkt[]`),
-  printed by `Teensy.ino` on the serial console as `LATE-ISR ...`.
+  than the ISR can afford. Masking the Ethernet (ENET) interrupt and skipping TCP polling did not remove them; masking the PIT interrupt did.
+  NativeEthernet runs `fnet_poll()` (the whole FNET stack) from a 1 ms `IntervalTimer` ISR, and that is what delays the phi2 interrupt, even though
+  the GPIO interrupt has the higher priority (`FNET_POLL_TIME` in NativeEthernet.h; FNET's own IRQ disable is a no-op). The same poll called from `loop()`
+  (about 6% of calls take over 5 us, a few 50 us) never coincided with a late phi2 interrupt; late interrupts fell to about one per 2 s.
+  Late ISRs hit hardest at the first read after a `$01` write (the sense above): programs that switch `$01` constantly (Quest for the King, CCGMS
+  with SwiftLink NMIs) got corrupt reads, NMIs or freezes. The TeensyROM developer terminal in Rx polling mode (rather than interrupt mode) worked well.
+  **0.9.0.14 fix (Teensy.ino `loop()`):** while a Kernal Replace, VDrive or SwiftLink handler runs and the stack is initialized, mask `IRQ_PIT` and call
+  `fnet_poll()` from `loop()` every ms. Blocking calls (`connect`, DHCP, DNS inside AT commands) wait for the stack and would hang, so `ProcessATCommand`
+  unmasks PIT while it runs. Hardware: no stalls or flow-control problems in CCGMS over TCP (a rare glitch lines up with a rare late ISR),
+  q4k and VDrive fine with Ethernet on. The counters are in `ISRs.c` (`LateIsrCnt`, `LateIsrBkt[]`), printed by `Teensy.ino` as `LATE-ISR ...`.
 * **Tried and dropped:** a "serve map" (TR answers only the bytes that differ from the stock ROM, the real ROM serves the rest) broke disk access and made the
   first banner character wrong in every build that used it; whole-image serving is back.

@@ -56,10 +56,11 @@ Firmware integration and usage: `firmware/README.md`.
   **Open items from that round:**
   (1) *Quest for the King* (`../q4k/dist/q4k.prg`) failed at random with VDrive. **Cause: a TR+ firmware bug in Kernal Replace, not ours** (docs/UPSTREAM-kernal-replace-ram-under-rom.md): the game
   keeps its map in the RAM under the I/O area and the KERNAL and switches `$01` to `$34` all the time, and `KernalCheck` disturbed RAM reads there (`VAULTTEST`, tests/asm/vaulttest.s, reproduces it).
-  **0.9.0.13 fixes it** (`firmware/kernalreplace-fixes.patch`: no `/GAME` assert when HIRAM is known to be RAM; the image is served from a DTCM copy). Owner-verified: VAULTTEST clean, q4k plays and loads/saves.
-  **Still open, upstream-wide: with Ethernet initialized (not needed: a cable), ~39 late phi2 interrupts per second** make the first read after a `$01` write answer late (sense path). q4k and CCGMS+SwiftLink
-  over TCP then glitch, NMI or freeze. Ethernet auto-start off avoids it completely (`atc` brings it back); masking the Ethernet interrupt or skipping TCP polling did not help. Disk access with Ethernet on is fine.
-  Not VDrive-specific: any Kernal Replace image. Tried and dropped: a partial-serve map (broke disk access). Ideas left: a way to stop Ethernet, fewer cycles in the Ethernet service path.
+  **0.9.0.13 fixed it** (`firmware/kernalreplace-fixes.patch`: no `/GAME` assert when HIRAM is known to be RAM; the image is served from a DTCM copy). Owner-verified: VAULTTEST clean, q4k plays and loads/saves.
+  **Ethernet late phi2 interrupts (found with 0.9.0.13, fixed in 0.9.0.14):** with Ethernet initialized (no cable needed) NativeEthernet runs the whole stack from a 1 ms PIT timer ISR, which made ~39 phi2 interrupts/s
+  late; the first read after a `$01` write (the HIRAM sense) then answered late: q4k and CCGMS+SwiftLink over TCP glitched, NMI'd or froze. Masking the ENET interrupt did nothing. 0.9.0.14 masks `IRQ_PIT` and calls
+  `fnet_poll()` from `loop()` while a Kernal Replace/VDrive/SwiftLink handler runs (`ProcessATCommand` turns PIT back on while it runs, since `connect` etc. block). Owner-verified: CCGMS over TCP, q4k, VDrive fine
+  (a rare late ISR still shows now and then). Not VDrive-specific: any Kernal Replace image. Tried and dropped: a partial-serve map (broke disk access). Ideas left: an AT command to stop Ethernet; find the rest of the late ISRs.
   (2) `trvdrive` showed the USB image as `//vdtest.d64`: the menu hands USB paths over with a doubled slash. Fixed in 0.9.0.12 (slashes collapsed on mount and in `VD_PathFor`; host-tested only).
   (3) `trvdrive` answered `VDrive is not running` while the TR menu was showing. 0.9.0.12 (host-tested only): get reports the unit's remembered image from its `/.vdrive` sidecar (`"running":false`),
   set validates an image and rewrites the sidecar, so the next start mounts it (docs/DESIGN.md 20).
