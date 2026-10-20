@@ -15,7 +15,7 @@ index 6024ccd..2f5cbbf 100644
     else IOHandlerNextInit();
  }
 diff --git a/Source/Teensy/MinimalBoot/Common/Common_Defs.h b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
-index 7feae53..b399ce0 100644
+index 7feae53..e119eb0 100644
 --- a/Source/Teensy/MinimalBoot/Common/Common_Defs.h
 +++ b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
 @@ -14,6 +14,7 @@
@@ -31,7 +31,7 @@ index 7feae53..b399ce0 100644
  
  
 -#define TRVersion              "0.9"    //*VERSION*
-+#define TRVersion              "0.9.0.12"    //*VERSION*  (stock 0.9 + VDrive rev 12)
++#define TRVersion              "0.9.0.13"    //*VERSION*  (stock 0.9 + VDrive rev 13)
  #ifdef Fab04_Features
     char strVersionNumber[] = "TeensyROM+ v" TRVersion; 
  #else
@@ -89,6 +89,70 @@ index 88bc75b..26e4a01 100644
     #endif  
        &IOHndlr_Debug,              //IOH_Debug, 
        
+diff --git a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_KernalReplace.c b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_KernalReplace.c
+index d7213cf..fc89daa 100644
+--- a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_KernalReplace.c
++++ b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_KernalReplace.c
+@@ -48,6 +48,10 @@ stcIOHandlers IOHndlr_KernalReplace =
+ #endif
+ 
+ uint8_t HIRAM_State;
++//The image the bus ISR serves from lives in fast RAM1 (DTCM), not the malloc'ed copy in cached RAM2: a cold cache line there cost
++//~100ns+ inside the time-critical window and the first byte of a rarely used run was answered late. (Also: the 6510 does not put
++//the value of a $00/$01 write on the external data bus, so HIRAM cannot be tracked from the writes; it has to be sensed.)
++uint8_t KernalFast[8192];
+ 
+ enum enumHIRAM_States
+ {
+@@ -68,14 +72,21 @@ FASTRUN bool KernalCheck(uint16_t Address, bool R_Wn)
+    if (!R_Wn || (Address & 0xe000) != 0xe000 || !GP9_BA(ReadGPIO9)) return false;  //continue with cycle processing
+ 
+    // CPU read access from address $E000..$FFFF
+-   
++
++
++#ifndef KERNAL_MONITOR_ONLY
++   //HIRAM known to be RAM (no write to $00/$01 since it was sensed): the C64's own RAM answers,
++   //so leave /GAME and the data bus alone. Asserting /GAME (Ultimax) here disturbs the RAM read.
++   if (HIRAM_State == HIRAM_State_RAM) return true;
++#endif
++
+    //prepare modified Address for Skoe HIRAM check (if needed)
+    uint32_t RegAddrBits = ((Address & 0xbfff) << 16); //drive A14 low
+    CORE_PIN19_PORTSET = RegAddrBits; //set address port value to be ready for output drive
+    CORE_PIN19_PORTCLEAR = ~RegAddrBits & GP6_AddrMask;
+    
+    //prepare the kernal byte to be pushed onto the bus (if needed)
+-   uint8_t Data = KernalBin[Address & 0x1fff];
++   uint8_t Data = KernalFast[Address & 0x1fff];
+    uint32_t RegDataBits = (Data & 0x0F) | ((Data & 0xF0) << 12);
+    CORE_PIN10_PORTSET = RegDataBits;
+    CORE_PIN10_PORTCLEAR = ~RegDataBits & GP7_DataMask;
+@@ -98,7 +109,6 @@ FASTRUN bool KernalCheck(uint16_t Address, bool R_Wn)
+       while (ARM_DWT_CYCCNT - begin < Cyc_KernProp);
+       
+       HIRAM_State = (GP9_ROMH(ReadGPIO9)==0 ? HIRAM_State_ROM : HIRAM_State_RAM); //read ROMH to determine if it's a Kernal or RAM access
+-      
+       SetAddrPortDirIn;//set address ports to input
+       SetAddrBufsIn;   //set address buffers to input
+       SetExROMDeassert;
+@@ -206,6 +216,8 @@ FLASHMEM void InitHndlr_KERNALReplace_PreStart() //not called automatically via
+    //Serial.printf("Read %lu Bytes in %lumS\n", CharNum, millis()-StartmS);
+    Serial.printf("Read %lu Bytes\nKernal replace Enabled\n", CharNum);
+    LoadFile.close();
++   memcpy(KernalFast, KernalBin, 8192); //fast copy for the bus ISR
++
+    delay(250);
+    
+    //hook kernal checks: runs before BASIC init, well before any PRG-load handshake (see
+@@ -216,6 +228,7 @@ FLASHMEM void InitHndlr_KERNALReplace_PreStart() //not called automatically via
+ #else
+    fBusSnoop = &KernalCheck;
+ #endif
++   { extern volatile uint32_t LateIsrCnt, LateIsrBkt[4]; LateIsrCnt = 0; for (int i = 0; i < 4; i++) LateIsrBkt[i] = 0; } //late-ISR counters (ISRs.c) count from the launch on
+ }
+ 
+ FLASHMEM void InitHndlr_KernalReplace()
 diff --git a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c
 new file mode 100644
 index 0000000..9ffe33f
@@ -777,6 +841,31 @@ index 17a1fc5..e05c262 100644
        //Serial.println("Bye from KERNALPreStart");
     }
     //else
+diff --git a/Source/Teensy/MinimalBoot/Common/ISRs.c b/Source/Teensy/MinimalBoot/Common/ISRs.c
+index 6c82c20..649a16c 100644
+--- a/Source/Teensy/MinimalBoot/Common/ISRs.c
++++ b/Source/Teensy/MinimalBoot/Common/ISRs.c
+@@ -55,6 +55,8 @@ void DMAWaitAssertReady()
+    DMA_State = DMA_S_TransferReady;
+ }
+ 
++volatile uint32_t LateIsrCnt = 0, LateIsrBkt[4] = {0,0,0,0}, LateIsrLastMs = 0; //EXPERIMENT: phi2 gaps >1.1us, >1.5us, >3us, >100us (gaps >0.5s are boot artefacts, ignored)
++
+ //Phi2 rising edge:
+ FASTRUN void isrPHI2() 
+ {
+@@ -64,6 +66,11 @@ FASTRUN void isrPHI2()
+    
+    if (CycSinceLast > nSToCyc(nS_MaxAdj)) // If we're late, adjust...
+    {
++      if (CycSinceLast > 898 && CycSinceLast < 408000000)
++      {
++         LateIsrCnt++; LateIsrLastMs = millis();
++         LateIsrBkt[CycSinceLast > 81600 ? 3 : CycSinceLast > 2448 ? 2 : CycSinceLast > 1224 ? 1 : 0]++;
++      }
+       StartCycCnt += nSToCyc(nS_MaxAdj) - CycSinceLast; 
+       #ifdef DbgCycAdjLog      
+          if (BigBuf != NULL)
 diff --git a/Source/Teensy/MinimalBoot/Common/Menu_Regs.h b/Source/Teensy/MinimalBoot/Common/Menu_Regs.h
 index 166ecfe..ebb9a28 100644
 --- a/Source/Teensy/MinimalBoot/Common/Menu_Regs.h
@@ -2768,10 +2857,28 @@ index 92480e7..dd6a447 100644
  {
     uint32_t RecDrive;
 diff --git a/Source/Teensy/Teensy.ino b/Source/Teensy/Teensy.ino
-index 99d0514..d675220 100644
+index 99d0514..31c486b 100644
 --- a/Source/Teensy/Teensy.ino
 +++ b/Source/Teensy/Teensy.ino
-@@ -527,6 +527,11 @@ FLASHMEM void SetEEPDefaults()
+@@ -376,6 +376,17 @@ void loop()
+    if (IO1[rwRegPwrUpDefaults2] & rpud2TRContEnabled)
+       if (USBHostSerial.available()) ServiceSerial(&USBHostSerial);
+ 
++   {  //EXPERIMENT: report late phi2 interrupts (after the replaced KERNAL is served), at most every 2s
++      extern volatile uint32_t LateIsrCnt, LateIsrBkt[4], LateIsrLastMs;
++      static uint32_t lastCnt = 0, lastRepMs = 0;
++      if (LateIsrCnt == 0) lastCnt = 0; //counters were reset at a program launch
++      if (LateIsrCnt != lastCnt && millis() - lastRepMs > 2000)
++      {
++         lastRepMs = millis(); lastCnt = LateIsrCnt;
++         Serial.printf("LATE-ISR >1.1us:%lu >1.5us:%lu >3us:%lu >100us:%lu  last at %lu ms (now %lu)\n",
++            LateIsrBkt[0], LateIsrBkt[1], LateIsrBkt[2], LateIsrBkt[3], LateIsrLastMs, millis());
++      }
++   }
+ #ifdef FeatTCPListen
+    if (NetListenEnable)
+    {
+@@ -527,6 +538,11 @@ FLASHMEM void SetEEPDefaults()
     EEPROM.write(eepAdMIDISettings, 0xff);  //see RegMIDISettingsMasks
     EEPROM.write(eepAdMIDISettings2, 0x0f); //see RegMIDISettingsMasks2
     
