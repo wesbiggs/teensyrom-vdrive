@@ -49,7 +49,7 @@ The examples here use `8` as an illustration only, and work the same on both SD 
 | `LOAD"$",8 : LIST` | List the mounted image (or current folder if none mounted) |
 | `LOAD"NAME",8` | Load a BASIC file |
 | `LOAD"NAME",8,1` | Load a binary file |
-| `SAVE"NAME",8` | Save a BAISC file |
+| `SAVE"NAME",8` | Save a BASIC file |
 | `SAVE"@0:NAME",8` | Save a BASIC file, replacing an existing one |
 | `VERIFY"NAME",8` | Verify a BASIC file |
 | `OPEN15,8,15,"CD:GAME.D64"` | Mount a disk image (`.d64`/`.d71`,`.d81` supported) |

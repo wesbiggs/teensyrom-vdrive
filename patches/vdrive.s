@@ -269,7 +269,7 @@ hk_acptr:
         rts
 @orig:  sei
         lda #$00
-        jmp $EE17
+        jmp $EE16               ; the STA $A5 (not $EE17, its operand: that ran LDA $20 / STA $EE, in the screen line-link table)
 
 ; ---- fast LOAD ---------------------------------------------------------------
 ; Entered instead of `JSR $F3D5` in the serial LOAD path. Handles LOAD (not
