@@ -21,6 +21,10 @@ Firmware integration and usage: `firmware/README.md`.
   scratch / rename / `N:`, paths (`LOAD"$/dir/image.d64"`, `$==`), auto-mount and remembered mounts (`/.vdrive` sidecar), VDrive+SwiftLink, remote get/set with
   `trvdrive` while a program runs, `trls` while a program runs, the image swap, and the sidecar reporting with the TR menu showing (`"running":false`).
   Also: *Quest for the King* (`VAULTTEST` clean, plays and loads/saves) and CCGMS over TCP (see the Kernal Replace fixes below).
+* **`VDCOPY` (util/, `make util`):** BASIC + a 2 KB-chunk machine-code copy loop copying files from a real drive to a vdrive unit; tested in VICE with a true-drive 1541 at 8 and the SD drive at 9
+  (`vdrive_mock.py scan`: copy all, skip existing, replace, list/range selection; byte-exact PRG and SEQ), **not on hardware yet**. Building it found a real-drive bug: the UNLSN hook at `$EDFE` overwrote the
+  operand of the `BIT` that stock UNTLK falls through, so the real drive never got UNTALK (garbled bytes in `GET#` after the first `CLRCHN`). `hk_untlk` now spells the whole routine out. Any KERNAL image built before
+  that fix must be rebuilt (`make build/kernal-tr.bin`). Lesson: a hook that overwrites bytes at an entry point inside another routine's operand needs every fall-through into those bytes checked.
 * **Not yet checked on hardware:** the bus scan with a real 1541 on the bus (the SD drive must become 9; `PEEK(56854)`; a first access that is a `LOAD`; the time of the first access),
   `.d81` mounting on the card, `.d71` at all, `STATUS` compared with a real drive, IRQ/STOP-key interplay during loads.
 * **BASIC test programs** (`tests/basic/`, built into `build/testdisk/vdtest.d64` by `make testdisk`) run inside VICE in `make test` and on the C64; they
@@ -66,6 +70,7 @@ d64/            portable C99 library, also compiled as C++ by the firmware (keep
   vdrive.c/.h     virtual IEC drive: channel pool, OPEN/LOAD/SAVE/command channel, CD:/path walking/mount hooks, U0> pins, bus-scan numbers
   vdrive_io.c/.h  mailbox register engine (ISR-side O(1) accessors + vio_poll), the fast LOAD/SAVE commands and the bus-scan protocol
   vd_cfg.h        build knobs: VD_COLD (FLASHMEM), VD_NSLOT, VD_DEV0/VD_DEV1 defaults
+util/            VDCOPY: vdcopy.bas (template) + vdcopy.s (machine-code helper, inlined as DATA lines by tools/make_util.py)
 patches/        ca65 sources overlaid on the stock KERNAL by tools/build.py; segment name P_XXXX = load address
   vdrive.s        serial entry hooks, fast LOAD ($F4C8) / SAVE ($F605), bus scan, code placed in reclaimed tape space $F8E2-$FB8D (629 of 683 bytes used)
   banner.s        proof patch (changes the power-on banner)
@@ -79,6 +84,7 @@ build/          generated, git-ignored (kernal images derived from the ROM, libd
 ## Commands
 * `make test` — everything (rebuilds `build/libd64.dylib`, runs unit tests, device-number check, firmware host test, two VICE runs: `basic` and
   `scan`, the latter with true-drive 1541s at 8 and 10; about 4 minutes).
+* `make util` — `build/util/vdcopy.prg`, the real-drive → vdrive copy utility (also on the test disk).
 * `make build/kernal-tr.bin STOCK=/path/to/kernal-901227-03.bin` — hardware image (mailbox `$DE00`, window `$DF00`).
   `STOCK` defaults to VICE's bundled ROM under Homebrew. `make build/kernal-banner.bin`, `build/kernal-stock.bin` are bring-up images.
 * `tools/make_tr_patch.sh /path/to/TeensyROM` — regenerate `firmware/teensyrom-vdrive.patch` after changing `firmware/IOH_VDrive.c`

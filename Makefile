@@ -47,3 +47,7 @@ build/kernal-banner.bin: build/banner-only/banner.s tools/build.py
 # Test disk for the real hardware: copy build/testdisk/vdtest.d64 to the SD card, then OPEN15,8,15,"CD:VDTEST.D64"
 testdisk:
 	python3 -I tools/make_testdisk.py
+
+# VDCOPY, the real-drive -> vdrive copy utility: build/util/vdcopy.prg (copy it to the card; see the README)
+util:
+	python3 -I tools/make_util.py

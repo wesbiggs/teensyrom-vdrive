@@ -49,6 +49,8 @@ def make_image(workdir):
         text.write_text(src.read_text().replace("@XX@", str(xx)))
         subprocess.run(["petcat", "-w2", "-o", str(out), "--", str(text)], check=True, capture_output=True)
         c("-attach", str(img), "-write", str(out), src.stem)
+    from make_util import build as build_util
+    c("-attach", str(img), "-write", str(build_util(workdir / "util")), "vdcopy")
     return img.read_bytes(), big
 
 
@@ -112,6 +114,14 @@ def main(kernal, scenario="basic"):
     if scan:       # real 1541s at 8 and 10, each with a blank disk so that a LOAD gets a quick FILE NOT FOUND instead of a long "no disk" wait
         for n in (8, 10):
             subprocess.run(["c1541", "-format", "real%d,r%d" % (n, n), "d64", str(workdir / ("real%d.d64" % n))], check=True, capture_output=True)
+        rnd = random.Random(5)
+        real = {"rprg": b"\x00\x40" + bytes(rnd.randrange(256) for _ in range(5000)),         # a PRG of 20 sectors
+                "rseq": bytes([13, 0, 10, 255, 34, 44, 58] * 400),                                 # SEQ with CR, NUL, quotes, commas
+                "test": b"\x01\x08" + b"real drive version"}                                      # exists on the SD already
+        for nm_, data in real.items():
+            (workdir / (nm_ + ".bin")).write_bytes(data)
+            subprocess.run(["c1541", "-attach", str(workdir / "real8.d64"), "-write", str(workdir / (nm_ + ".bin")), nm_ + (",s" if nm_ == "rseq" else "")],
+                           check=True, capture_output=True)
         drives = ["-drive8type", "1541", "-drive8truedrive", "-drive9type", "0", "-drive10type", "1541", "-drive10truedrive", "-drive11type", "0",
                   "-8", str(workdir / "real8.d64"), "-10", str(workdir / "real10.d64")]
     vice = subprocess.Popen(["x64sc", "-warp", *drives, "-kernal", kernal,
@@ -238,6 +248,38 @@ def main(kernal, scenario="basic"):
             run('T=TI:POKE780,12:SYS65457:POKE780,111:SYS65427:PRINT"P=";PEEK(144);"T=";TI-T\r', "P= 128")
             import re; ticks = [int(x) for x in re.findall(r"P= 128 T= (\d+)", "".join(m.screen()))]
             check("scan: probing an empty number takes %s jiffies (< 4 = 66 ms)" % ticks, ticks and ticks[-1] < 4)
+            # --- util/vdcopy: copy from the real 1541 (8) to the SD drive (9) ---
+            def vdcopy(sel, replace, expect):
+                m.keys('RUN\r'); service(1.5)
+                m.keys('\r'); service(0.5); m.keys('\r'); service(0.5)     # default units: 8 -> 9 (PEEK(56854) says the SD is 9)
+                for _ in range(40):                       # the directory is read from the true-drive 1541
+                    service(1.0, limit=3)
+                    if any("COPY: A=ALL" in r for r in m.screen()): break
+                for ch in sel: m.keys(ch); service(0.3)
+                m.keys('\r'); service(0.5); m.keys('Y' if replace else 'N'); service(1.0)
+                for _ in range(60):
+                    service(1.0, limit=3)
+                    if any("COPIED," in r for r in m.screen()): break
+                scr = m.screen()
+                check("vdcopy %r replace=%s: %s" % (sel, replace, expect), any(expect in " ".join(r.split()) for r in scr))
+                if not ok: print("\n".join(scr))
+                m.keys('\r'); service(1.0)                                  # RETURN at the prompt quits
+            run('LOAD"VDCOPY",9\r', "READY.")
+            vdcopy("A", False, "2 COPIED, 1 SKIPPED, 0 FAILED")           # TEST exists on the SD
+            img = workdir / "after.d64"; img.write_bytes(disk.dump())
+            for nm_ in ("rprg", "rseq"):
+                f = workdir / (nm_ + ".out")
+                subprocess.run(["c1541", "-attach", str(img), "-read", nm_ + (",s" if nm_ == "rseq" else ""), str(f)], capture_output=True)
+                want = real[nm_]
+                got = f.read_bytes() if f.exists() else b""
+                check("vdcopy: %s copied byte for byte" % nm_, got == want)
+                if got != want:
+                    print("  got %d bytes, want %d, first difference at %s" % (len(got), len(want), next((i for i, (a, b) in enumerate(zip(got, want)) if a != b), None)))
+            vdcopy("3", True, "1 COPIED, 0 SKIPPED, 0 FAILED")            # replace the existing TEST
+            vdcopy("1,2-3", False, "0 COPIED, 3 SKIPPED, 0 FAILED")       # a list and a range, all exist now
+            img.write_bytes(disk.dump())
+            subprocess.run(["c1541", "-attach", str(img), "-read", "test", str(workdir / "test.out")], capture_output=True)
+            check("vdcopy: the replaced TEST is the real drive's", (workdir / "test.out").exists() and (workdir / "test.out").read_bytes() == real["test"])
             return 0 if ok else 1
 
         # --- read side ---

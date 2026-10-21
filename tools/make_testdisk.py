@@ -31,6 +31,9 @@ for src in sorted((root / "tests" / "basic").glob("*.bas")):
     prg = out / (src.stem + ".prg")
     subprocess.run(["petcat", "-w2", "-o", str(prg), "--", str(text)], check=True, capture_output=True)
     c1541("-attach", str(img), "-write", str(prg), src.stem)
+sys.path.insert(0, str(root / "tools"))
+from make_util import build as build_util
+c1541("-attach", str(img), "-write", str(build_util(out / "util")), "vdcopy")
 for src in sorted((root / "tests" / "asm").glob("*.s")):      # machine-code tests: PRG with a BASIC SYS stub at $0801
     obj, prg, cfg = out / (src.stem + ".o"), out / (src.stem + ".prg"), out / "asm.cfg"
     cfg.write_text("MEMORY { LA: start=$07FF, size=2; M: start=$0801, size=$3000, file=%O; }\n"

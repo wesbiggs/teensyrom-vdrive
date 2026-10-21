@@ -249,9 +249,14 @@ hk_untlk:
         jsr vcall
         bcs @orig
         rts
-@orig:  sei
-        jsr $EE8E
-        jmp $EDF3
+@orig:  sei                     ; stock UNTLK falls through `BIT $3FA9` into UNLSN's code at $EDFE, which the UNLSN hook overwrote
+        jsr $EE8E               ; (the real drive never got its UNTALK and kept talking), so the whole routine is spelled out here
+        lda $DD00
+        ora #$08
+        sta $DD00
+        lda #$5F
+        jsr $ED11
+        jmp $EE03
 
 hk_unlsn:
         lda #C_UNLSN

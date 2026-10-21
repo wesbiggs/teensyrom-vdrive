@@ -110,6 +110,19 @@ The USB drive works the same. Any other device number uses the real IEC bus unto
 | File names longer than 16 characters | Hidden in host listings |
 | Tape (device 1) | Its code space was reused by the patch |
 
+## Copying files from a real drive: `VDCOPY`
+`make util` builds `build/util/vdcopy.prg` (BASIC with a small machine-code loop in the cassette buffer; it is also on `vdtest.d64`).
+Put it on the card, load it from the SD drive and `RUN` it with the real drive (and the disk to copy) on the bus:
+```
+LOAD"VDCOPY",9 : RUN        (9 when a real drive is 8; the SD drive is 8 when there is none)
+```
+It asks for the source unit (default 8) and the destination unit (default: the SD drive, `PEEK(56854)`), checks that both answer, lists the
+source disk (PRG, SEQ and USR files, 20 lines at a time) and asks what to copy: `A` for all, or numbers such as `1,3,5-8`. Existing files on
+the destination are skipped, or replaced if you answer `Y` to "replace existing". Copies go 2 KB at a time (read from the source, then written
+to the destination), the destination's error channel is checked after every chunk, so a full disk (72) or a failed write stops that file and
+removes the partial copy. RUN/STOP stops after the current chunk. The destination is normally an SD or USB unit with an image mounted. Needs `$C000-$C7FF` and the cassette buffer.
+REL files are not shown; names with `* , : = ?` are skipped.
+
 ## Device numbers: automatic (default 8 = SD, 9 = USB) or fixed — no rebuild, no reflash
 Automatic by default: on the first disk access of a run (the first `LISTEN` / `TALK` / `LOAD` / `SAVE`, so after the program has been
 loaded) the KERNAL probes the real serial bus at 8, 9, 10, ... and the SD drive takes the first free number, the USB drive the next
