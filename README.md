@@ -176,4 +176,4 @@ make build/kernal-tr.bin STOCK=/path/to/kernal-901227-03.bin
 * [CLAUDE.md](CLAUDE.md): project notes, status and gotchas for contributors.
 
 ## License
-Apache License 2.0, see [LICENSE](LICENSE). The TeensyROM firmware this patches is MIT-licensed, which is compatible; a firmware build combines both, so keep both license notices when distributing one.
+MIT License, see [LICENSE](LICENSE), the same license as the TeensyROM firmware this patches. A firmware build combines both, so keep both copyright notices when distributing one.
