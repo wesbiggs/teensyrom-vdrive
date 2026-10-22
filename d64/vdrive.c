@@ -10,7 +10,7 @@
 static const struct { uint8_t code; const char *msg; } MSGS[] = {
     {0, " OK"}, {1, "FILES SCRATCHED"}, {26, "WRITE PROTECT ON"}, {30, "SYNTAX ERROR"},
     {31, "SYNTAX ERROR"}, {33, "SYNTAX ERROR"}, {62, "FILE NOT FOUND"}, {63, "FILE EXISTS"},
-    {70, "NO CHANNEL"}, {72, "DISK FULL"}, {73, "TRVDRIVE V1.0"}, {74, "DRIVE NOT READY"},
+    {21, "READ ERROR"}, {25, "WRITE ERROR"}, {65, "NO BLOCK"}, {66, "ILLEGAL TRACK OR SECTOR"}, {70, "NO CHANNEL"}, {72, "DISK FULL"}, {73, "TRVDRIVE V1.0"}, {74, "DRIVE NOT READY"},
 };
 
 VD_COLD static void set_err(vd_unit_t *u, uint8_t code, uint8_t t, uint8_t s)
@@ -304,6 +304,13 @@ VD_COLD static void chan_open(vdrive_t *v, int unit, vd_unit_t *u, int ch, const
 {
     chan_close(u, ch);
     if (len && raw[0] == '$' && (u->disk || (v->host.dir_open && v->host.dir_next))) { open_dir(v, unit, u, ch, raw, len); return; }
+    if (len && raw[0] == '#') {                                      /* direct-access buffer: U1/U2/B-P work on it */
+        vd_chan_t *c = chan_alloc(u, ch);
+        if (!c) return;
+        c->mode = 5; c->u.b.pos = 0;
+        memset(c->u.b.buf, 0, sizeof c->u.b.buf);
+        return;
+    }
     open_spec_t o = parse_open(raw, len);
     if (!o.has_name) { set_err(u, u->disk ? 33 : 74, 0, 0); return; }
     char mode = o.mode ? o.mode : (ch == 1 ? 'W' : 'R');
@@ -389,6 +396,60 @@ VD_COLD static void cmd_renumber(vdrive_t *v, int unit, vd_unit_t *u, uint8_t n)
     if (v->host.save_devices) v->host.save_devices(v->host.ctx, v->pin[0], v->pin[1]);
 }
 
+/* Up to max decimal numbers from p (any non-digit separates them: "5,0,18,0", " 5 0 18 0", ":5;0;18;0"); returns how many. */
+VD_COLD static int parse_nums(const char *p, const char *end, int *v, int max)
+{
+    int n = 0;
+    while (p < end && n < max) {
+        if (*p < '0' || *p > '9') { p++; continue; }
+        int x = 0;
+        while (p < end && *p >= '0' && *p <= '9') { x = x * 10 + (*p - '0'); if (x > 999) x = 999; p++; }
+        v[n++] = x;
+    }
+    return n;
+}
+
+/* U1/UA (B-R) and U2/UB (B-W): "U1:ch drive track sector" copies a whole sector to / from the buffer channel `ch`.
+ * B-R / B-W are the same here: the sector is transferred whole and the buffer pointer starts at 0. */
+VD_COLD static void cmd_block_io(vd_unit_t *u, const char *p, const char *end, int write)
+{
+    int a[4];
+    if (parse_nums(p, end, a, 4) != 4) { set_err(u, 30, 0, 0); return; }
+    if (a[0] < 0 || a[0] > 14 || a[0] == 15) { set_err(u, 70, 0, 0); return; }
+    vd_chan_t *c = chan_find(u, a[0]);
+    if (!c || c->mode != 5) { set_err(u, 70, 0, 0); return; }
+    if (a[2] > 255 || a[3] > 255 || d64_sector_offset(u->disk, (uint8_t)a[2], (uint8_t)a[3]) < 0) { set_err(u, 66, (uint8_t)a[2], (uint8_t)a[3]); return; }
+    uint8_t t = (uint8_t)a[2], s = (uint8_t)a[3];
+    if (write) {
+        int r = d64_block_write(u->disk, t, s, c->u.b.buf);
+        if (r == D64_E_RO) set_err(u, 26, t, s);
+        else if (r) set_err(u, 25, t, s);
+    } else {
+        if (d64_block_read(u->disk, t, s, c->u.b.buf)) set_err(u, 21, t, s);
+        c->u.b.pos = 0;
+    }
+}
+
+/* B-P:ch,pos moves the buffer pointer; B-A / B-F:drive,track,sector allocate / free a sector in the BAM. */
+VD_COLD static void cmd_buffer(vd_unit_t *u, char op, const char *p, const char *end)
+{
+    int a[3];
+    if (op == 'P') {
+        if (parse_nums(p, end, a, 2) != 2) { set_err(u, 30, 0, 0); return; }
+        vd_chan_t *c = a[0] <= 14 ? chan_find(u, a[0]) : NULL;
+        if (!c || c->mode != 5) { set_err(u, 70, 0, 0); return; }
+        c->u.b.pos = (uint16_t)(a[1] & 0xFF);
+        return;
+    }
+    if (parse_nums(p, end, a, 3) != 3) { set_err(u, 30, 0, 0); return; }
+    if (a[1] > 255 || a[2] > 255) { set_err(u, 66, (uint8_t)a[1], (uint8_t)a[2]); return; }
+    uint8_t t = (uint8_t)a[1], s = (uint8_t)a[2], nt = 0, ns = 0;
+    int r = op == 'A' ? d64_block_alloc(u->disk, t, s, &nt, &ns) : d64_block_free(u->disk, t, s);
+    if (r == D64_E_IO) set_err(u, 66, t, s);
+    else if (r == D64_E_EXISTS) set_err(u, 65, nt, ns);
+    else if (r) err_from(u, r);
+}
+
 VD_COLD static void exec_command(vdrive_t *v, int unit, vd_unit_t *u, uint8_t *cmd, uint8_t len)
 {
     /* OPEN 15,d,15,"U0>"+CHR$(n) sends 4 bytes; PRINT#15 adds a CR, making 5 */
@@ -400,6 +461,17 @@ VD_COLD static void exec_command(vdrive_t *v, int unit, vd_unit_t *u, uint8_t *c
     if (cmd[0] == 'U' && len == 2 && (cmd[1] == 'I' || cmd[1] == 'J' || cmd[1] == '9')) { cmd_reset(u); return; }
     if (cmd[0] == 'U' && len == 3 && cmd[1] == 'I' && (cmd[2] == '+' || cmd[2] == '-')) return;   /* VIC-20 / C64 bus speed: nothing to do */
     if (!u->disk) { set_err(u, 74, 0, 0); return; }
+    if (cmd[0] == 'U' && len >= 2 && (cmd[1] == '1' || cmd[1] == 'A' || cmd[1] == '2' || cmd[1] == 'B')) {
+        cmd_block_io(u, (const char *)cmd + 2, (const char *)cmd + len, cmd[1] == '2' || cmd[1] == 'B'); return;
+    }
+    if (cmd[0] == 'B' && len >= 3 && cmd[1] == '-') {
+        const char *q = (const char *)cmd + 3, *e = (const char *)cmd + len;
+        switch (cmd[2]) {
+        case 'R': case 'W': cmd_block_io(u, q, e, cmd[2] == 'W'); return;
+        case 'P': case 'A': case 'F': cmd_buffer(u, (char)cmd[2], q, e); return;
+        default: set_err(u, 31, 0, 0); return;
+        }
+    }
     const char *p = (const char *)cmd + 1, *end = (const char *)cmd + len;
     while (p < end && *p >= '0' && *p <= '9') p++;       /* optional drive number */
     switch (cmd[0]) {
@@ -514,6 +586,12 @@ VD_COLD static int read_byte(vdrive_t *v, int unit, vd_unit_t *u, vd_chan_t *c, 
         *eoi = d64_file_eof(&c->u.r);
         return 1;
     }
+    if (c->mode == 5) {
+        if (c->u.b.pos >= D64_SECTOR) return 0;
+        *b = c->u.b.buf[c->u.b.pos++];
+        *eoi = c->u.b.pos >= D64_SECTOR;
+        return 1;
+    }
     if (c->mode == 4) {
         vd_dirstream_t *d = &c->u.d;
         if (d->lpos >= d->llen) dir_gen(v, unit, u, d);
@@ -557,6 +635,7 @@ VD_COLD int vdrive_mailbox(vdrive_t *v, uint8_t cmd, uint8_t arg, uint8_t *data,
                 int r = d64_write(u->disk, &c->u.w, &arg, 1);
                 if (r < 0) { err_from(u, r); c->mode = 0; chan_close(u, ch); *st = ST_TIMEOUT; }   /* write already aborted: just release the slot */
             }
+            else if (c && c->mode == 5 && c->u.b.pos < D64_SECTOR) c->u.b.buf[c->u.b.pos++] = arg;     /* buffer: full buffer ignores the rest */
         } else if (v->wlen < VD_CMDBUF - 1) {
             v->wbuf[v->wlen++] = arg;
         }

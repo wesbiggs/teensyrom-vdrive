@@ -25,7 +25,7 @@ Firmware integration and usage: `firmware/README.md`.
   (`vdrive_mock.py scan`: copy all, skip existing, replace, list/range selection, SD to USB, SD to 1541 and back, 1541 to USB; byte-exact PRG and SEQ), **on hardware (owner): the BASIC version worked vdrive to vdrive and vdrive to 1541; the machine-code rewrite is not on hardware yet**. Building it found a real-drive bug: the UNLSN hook at `$EDFE` overwrote the
   operand of the `BIT` that stock UNTLK falls through, so the real drive never got UNTALK (garbled bytes in `GET#` after the first `CLRCHN`). `hk_untlk` now spells the whole routine out. Any KERNAL image built before
   that fix must be rebuilt (`make build/kernal-tr.bin`). Lesson: a hook that overwrites bytes at an entry point inside another routine's operand needs every fall-through into those bytes checked.
-* **Alt-button disk switching (0.9.0.16, `docs/DESIGN.md` 21): host-tested only (`tests/fw_host`, the 6502 routine under py65 in a scratch script), NOT on hardware, not run in VICE (no ROM in the cloud session).**
+* **Alt-button disk switching (0.9.0.17, `docs/DESIGN.md` 22): host-tested only (`tests/fw_host`, the 6502 routine under py65 in a scratch script), NOT on hardware, not run in VICE (no ROM in the cloud session).**
   Taps on the TR+ Alt button (setting "None" only) cycle `/vdrive-config.txt` (SD: one tap, USB: two taps within 1 s); border flash through the new `BORDER` register `$DE18` and `irq_border` in the KERNAL IRQ routine. Rebuild `kernal-tr.bin` and re-copy it with the firmware.
 * **Not yet checked on hardware:** the bus scan with a real 1541 on the bus (the SD drive must become 9; `PEEK(56854)`; a first access that is a `LOAD`; the time of the first access),
   `.d81` mounting on the card, `.d71` at all, `STATUS` compared with a real drive, IRQ/STOP-key interplay during loads.
@@ -64,6 +64,7 @@ Firmware integration and usage: `firmware/README.md`.
   data lines are driven. 0.9.0.11 reads IO1 registers straight from the struct (about 10x fewer errors) and the KERNAL reads ST/DATA, the fast-LOAD header and every
   window byte twice in a row until two reads agree, and reads back window writes. `VD_TRACE` is off by default (it prints right after the answer, but was not the cause).
   Keep new bus-handler code as short as possible and never add work before `DataPortWriteWait`.
+* 0.9.0.16: direct sector access (`OPEN n,d,n,"#"`, `U1`/`U2`/`UA`/`UB`, `B-R`/`B-W` as aliases, `B-P`, `B-A`, `B-F`; docs/DESIGN.md 21). Unit tests (`tests/test_vdrive.py`) and `BLKTEST` in VICE pass; **not on hardware yet**. No `M-R`/`M-W`/`M-E`.
 * Known open risks: C128 not supported (see above); tape (device 1) intentionally broken (its code space was reclaimed).
 
 ## Layout

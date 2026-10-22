@@ -349,6 +349,37 @@ VD_COLD static int free_sector(d64_t *d, uint8_t t, uint8_t s)
     return bam_store(d, &L, bufA, bufB);
 }
 
+VD_COLD int d64_block_read(d64_t *d, uint8_t t, uint8_t s, uint8_t *buf) { return rd(d, t, s, buf); }
+VD_COLD int d64_block_write(d64_t *d, uint8_t t, uint8_t s, const uint8_t *buf) { return wr(d, t, s, buf); }
+VD_COLD int d64_block_free(d64_t *d, uint8_t t, uint8_t s) { return d->write ? free_sector(d, t, s) : D64_E_RO; }
+
+VD_COLD int d64_block_alloc(d64_t *d, uint8_t t, uint8_t s, uint8_t *nt, uint8_t *ns)
+{
+    uint8_t bufA[D64_SECTOR], bufB[D64_SECTOR], *cnt, *bits;
+    bamloc_t L;
+    if (t < 1 || t > bam_tracks(d) || s >= spt(d, t)) return D64_E_IO;
+    if (!d->write) return D64_E_RO;
+    int r = bam_load(d, t, &L, bufA, bufB, &cnt, &bits);
+    if (r) return r;
+    if (bits[s / 8] & (1 << (s % 8))) {
+        bits[s / 8] &= (uint8_t)~(1 << (s % 8));
+        if (*cnt) (*cnt)--;
+        return bam_store(d, &L, bufA, bufB);
+    }
+    /* taken: report the next free sector at or after it (track by track, wrapping), as DOS does with error 65 */
+    *nt = *ns = 0;
+    uint8_t tr = t, first = s + 1;
+    for (int n = 0; n < bam_tracks(d); n++) {
+        if (!bam_reserved(d, tr)) {
+            if ((r = bam_load(d, tr, &L, bufA, bufB, &cnt, &bits))) return r;
+            for (int k = (n ? 0 : first); k < spt(d, tr); k++)
+                if (bits[k / 8] & (1 << (k % 8))) { *nt = tr; *ns = (uint8_t)k; return D64_E_EXISTS; }
+        }
+        tr = (uint8_t)(tr % bam_tracks(d) + 1);
+    }
+    return D64_E_EXISTS;
+}
+
 VD_COLD static int valid_name(const char *n)
 {
     size_t l = strlen(n);
