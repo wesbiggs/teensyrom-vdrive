@@ -171,6 +171,24 @@ VD_COLD static void leave_image(vdrive_t *v, int unit, vd_unit_t *u)
     if (v->host.unmount) v->host.unmount(v->host.ctx, unit);
 }
 
+/* Is a name with "/" in it a host path? "/" is a legal character in a disk file name ("A/B"), so with an image mounted only a
+ * name that really walks somewhere is a path: a leading "/", a component with an image suffix, or "..". With nothing mounted every "/" is one. */
+VD_COLD static int is_path(const vd_unit_t *u, const char *s)
+{
+    if (!strchr(s, '/')) return 0;
+    if (!u->disk || *s == '/') return 1;
+    for (;;) {
+        size_t n = strcspn(s, "/");
+        char c[VD_CMDBUF];
+        if (n < sizeof c) {
+            memcpy(c, s, n); c[n] = 0;
+            if (image_kind(c) || !strcmp(c, "..")) return 1;
+        }
+        if (!s[n]) return 0;
+        s += n + 1;
+    }
+}
+
 /* Follow "[/]dir/dir/image.d64[/rest]" on the host: a leading "/" starts at the card root, ".." (or the left arrow "_") goes
  * up, a component with an image suffix is mounted, any other component is a folder. A component with a wildcard is not
  * entered: it ends the walk as the pattern. *rest points at what is left (the file name after an image, a pattern, or ""
@@ -304,7 +322,7 @@ VD_COLD static void open_dir(vdrive_t *v, int unit, vd_unit_t *u, int ch, const 
     while (i < len && raw[i] != ',' && n < sizeof spec - 1) spec[n++] = (char)raw[i++];
     spec[n] = 0;
     char *pat = spec;
-    if (force || strchr(spec, '/') || (!u->disk && !strpbrk(spec, "*?") && image_kind(spec))) {
+    if (force || is_path(u, spec) || (!u->disk && !strpbrk(spec, "*?") && image_kind(spec))) {
         int temp = !force && v->host.push && v->host.pop;
         if (temp) begin_temp(v, unit, u);
         int r = path_walk(v, unit, u, spec, &pat);
@@ -461,7 +479,7 @@ VD_COLD static void chan_open(vdrive_t *v, int unit, vd_unit_t *u, int ch, const
     if (mode != 'R' && mode != 'W' && mode != 'A') { set_err(u, 33, 0, 0); return; }
     /* "DIR/IMAGE.D64/FILE" (or a bare "IMAGE.D64" read with nothing mounted): walk there first, the file name is what is left.
      * "DIR/FILE.PRG", no image on the way: the folders are walked and FILE.PRG is a plain file on the card. */
-    if (strchr(o.name, '/') || (mode == 'R' && !u->disk && image_kind(o.name))) {
+    if (is_path(u, o.name) || (mode == 'R' && !u->disk && image_kind(o.name))) {
         char *rest, *leaf = strrchr(o.name, '/'), save = 0;
         int temp = mode == 'R' && v->host.push && v->host.pop, plain = 0;
         if (mode == 'R' && leaf && leaf[1] && !image_kind(leaf + 1) && v->host.plain_open) {

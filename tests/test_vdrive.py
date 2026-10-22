@@ -56,6 +56,14 @@ class VDriveTests(unittest.TestCase):
         d = self.vd.load(8, b"$0:O*")
         self.assertIn(b'"OTHER"', d); self.assertNotIn(b'"SEED"', d)
 
+    def test_slash_in_file_name(self):
+        data = self.data(300)
+        self.vd.save(8, b"A/B", data)
+        self.assertEqual(self.vd.load(8, b"A/B"), data)
+        self.assertIn(b'"A/B"', self.vd.load(8, b"$"))
+        self.assertIn(b'"A/B"', self.vd.load(8, b"$A/*"))
+        self.valid()
+
     def test_file_not_found_status(self):
         self.vd.open(8, 2, b"NOPE")
         self.assertEqual(self.vd.status(), "62,FILE NOT FOUND,00,00\r")
