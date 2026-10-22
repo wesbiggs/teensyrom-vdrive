@@ -56,6 +56,10 @@ try:
     nf = (tmp / "nf").read_bytes() if (tmp / "nf").exists() else b""
     good2 = nf == b"\x01\x08" + b"Q" * 3000
     print(("PASS" if good2 else "FAIL"), "NEWFILE contents intact on the image file")
-    sys.exit(0 if ok and good and good2 else 1)
+    made = sd / "made.d81"
+    out = subprocess.run(["c1541", "-attach", str(made), "-list"], capture_output=True, text=True, encoding="latin1").stdout.lower() if made.exists() else ""
+    good3 = '"made' in out and "3160 blocks free" in out
+    print(("PASS" if good3 else "FAIL"), "c1541 reads the D81 that N:MADE.D81 created")
+    sys.exit(0 if ok and good and good2 and good3 else 1)
 finally:
     shutil.rmtree(tmp, ignore_errors=True)

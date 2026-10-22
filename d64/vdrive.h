@@ -70,6 +70,9 @@ typedef struct {
     int  (*hf_read)(void *ctx, int unit, uint8_t *buf, int n);
     int  (*hf_write)(void *ctx, int unit, const uint8_t *buf, int n);
     void (*hf_close)(void *ctx, int unit, int write);
+    /* "N:NAME.D64,ID" with nothing mounted: make a new all-zero image file of `size` bytes in the current folder (never over an
+     * existing file: 63) and mount it like mount(); vdrive.c then writes the header and BAM. 0 ok, else a DOS error code. */
+    int  (*create)(void *ctx, int unit, const char *name, uint32_t size, d64_t **out);
 } vd_host_t;
 enum { VD_HF_CONFIG = 0, VD_HF_STATE = 1 };
 

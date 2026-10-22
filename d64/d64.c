@@ -884,7 +884,8 @@ VD_COLD int d64_copy(d64_t *d, const char *newname, const char *const *src, int 
     return d64_close_write(d, &w);
 }
 
-VD_COLD int d64_format(d64_t *d, const char *name, const char *id)
+/* clear: zero every sector that is not header / BAM / first directory sector (a full format); 0 for an image known to be blank */
+VD_COLD static int format(d64_t *d, const char *name, const char *id, int clear)
 {
     uint8_t b[D64_SECTOR];
     uint8_t idb[2];
@@ -897,7 +898,7 @@ VD_COLD int d64_format(d64_t *d, const char *name, const char *id)
         if (strlen(id) != 2) return D64_E_NAME;
         idb[0] = (uint8_t)id[0]; idb[1] = (uint8_t)id[1];
         memset(b, 0, sizeof b);
-        for (uint8_t t = 1; t <= d->tracks; t++)
+        if (clear) for (uint8_t t = 1; t <= d->tracks; t++)
             for (int sct = 0; sct < spt(d, t); sct++)
                 if (t != dt || sct > (d81 ? 3 : 1)) { int r = wr(d, t, (uint8_t)sct, b); if (r) return r; }
     } else {
@@ -955,6 +956,9 @@ VD_COLD int d64_format(d64_t *d, const char *name, const char *id)
     memset(b, 0, sizeof b); b[1] = 0xFF;
     return wr(d, 18, 1, b);
 }
+
+VD_COLD int d64_format(d64_t *d, const char *name, const char *id) { return format(d, name, id, 1); }
+VD_COLD int d64_format_blank(d64_t *d, const char *name, const char *id) { return id ? format(d, name, id, 0) : D64_E_NAME; }
 
 /* ---- validate ------------------------------------------------------------ */
 typedef struct { uint8_t b[2][D64_SECTOR]; uint8_t t0, s0, t1, s1; } vbam_t;   /* the BAM sectors (d64: one; d71: 18/0, 53/0; d81: 40/1, 40/2) */

@@ -175,6 +175,30 @@ FLASHMEM static int VD_Mount(void *ctx, int unit, const char *name, d64_t **out)
    return 0;
 }
 
+// "N:NAME.D64,ID" with nothing mounted: a new all-zero image file in the current folder, then mounted (vdrive.c formats it).
+// Written in 4 KB pieces: a D81 is 800 KB and the whole command must finish inside the KERNAL's ~1.6 s mailbox wait.
+FLASHMEM static int VD_Create(void *ctx, int unit, const char *name, uint32_t size, d64_t **out)
+{
+   stcVDUnit *u = &vdUnit[unit];
+   char path[VD_CwdLen + 20];
+   VD_PathFor(u, name, path, sizeof path);
+   if (u->fs->exists(path)) return 63;                                            // FILE EXISTS: never replaced
+   File f = u->fs->open(path, FILE_WRITE);
+   if (!f) return 26;                                                             // card write-protected / not writable
+   static const uint32_t chunk = 4096;
+   uint8_t *zero = (uint8_t *)calloc(1, chunk);
+   bool ok = zero != NULL;
+   for (uint32_t n = 0; ok && n < size; n += chunk) {
+      uint32_t k = size - n < chunk ? size - n : chunk;
+      ok = f.write(zero, k) == k;
+   }
+   free(zero);
+   f.close();
+   if (!ok) { u->fs->remove(path); return 72; }                                   // DISK FULL (the card)
+   Printf_dbg("VDrive %d: created %s (%lu bytes)\n", unit + 8, path, (unsigned long)size);
+   return VD_Mount(ctx, unit, name, out);
+}
+
 // A listing by path (LOAD"$/GAMES/G.D64") must not change what is selected: remember folder and image, put them back afterwards.
 FLASHMEM static void VD_Push(void *ctx, int unit)
 {
@@ -428,7 +452,7 @@ FLASHMEM void VDrive_PreStart()
    memset(&host, 0, sizeof host);
    host.mount = VD_Mount;  host.unmount = VD_Unmount;  host.chdir = VD_ChDir;
    host.dir_open = VD_DirOpen;  host.dir_next = VD_DirNext;  host.save_devices = VD_SaveDevices;
-   host.push = VD_Push;  host.pop = VD_Pop;
+   host.push = VD_Push;  host.pop = VD_Pop;  host.create = VD_Create;
    host.hf_open = VD_HfOpen;  host.hf_read = VD_HfRead;  host.hf_write = VD_HfWrite;  host.hf_close = VD_HfClose;
    if (hfFile) hfFile.close();        // the drive state (and with it any open channel) was just reset
    hfKind = -1;

@@ -15,7 +15,7 @@ index 6024ccd..2f5cbbf 100644
     else IOHandlerNextInit();
  }
 diff --git a/Source/Teensy/MinimalBoot/Common/Common_Defs.h b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
-index 358ffff..5c2b1c6 100644
+index 358ffff..d7bbbc1 100644
 --- a/Source/Teensy/MinimalBoot/Common/Common_Defs.h
 +++ b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
 @@ -14,6 +14,7 @@
@@ -31,7 +31,7 @@ index 358ffff..5c2b1c6 100644
  
  
 -#define TRVersion              "0.9"    //*VERSION*
-+#define TRVersion              "0.9.0.23"    //*VERSION*  (stock 0.9 + VDrive rev 23)
++#define TRVersion              "0.9.0.24"    //*VERSION*  (stock 0.9 + VDrive rev 24)
  #ifdef Fab04_Features
     char strVersionNumber[] = "TeensyROM+ v" TRVersion; 
  #else
@@ -174,10 +174,10 @@ index d7213cf..c2557a1 100644
  
 diff --git a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c
 new file mode 100644
-index 0000000..9969654
+index 0000000..5159893
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c
-@@ -0,0 +1,897 @@
+@@ -0,0 +1,921 @@
 +// "VDrive" Special IO for TeensyROM+: replacement KERNAL + virtual IEC drive.
 +//   unit 0 = SD card, unit 1 = USB drive. Device numbers are automatic by default: the first free numbers from 8 up
 +//   (the KERNAL probes the real serial bus on the first disk access of a run, see vdrive_io.h), so 8 (SD) and 9 (USB) when
@@ -353,6 +353,30 @@ index 0000000..9969654
 +   VD_SidecarSave(u, path);
 +   Printf_dbg("VDrive %d: mounted %s%s\n", unit + 8, path, writable ? "" : " (read-only)");
 +   return 0;
++}
++
++// "N:NAME.D64,ID" with nothing mounted: a new all-zero image file in the current folder, then mounted (vdrive.c formats it).
++// Written in 4 KB pieces: a D81 is 800 KB and the whole command must finish inside the KERNAL's ~1.6 s mailbox wait.
++FLASHMEM static int VD_Create(void *ctx, int unit, const char *name, uint32_t size, d64_t **out)
++{
++   stcVDUnit *u = &vdUnit[unit];
++   char path[VD_CwdLen + 20];
++   VD_PathFor(u, name, path, sizeof path);
++   if (u->fs->exists(path)) return 63;                                            // FILE EXISTS: never replaced
++   File f = u->fs->open(path, FILE_WRITE);
++   if (!f) return 26;                                                             // card write-protected / not writable
++   static const uint32_t chunk = 4096;
++   uint8_t *zero = (uint8_t *)calloc(1, chunk);
++   bool ok = zero != NULL;
++   for (uint32_t n = 0; ok && n < size; n += chunk) {
++      uint32_t k = size - n < chunk ? size - n : chunk;
++      ok = f.write(zero, k) == k;
++   }
++   free(zero);
++   f.close();
++   if (!ok) { u->fs->remove(path); return 72; }                                   // DISK FULL (the card)
++   Printf_dbg("VDrive %d: created %s (%lu bytes)\n", unit + 8, path, (unsigned long)size);
++   return VD_Mount(ctx, unit, name, out);
 +}
 +
 +// A listing by path (LOAD"$/GAMES/G.D64") must not change what is selected: remember folder and image, put them back afterwards.
@@ -608,7 +632,7 @@ index 0000000..9969654
 +   memset(&host, 0, sizeof host);
 +   host.mount = VD_Mount;  host.unmount = VD_Unmount;  host.chdir = VD_ChDir;
 +   host.dir_open = VD_DirOpen;  host.dir_next = VD_DirNext;  host.save_devices = VD_SaveDevices;
-+   host.push = VD_Push;  host.pop = VD_Pop;
++   host.push = VD_Push;  host.pop = VD_Pop;  host.create = VD_Create;
 +   host.hf_open = VD_HfOpen;  host.hf_read = VD_HfRead;  host.hf_write = VD_HfWrite;  host.hf_close = VD_HfClose;
 +   if (hfFile) hfFile.close();        // the drive state (and with it any open channel) was just reset
 +   hfKind = -1;
@@ -1229,10 +1253,10 @@ index 166ecfe..ebb9a28 100644
  
 diff --git a/Source/Teensy/MinimalBoot/Common/vdrive/d64.c b/Source/Teensy/MinimalBoot/Common/vdrive/d64.c
 new file mode 100644
-index 0000000..69b829b
+index 0000000..76a7235
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/vdrive/d64.c
-@@ -0,0 +1,1140 @@
+@@ -0,0 +1,1144 @@
 +#include "d64.h"
 +#include "vd_cfg.h"
 +#include <string.h>
@@ -2119,7 +2143,8 @@ index 0000000..69b829b
 +    return d64_close_write(d, &w);
 +}
 +
-+VD_COLD int d64_format(d64_t *d, const char *name, const char *id)
++/* clear: zero every sector that is not header / BAM / first directory sector (a full format); 0 for an image known to be blank */
++VD_COLD static int format(d64_t *d, const char *name, const char *id, int clear)
 +{
 +    uint8_t b[D64_SECTOR];
 +    uint8_t idb[2];
@@ -2132,7 +2157,7 @@ index 0000000..69b829b
 +        if (strlen(id) != 2) return D64_E_NAME;
 +        idb[0] = (uint8_t)id[0]; idb[1] = (uint8_t)id[1];
 +        memset(b, 0, sizeof b);
-+        for (uint8_t t = 1; t <= d->tracks; t++)
++        if (clear) for (uint8_t t = 1; t <= d->tracks; t++)
 +            for (int sct = 0; sct < spt(d, t); sct++)
 +                if (t != dt || sct > (d81 ? 3 : 1)) { int r = wr(d, t, (uint8_t)sct, b); if (r) return r; }
 +    } else {
@@ -2190,6 +2215,9 @@ index 0000000..69b829b
 +    memset(b, 0, sizeof b); b[1] = 0xFF;
 +    return wr(d, 18, 1, b);
 +}
++
++VD_COLD int d64_format(d64_t *d, const char *name, const char *id) { return format(d, name, id, 1); }
++VD_COLD int d64_format_blank(d64_t *d, const char *name, const char *id) { return id ? format(d, name, id, 0) : D64_E_NAME; }
 +
 +/* ---- validate ------------------------------------------------------------ */
 +typedef struct { uint8_t b[2][D64_SECTOR]; uint8_t t0, s0, t1, s1; } vbam_t;   /* the BAM sectors (d64: one; d71: 18/0, 53/0; d81: 40/1, 40/2) */
@@ -2375,10 +2403,10 @@ index 0000000..69b829b
 +VD_COLD size_t d64_sizeof_rel(void)   { return sizeof(d64_rel_t); }
 diff --git a/Source/Teensy/MinimalBoot/Common/vdrive/d64.h b/Source/Teensy/MinimalBoot/Common/vdrive/d64.h
 new file mode 100644
-index 0000000..7ab019e
+index 0000000..a67627a
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/vdrive/d64.h
-@@ -0,0 +1,192 @@
+@@ -0,0 +1,193 @@
 +/* Disk image engine (read + write) for .d64 (1541, 35/40 tracks), .d71 (1571, 70 tracks) and .d81 (1581, 80 tracks).
 + * Portable C99, no malloc: all state lives in caller structs and sectors are fetched through a callback, so the same
 + * code runs on the Teensy (SD/USB file backend) and on the host (tests, VICE mock). Names keep the d64_ prefix. */
@@ -2523,6 +2551,7 @@ index 0000000..7ab019e
 +int  d64_scratch(d64_t *d, const char *pattern);                 /* returns files scratched or <0 */
 +int  d64_rename(d64_t *d, const char *oldname, const char *newname);
 +int  d64_format(d64_t *d, const char *name, const char *id);     /* id==NULL: quick (BAM + directory only) */
++int  d64_format_blank(d64_t *d, const char *name, const char *id);   /* an all-zero new image: header, BAM, first directory sector only */
 +/* DOS "V": rebuild the BAM from the directory, the data chains and REL side sectors; unclosed (splat) files are deleted.
 + * Returns the number of files deleted, or <0. A broken chain is followed as far as it is valid. */
 +int  d64_validate(d64_t *d);
@@ -2604,10 +2633,10 @@ index 0000000..20f3ecc
 +#endif
 diff --git a/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.c b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.c
 new file mode 100644
-index 0000000..1218321
+index 0000000..0b3738d
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.c
-@@ -0,0 +1,882 @@
+@@ -0,0 +1,926 @@
 +#include "vdrive.h"
 +#include "vd_cfg.h"
 +#include <string.h>
@@ -3103,6 +3132,44 @@ index 0000000..1218321
 +    else if (*rest) set_err(u, 33, 0, 0);                        /* something after the image / a wildcard: not a directory */
 +}
 +
++/* "N:[path/]NAME.D64[,ID]" (.D71, .D81) with nothing mounted: a new blank image in the current folder (or the folder the path
++ * names), mounted at once and formatted with the disk name NAME and the ID ("00" when none is given). An existing file is never
++ * replaced (63). */
++VD_COLD static void cmd_new_image(vdrive_t *v, int unit, vd_unit_t *u, const char *p, const char *end)
++{
++    char path[VD_CMDBUF], id[3] = { '0', '0', 0 };
++    if (p < end && *p == ':') p++;
++    const char *comma = p;
++    while (comma < end && *comma != ',') comma++;
++    size_t n = (size_t)(comma - p);
++    if (comma < end) {
++        if (end - comma - 1 != 2) { set_err(u, 33, 0, 0); return; }
++        id[0] = comma[1]; id[1] = comma[2];
++    }
++    if (n < 5 || n >= sizeof path) { set_err(u, 33, 0, 0); return; }
++    memcpy(path, p, n); path[n] = 0;
++    char *leaf = strrchr(path, '/');
++    int kind = image_kind(path);
++    if (!kind || strpbrk(path, "*?")) { set_err(u, 33, 0, 0); return; }
++    if (leaf) {                                                   /* the folders first, then the new file in the last one */
++        char *rest, root[2] = { '/', 0 };
++        *leaf++ = 0;
++        int r = path_walk(v, unit, u, path[0] ? path : root, &rest);   /* "N:/NEW.D64": the card's root */
++        if (!r && (*rest || u->disk)) r = 33;                     /* the path went into an image or ended on a pattern */
++        if (r) { set_err(u, (uint8_t)r, 0, 0); return; }
++    } else leaf = path;
++    size_t ln = strlen(leaf) - 4;                                 /* the disk name: the file name without .D64 */
++    if (ln < 1 || ln > 16) { set_err(u, 33, 0, 0); return; }
++    char name[17];
++    memcpy(name, leaf, ln); name[ln] = 0;
++    d64_t *d = NULL;
++    uint32_t size = kind == 81 ? 819200u : kind == 71 ? 349696u : 174848u;
++    int r = v->host.create(v->host.ctx, unit, leaf, size, &d);
++    if (r) { set_err(u, (uint8_t)r, 0, 0); return; }
++    u->disk = d;
++    if ((r = d64_format_blank(d, name, id))) err_from(u, r);
++}
++
 +/* UI / UJ / U9: reset the drive. Closes every channel, keeps the mounted image, answers the "73" power-on message. */
 +VD_COLD static void cmd_reset(vd_unit_t *u)
 +{
@@ -3227,6 +3294,12 @@ index 0000000..1218321
 +    if (len >= 2 && cmd[0] == 'C' && cmd[1] == 'D') { cmd_cd(v, unit, u, (const char *)cmd + 2, (const char *)cmd + len); return; }
 +    if (cmd[0] == 'U' && len == 2 && (cmd[1] == 'I' || cmd[1] == 'J' || cmd[1] == '9')) { cmd_reset(u); return; }
 +    if (cmd[0] == 'U' && len == 3 && cmd[1] == 'I' && (cmd[2] == '+' || cmd[2] == '-')) return;   /* VIC-20 / C64 bus speed: nothing to do */
++    if (!u->disk && cmd[0] == 'N' && v->host.create) {
++        const char *q = (const char *)cmd + 1;
++        while (*q >= '0' && *q <= '9') q++;                       /* "N0:" */
++        cmd_new_image(v, unit, u, q, (const char *)cmd + len);
++        return;
++    }
 +    if (!u->disk) { set_err(u, 74, 0, 0); return; }
 +    if (cmd[0] == 'U' && len >= 2 && (cmd[1] == '1' || cmd[1] == 'A' || cmd[1] == '2' || cmd[1] == 'B')) {
 +        cmd_block_io(u, (const char *)cmd + 2, (const char *)cmd + len, cmd[1] == '2' || cmd[1] == 'B'); return;
@@ -3492,10 +3565,10 @@ index 0000000..1218321
 +}
 diff --git a/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.h b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.h
 new file mode 100644
-index 0000000..fb9491e
+index 0000000..bc7058f
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.h
-@@ -0,0 +1,129 @@
+@@ -0,0 +1,132 @@
 +/* Virtual IEC drive: the Teensy-side state machine behind the KERNAL mailbox.
 + * Units 0/1 = devices 8/9, each backed by an optional mounted d64_t.
 + * One mailbox command in, one result out; no I/O other than the d64 and host callbacks. */
@@ -3568,6 +3641,9 @@ index 0000000..fb9491e
 +    int  (*hf_read)(void *ctx, int unit, uint8_t *buf, int n);
 +    int  (*hf_write)(void *ctx, int unit, const uint8_t *buf, int n);
 +    void (*hf_close)(void *ctx, int unit, int write);
++    /* "N:NAME.D64,ID" with nothing mounted: make a new all-zero image file of `size` bytes in the current folder (never over an
++     * existing file: 63) and mount it like mount(); vdrive.c then writes the header and BAM. 0 ok, else a DOS error code. */
++    int  (*create)(void *ctx, int unit, const char *name, uint32_t size, d64_t **out);
 +} vd_host_t;
 +enum { VD_HF_CONFIG = 0, VD_HF_STATE = 1 };
 +

@@ -168,13 +168,15 @@ class HostStruct(ctypes.Structure):
     SAVEDEV = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_uint8, ctypes.c_uint8)
     PUSH = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_int)
     POP = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.POINTER(ctypes.c_void_p))
+    CREATE = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint32, ctypes.POINTER(ctypes.c_void_p))
     HFOPEN = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int)
     HFREAD = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_int)
     HFWRITE = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_int)
     HFCLOSE = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_int, ctypes.c_int)
     _fields_ = [("ctx", ctypes.c_void_p), ("mount", MOUNT), ("unmount", UNMOUNT), ("chdir", CHDIR),
                 ("dir_open", DIROPEN), ("dir_next", DIRNEXT), ("save_devices", SAVEDEV), ("push", PUSH), ("pop", POP),
-                ("hf_open", HFOPEN), ("hf_read", HFREAD), ("hf_write", HFWRITE), ("hf_close", HFCLOSE)]
+                ("hf_open", HFOPEN), ("hf_read", HFREAD), ("hf_write", HFWRITE), ("hf_close", HFCLOSE),
+                ("create", CREATE)]
 
 
 class HostTests(unittest.TestCase):
@@ -236,12 +238,72 @@ class HostTests(unittest.TestCase):
             size[0] = 0 if p.is_dir() else p.stat().st_size
             is_dir[0] = int(p.is_dir()); return 1
 
+        def create(ctx, unit, name, size, out):
+            p = self.cwd / name.decode().lower()
+            if p.exists(): return 63
+            p.write_bytes(bytes(size))
+            self.created.append(p)
+            return mount(ctx, unit, name, out)
+
+        self.created = []
         self.cb = HostStruct(None, HostStruct.MOUNT(mount), HostStruct.UNMOUNT(unmount), HostStruct.CHDIR(chdir),
                              HostStruct.DIROPEN(dir_open), HostStruct.DIRNEXT(dir_next), HostStruct.SAVEDEV(lambda c, a, b: None),
-                             HostStruct.PUSH(push), HostStruct.POP(pop))
+                             HostStruct.PUSH(push), HostStruct.POP(pop), create=HostStruct.CREATE(create))
         LIB.vdrive_set_host(self.io.v, ctypes.byref(self.cb))
 
     def tearDown(self): shutil.rmtree(self.tmp)
+
+    def created_image(self, path):
+        """the mounted Disk's bytes as the host file (the mock keeps images in memory) and c1541's view of it"""
+        path.write_bytes(self.cur[0].dump())
+        before = path.read_bytes()
+        r = subprocess.run(["c1541", "-attach", str(path), "-list", "-validate"], capture_output=True, text=True, encoding="latin1")
+        self.assertEqual(path.read_bytes(), before, "c1541 -validate changed the new image")
+        return r.stdout.lower()
+
+    def test_new_image_with_nothing_mounted(self):
+        for name, size, free in ((b"NEW.D64", 174848, 664), (b"TWO.D71", 349696, 1328), (b"BIG.D81", 819200, 3160)):
+            self.cmd15(b"CD:/"); self.status()
+            self.cmd15(b"N:" + name + b",AB")
+            self.assertEqual(self.status(), "00, OK,00,00\r", name)
+            p = self.tmp / name.decode().lower()
+            self.assertEqual(p.stat().st_size, size)
+            self.assertEqual(self.cur[0].header(), (name[:-4], b"AB", b"3D" if size == 819200 else b"2A"))
+            self.assertEqual(self.cur[0].free(), free)
+            out = self.created_image(p)
+            self.assertRegex(out, '"%s +" ab' % name[:-4].decode().lower())
+            self.assertIn("%d blocks free" % free, out)
+            self.io.fast_save(8, b"FILE", 0x0801, b"hello")       # mounted and writable at once
+            self.assertEqual(self.io.fast_load(8, b"FILE")[2], b"hello")
+
+    def test_new_image_never_replaces_and_checks_its_name(self):
+        before = (self.tmp / "a.d64").read_bytes()
+        self.cmd15(b"N:A.D64,XX")
+        self.assertEqual(self.status(), "63,FILE EXISTS,00,00\r")
+        self.assertEqual((self.tmp / "a.d64").read_bytes(), before)
+        for bad in (b"N:NOEXT,XX", b"N:X*.D64,XX", b"N:.D64,XX", b"N:X.D64,TOOLONG", b"N:ABCDEFGHIJKLMNOPQ.D64"):
+            self.cmd15(bad)
+            self.assertTrue(self.status().startswith("33,"), bad)
+        self.cmd15(b"N:A.D64/X.D64,XX")                           # a folder path, not a path into an image
+        self.assertTrue(self.status().startswith("33,"))
+        self.assertEqual(self.created, [])
+
+    def test_new_image_in_a_folder_and_default_id(self):
+        self.cmd15(b"N0:SUB/MADE.D64")
+        self.assertEqual(self.status(), "00, OK,00,00\r")
+        self.assertTrue((self.tmp / "sub" / "made.d64").exists())
+        self.assertEqual(self.cur[0].header()[:2], (b"MADE", b"00"))
+        self.cmd15(b"CD:_"); self.status()                        # leave the image: still in SUB
+        self.cmd15(b"N:/ROOT.D64,RT")                             # a leading "/" means the card's root
+        self.assertEqual(self.status(), "00, OK,00,00\r")
+        self.assertTrue((self.tmp / "root.d64").exists())
+
+    def test_n_with_an_image_mounted_still_formats_it(self):
+        self.cmd15(b"CD:A.D64"); self.status()
+        self.cmd15(b"N:FRESH.D64,ZZ")                             # a disk name, not a new file
+        self.assertEqual(self.status(), "00, OK,00,00\r")
+        self.assertEqual(self.created, [])
+        self.assertEqual(self.cur[0].header()[:2], (b"FRESH.D64", b"ZZ"))
 
     def cmd15(self, text):
         self.io.call(LISTEN, 8); self.io.call(SECOND, 0x6F)

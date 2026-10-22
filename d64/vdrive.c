@@ -493,6 +493,44 @@ VD_COLD static void cmd_cd(vdrive_t *v, int unit, vd_unit_t *u, const char *p, c
     else if (*rest) set_err(u, 33, 0, 0);                        /* something after the image / a wildcard: not a directory */
 }
 
+/* "N:[path/]NAME.D64[,ID]" (.D71, .D81) with nothing mounted: a new blank image in the current folder (or the folder the path
+ * names), mounted at once and formatted with the disk name NAME and the ID ("00" when none is given). An existing file is never
+ * replaced (63). */
+VD_COLD static void cmd_new_image(vdrive_t *v, int unit, vd_unit_t *u, const char *p, const char *end)
+{
+    char path[VD_CMDBUF], id[3] = { '0', '0', 0 };
+    if (p < end && *p == ':') p++;
+    const char *comma = p;
+    while (comma < end && *comma != ',') comma++;
+    size_t n = (size_t)(comma - p);
+    if (comma < end) {
+        if (end - comma - 1 != 2) { set_err(u, 33, 0, 0); return; }
+        id[0] = comma[1]; id[1] = comma[2];
+    }
+    if (n < 5 || n >= sizeof path) { set_err(u, 33, 0, 0); return; }
+    memcpy(path, p, n); path[n] = 0;
+    char *leaf = strrchr(path, '/');
+    int kind = image_kind(path);
+    if (!kind || strpbrk(path, "*?")) { set_err(u, 33, 0, 0); return; }
+    if (leaf) {                                                   /* the folders first, then the new file in the last one */
+        char *rest, root[2] = { '/', 0 };
+        *leaf++ = 0;
+        int r = path_walk(v, unit, u, path[0] ? path : root, &rest);   /* "N:/NEW.D64": the card's root */
+        if (!r && (*rest || u->disk)) r = 33;                     /* the path went into an image or ended on a pattern */
+        if (r) { set_err(u, (uint8_t)r, 0, 0); return; }
+    } else leaf = path;
+    size_t ln = strlen(leaf) - 4;                                 /* the disk name: the file name without .D64 */
+    if (ln < 1 || ln > 16) { set_err(u, 33, 0, 0); return; }
+    char name[17];
+    memcpy(name, leaf, ln); name[ln] = 0;
+    d64_t *d = NULL;
+    uint32_t size = kind == 81 ? 819200u : kind == 71 ? 349696u : 174848u;
+    int r = v->host.create(v->host.ctx, unit, leaf, size, &d);
+    if (r) { set_err(u, (uint8_t)r, 0, 0); return; }
+    u->disk = d;
+    if ((r = d64_format_blank(d, name, id))) err_from(u, r);
+}
+
 /* UI / UJ / U9: reset the drive. Closes every channel, keeps the mounted image, answers the "73" power-on message. */
 VD_COLD static void cmd_reset(vd_unit_t *u)
 {
@@ -617,6 +655,12 @@ VD_COLD static void exec_command(vdrive_t *v, int unit, vd_unit_t *u, uint8_t *c
     if (len >= 2 && cmd[0] == 'C' && cmd[1] == 'D') { cmd_cd(v, unit, u, (const char *)cmd + 2, (const char *)cmd + len); return; }
     if (cmd[0] == 'U' && len == 2 && (cmd[1] == 'I' || cmd[1] == 'J' || cmd[1] == '9')) { cmd_reset(u); return; }
     if (cmd[0] == 'U' && len == 3 && cmd[1] == 'I' && (cmd[2] == '+' || cmd[2] == '-')) return;   /* VIC-20 / C64 bus speed: nothing to do */
+    if (!u->disk && cmd[0] == 'N' && v->host.create) {
+        const char *q = (const char *)cmd + 1;
+        while (*q >= '0' && *q <= '9') q++;                       /* "N0:" */
+        cmd_new_image(v, unit, u, q, (const char *)cmd + len);
+        return;
+    }
     if (!u->disk) { set_err(u, 74, 0, 0); return; }
     if (cmd[0] == 'U' && len >= 2 && (cmd[1] == '1' || cmd[1] == 'A' || cmd[1] == '2' || cmd[1] == 'B')) {
         cmd_block_io(u, (const char *)cmd + 2, (const char *)cmd + len, cmd[1] == '2' || cmd[1] == 'B'); return;

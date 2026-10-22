@@ -72,6 +72,7 @@ Firmware integration and usage: `firmware/README.md`.
 * 0.9.0.21: append (`,A`; `d64_append`, a disk full restores the file; docs/DESIGN.md 26). Unit tests only.
 * 0.9.0.22: `V`alidate rebuilds the BAM (`d64_validate`, splats deleted, REL side sectors kept; byte-identical to `c1541 -validate`; docs/DESIGN.md 27). Unit tests only.
 * 0.9.0.23: `L:name` (toggle lock) and `W-1`/`W-0` (write protect, `d64_t.ro`), CMD syntax (docs/DESIGN.md 28). Unit tests only.
+* 0.9.0.24: new images, `N:NAME.D64,ID` (or `.D71`/`.D81`) with nothing mounted (host callback `create`, glue `VD_Create`, `d64_format_blank`; docs/DESIGN.md 29). Unit and glue host tests.
 * Known open risks: C128 not supported (see above); tape (device 1) intentionally broken (its code space was reclaimed).
 
 ## Layout
@@ -135,9 +136,8 @@ build/          generated, git-ignored (kernal images derived from the ROM, libd
 ## Next steps
 1. **Finish bring-up**: the "Not yet checked on hardware" list under Status (bus scan with a real drive, `.d81`/`.d71`, `STATUS`, IRQ/STOP-key during loads). The core path has passed, so the items below can
    start once the owner agrees; mind that the patch changes under any build in progress.
-2. **Create new images** (agreed design, not started): with nothing mounted, `N:FILE.D64,ID` (or `.D71`/`.D81`) creates a blank image on the host file
-   system and mounts it (glue + `vdrive.c` `N` command; today `N` only formats the mounted disk, and nothing creates an image file). Remembering mounts
-   in a `/.vdrive` sidecar is done (see Status).
+2. **Create new images**: done in 0.9.0.24 (`N:FILE.D64,ID` with nothing mounted; docs/DESIGN.md 29), not on hardware yet: check the time a D81 takes
+   on a USB stick against the KERNAL's ~1.6 s mailbox wait.
 3. **BASIC utility** (~40 lines, kept as `.bas` text and converted with `petcat` in the Makefile): list the current directory, pick by number (mount an
    image, open a folder, `..`), "new image", "unmount", and show the device numbers (`PEEK(56854)`). Much of what it would do is now one `LOAD"$path"`.
 4. **TeensyROM menu integration** (last, only if the BASIC utility feels clumsy): a `Shift-D` hotkey like the existing `Shift-K`

@@ -293,6 +293,19 @@ int main(int argc, char **argv)
     cmd15("UI"); check("UI answers 73", status15().rfind("73,", 0) == 0);
     cmd15("CD:/"); status15();
 
+    // ---- N:NAME.D64,ID with nothing mounted: a new image on the card, mounted and formatted ----
+    cmd15("N:MADE.D81,MD");
+    check("N:MADE.D81 creates, mounts and formats a new image", status15() == "00, OK,00,00\r" && vdUnit[0].mounted && vdUnit[0].d.fmt == D64_FMT_D81
+          && fs_::file_size(SD.root / "made.d81") == 819200);
+    d = fast_load(8, "$");
+    check("... its listing: disk name MADE, ID MD, 3160 blocks free", d.find("MADE") != std::string::npos && d.find(" MD 3D") != std::string::npos
+          && d.find("\x58\x0c" "BLOCKS FREE") != std::string::npos);
+    check("... the sidecar remembers it", (VD_Flush(&vdUnit[0]), fs_::exists(SD.root / ".vdrive")));
+    cmd15("CD:/"); status15();
+    cmd15("N:MADE.D81,XX"); check("... and N: never replaces an existing file", status15().rfind("63,FILE EXISTS", 0) == 0 && !vdUnit[0].mounted);
+    cmd15("N:/SUB/NEW2.D64"); check("N: with a folder path creates the image there", status15() == "00, OK,00,00\r" && fs_::file_size(SD.resolve("/sub/new2.d64")) == 174848);
+    cmd15("CD:/"); status15();
+
     // ---- bus scan: the fake KERNAL finds real drives at 8 and 9 and the glue hands out 10 / 11 on the first transaction ----
     g_real_drives = {8, 9};
     VDrive_PreStart();

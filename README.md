@@ -60,6 +60,7 @@ The examples here use `8` as an illustration only, and work the same on both SD 
 | `OPEN15,8,15,"CD:/GAMES/G.D81"` | Paths work: absolute (leading `/`) or relative, folders and an image in one go |
 | `OPEN15,8,15,"S:OLD*"` | Scratch |
 | `OPEN15,8,15,"N:NAME,ID"` | Format the mounted disk |
+| `OPEN15,8,15,"N:NAME.D64,ID"` | With nothing mounted: create a new blank image (`.D64`, `.D71` or `.D81`) in the current folder (or `N:/DIR/NAME.D64`), mount it and format it with disk name `NAME` (ID `00` if left out). Never replaces an existing file (63) |
 | `OPEN15,8,15,"R:NEW=OLD"` | Rename a file |
 | `OPEN15,8,15,"UI"` / `"UJ"` | Reset (status 73) |
 
