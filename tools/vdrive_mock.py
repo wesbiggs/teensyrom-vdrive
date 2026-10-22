@@ -175,7 +175,8 @@ def main(kernal, scenario="basic"):
         if scan:
             usb = workdir / "usb.d64"
             subprocess.run(["c1541", "-format", "usbdisk,us", "d64", str(usb)], check=True, capture_output=True)
-            io.attach(1, Disk(usb.read_bytes()), present=True)
+            usbd = Disk(usb.read_bytes())
+            io.attach(1, usbd, present=True)
         else:
             io.attach(1, None, present=False)      # the USB drive is not present in the mock
         io.arm_scan()                              # the first IEC transaction triggers the bus scan, like on the TR+
@@ -248,10 +249,10 @@ def main(kernal, scenario="basic"):
             run('T=TI:POKE780,12:SYS65457:POKE780,111:SYS65427:PRINT"P=";PEEK(144);"T=";TI-T\r', "P= 128")
             import re; ticks = [int(x) for x in re.findall(r"P= 128 T= (\d+)", "".join(m.screen()))]
             check("scan: probing an empty number takes %s jiffies (< 4 = 66 ms)" % ticks, ticks and ticks[-1] < 4)
-            # --- util/vdcopy: copy from the real 1541 (8) to the SD drive (9) ---
-            def vdcopy(sel, replace, expect):
+            # --- util/vdcopy: copy from the real 1541 (8) to the SD drive (9), then the other directions ---
+            def vdcopy(sel, replace, expect, src="", dst=""):
                 m.keys('RUN\r'); service(1.5)
-                m.keys('\r'); service(0.5); m.keys('\r'); service(0.5)     # default units: 8 -> 9 (PEEK(56854) says the SD is 9)
+                m.keys(src + '\r'); service(0.5); m.keys(dst + '\r'); service(0.5)     # default units: 8 -> 9 (PEEK(56854) says the SD is 9)
                 for _ in range(40):                       # the directory is read from the true-drive 1541
                     service(1.0, limit=3)
                     if any("COPY: A=ALL" in r for r in m.screen()): break
@@ -280,6 +281,28 @@ def main(kernal, scenario="basic"):
             img.write_bytes(disk.dump())
             subprocess.run(["c1541", "-attach", str(img), "-read", "test", str(workdir / "test.out")], capture_output=True)
             check("vdcopy: the replaced TEST is the real drive's", (workdir / "test.out").exists() and (workdir / "test.out").read_bytes() == real["test"])
+            def usb_file(name):
+                f = workdir / "usb.out"; f.unlink(missing_ok=True)
+                img_ = workdir / "usb_after.d64"; img_.write_bytes(usbd.dump())
+                subprocess.run(["c1541", "-attach", str(img_), "-read", name, str(f)], capture_output=True)
+                return f.read_bytes() if f.exists() else b""
+            # vdrive -> vdrive: SD (9) to USB (11); the SD listing is TEST BIG ... vdcopy RPRG RSEQ, so 1 = TEST and 2 = BIG
+            vdcopy("1", False, "1 COPIED, 0 SKIPPED, 0 FAILED", "9", "11")
+            check("vdcopy: SD -> USB, TEST byte for byte", usb_file("test") == real["test"])
+            vdcopy("2", False, "1 COPIED, 0 SKIPPED, 0 FAILED", "9", "11")
+            check("vdcopy: SD -> USB, BIG (6000 bytes) byte for byte", usb_file("big") == big)
+            vdcopy("1-2", False, "0 COPIED, 2 SKIPPED, 0 FAILED", "9", "11")
+            # vdrive -> real drive: SD (9) to the 1541 (8), BIG; the 1541 then lists RPRG RSEQ TEST BIG. Back to the SD with replace (8 -> 9)
+            # proves the bytes the real drive stored, and 8 -> 11 puts RPRG on the USB image.
+            vdcopy("2", False, "1 COPIED, 0 SKIPPED, 0 FAILED", "9", "8")
+            vdcopy("2", False, "0 COPIED, 1 SKIPPED, 0 FAILED", "9", "8")        # the real drive answers 63
+            vdcopy("4", True, "1 COPIED, 0 SKIPPED, 0 FAILED", "8", "9")
+            sd_img = workdir / "sd_after.d64"; sd_img.write_bytes(disk.dump())
+            (workdir / "big.out").unlink(missing_ok=True)
+            subprocess.run(["c1541", "-attach", str(sd_img), "-read", "big", str(workdir / "big.out")], capture_output=True)
+            check("vdcopy: BIG went SD -> 1541 -> SD byte for byte", (workdir / "big.out").exists() and (workdir / "big.out").read_bytes() == big)
+            vdcopy("1", False, "1 COPIED, 0 SKIPPED, 0 FAILED", "8", "11")
+            check("vdcopy: 1541 -> USB, RPRG byte for byte", usb_file("rprg") == real["rprg"])
             return 0 if ok else 1
 
         # --- read side ---

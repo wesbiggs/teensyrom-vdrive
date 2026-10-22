@@ -110,17 +110,17 @@ The USB drive works the same. Any other device number uses the real IEC bus unto
 | File names longer than 16 characters | Hidden in host listings |
 | Tape (device 1) | Its code space was reused by the patch |
 
-## Copying files from a real drive: `VDCOPY`
-`make util` builds `build/util/vdcopy.prg` (BASIC with a small machine-code loop in the cassette buffer; it is also on `vdtest.d64`).
-Put it on the card, load it from the SD drive and `RUN` it with the real drive (and the disk to copy) on the bus:
+## Copying files between drives: `VDCOPY`
+`make util` builds `build/util/vdcopy.prg` (pure machine code behind a `SYS` stub, loads at `$0801`; it is also on `vdtest.d64`).
+It copies between any two units, in either direction: real drive to SD/USB, SD/USB to a real drive, or SD to USB (an image mounted on each). Put it on the card, load it from the SD drive and `RUN` it (with the real drive and its disk on the bus, if you use one):
 ```
 LOAD"VDCOPY",9 : RUN        (9 when a real drive is 8; the SD drive is 8 when there is none)
 ```
-It asks for the source unit (default 8) and the destination unit (default: the SD drive, `PEEK(56854)`), checks that both answer, lists the
+It asks for the source unit (default 8) and the destination unit (default: the SD drive, `PEEK(56854)`; type both numbers for any other combination, e.g. 8 and 9 for SD to USB), checks that both answer, lists the
 source disk (PRG, SEQ and USR files, 20 lines at a time) and asks what to copy: `A` for all, or numbers such as `1,3,5-8`. Existing files on
 the destination are skipped, or replaced if you answer `Y` to "replace existing". Copies go 2 KB at a time (read from the source, then written
 to the destination), the destination's error channel is checked after every chunk, so a full disk (72) or a failed write stops that file and
-removes the partial copy. RUN/STOP stops after the current chunk. The destination is normally an SD or USB unit with an image mounted. Needs `$C000-$C7FF` and the cassette buffer.
+removes the partial copy. RUN/STOP stops after the current chunk. A vdrive source or destination needs an image mounted (`CD:`). Hardware-verified: vdrive to vdrive and vdrive to a 1541 (that was the earlier BASIC version; the machine-code rewrite is checked in VICE for all directions, not yet on hardware). The byte copy itself goes through the KERNAL one byte at a time, so its speed is set by the drives; the machine-code version removes the BASIC overhead in reading the directory and per file. Uses `$0801-$0FFF`, tables at `$2000-$37FF` and the buffer `$C000-$C7FF`.
 REL files are not shown; names with `* , : = ?` are skipped.
 
 ## Device numbers: automatic (default 8 = SD, 9 = USB) or fixed — no rebuild, no reflash

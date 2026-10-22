@@ -48,6 +48,6 @@ build/kernal-banner.bin: build/banner-only/banner.s tools/build.py
 testdisk:
 	python3 -I tools/make_testdisk.py
 
-# VDCOPY, the real-drive -> vdrive copy utility: build/util/vdcopy.prg (copy it to the card; see the README)
+# VDCOPY, the file copy utility (machine code) between any two units (real drive, SD, USB): build/util/vdcopy.prg (copy it to the card; see the README)
 util:
 	python3 -I tools/make_util.py
