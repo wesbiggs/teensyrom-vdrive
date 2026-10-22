@@ -74,7 +74,6 @@ Firmware integration and usage: `firmware/README.md`.
 * 0.9.0.23: `L:name` (toggle lock) and `W-1`/`W-0` (write protect, `d64_t.ro`), CMD syntax (docs/DESIGN.md 28). Unit tests only.
 * 0.9.0.24: new images, `N:NAME.D64,ID` (or `.D71`/`.D81`) with nothing mounted (host callback `create`, glue `VD_Create`, `d64_format_blank`; docs/DESIGN.md 29). Unit and glue host tests.
 * 0.9.0.25: plain files on the card with nothing mounted (`LOAD"GAME.PRG"`, `"GAME"`, patterns, folder paths; host callbacks `plain_open`/`plain_read`/`plain_close`, channel mode 9; docs/DESIGN.md 30). Reading only. Unit and glue host tests.
-* 0.9.0.23: plain files on the card with nothing mounted (`LOAD"GAME.PRG"`, `"GAME"`, patterns, folder paths; host callbacks `hopen`/`hread`/`hclose`, channel mode 7; docs/DESIGN.md 28). Reading only. Unit and glue host tests.
 * 0.9.0.26: `MD:`/`RD:` folders on the card with nothing mounted (host `mkdir`/`rmdir`; docs/DESIGN.md 31). Unit and glue host tests.
 * Known open risks: C128 not supported (see above); tape (device 1) intentionally broken (its code space was reclaimed).
 
@@ -109,6 +108,17 @@ build/          generated, git-ignored (kernal images derived from the ROM, libd
 * `tools/make_tr_patch.sh /path/to/TeensyROM` — regenerate `firmware/teensyrom-vdrive.patch` after changing `firmware/IOH_VDrive.c`
   or anything in `d64/` (the patch embeds copies of those files). Always re-run it, then `git apply --check` on a clean checkout. Run it against a *pristine* upstream tree (`git archive HEAD` of the TeensyROM checkout), not the owner's already-patched one: its edits assert on unpatched text. It also reads `firmware/vdrive_remote.inc` (the remote-control dispatcher inserted into `SerUSBIO.ino`).
 * Requires: `ca65/ld65` (cc65), VICE (`x64sc`, `c1541`), a C/C++ compiler, Python 3.
+
+## Testing in the cloud (Linux container, no Mac)
+The full `make test`, VICE runs included, works in a cloud session; do not skip the VICE part for want of a ROM.
+* `tools/cloud_setup.sh` once per container: installs `vice cc65 xvfb clang` and `py65`, and puts the ROMs that VICE's upstream source tree ships
+  (`data/C64`, `data/DRIVES`, from the VICE source mirror on GitHub) in `~/.local/share/vice`, where `x64sc` finds them. Ubuntu's `vice` package is the
+  DFSG build without ROMs, so `apt` alone is not enough. The ROMs stay outside the repository (no Commodore ROM bytes in the repo).
+* Then: `eval "$(tools/cloud_setup.sh --env)"; xvfb-run -a make test STOCK="$STOCK"`. `STOCK` = VICE's `kernal-901227-03.bin` is the base for every
+  KERNAL image (`kernal-vd.bin`, `kernal-tr.bin`), as the Homebrew default is on the owner's Mac. `xvfb-run` gives `x64sc` a display. About 7 minutes.
+* The `--env` line also puts a `c++` → `clang++` link first on `PATH`: with GCC, `tests/fw_host` fails to compile on existing glue code
+  (`-Wextra` enum/`-Wformat-truncation` under `-Werror`); the owner's compiler is clang.
+* Still say in the pull request what was not run: a VICE run is not a hardware run.
 
 ## Gotchas
 * **Firmware version stamp:** our builds are `<stock>.<REV>` (stock 0.9 -> `0.9.0.1`), written into `TRVersion` by `tools/make_tr_patch.sh` from
