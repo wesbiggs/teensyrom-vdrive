@@ -12,6 +12,7 @@
 ;   MBX+4 ST    R  IEC status bits to OR into $90 (EOI=$40, no device=$80)
 ;   MBX+5 LEN   RW name / block length for the fast LOAD / SAVE commands
 ;   MBX+6 DEV0  R  device number of the SD drive now, MBX+7 DEV1 the USB drive (0 = none): PEEK(56854), PEEK(56855)
+;   MBX+8 BORDER R request for the IRQ routine's border flash (disk-switch feedback, see irq_border at the end)
 ;
 ; Reclaims tape bit-timing code $F8E2-$FB8D (device 1 tape I/O stops working).
 
@@ -27,6 +28,7 @@ MBX_DATA = MBX+2
 MBX_STAT = MBX+3
 MBX_ST   = MBX+4
 MBX_LEN  = MBX+5
+MBX_BORDER = MBX+8
 STAT_OK      = $5A      ; answer tokens: exact values, so a misread can't pass for "done"
 STAT_NOTMINE = $A5
 STAT_SCAN    = $3C      ; "scan the serial bus first, then send this command again" (only ever answered to a LISTEN, TALK, fast LOAD / SAVE open)
@@ -54,6 +56,10 @@ C_FREE   = 15
         jmp fl_hook             ; LOAD, after "SEARCHING FOR": X = original secondary address
 .segment "P_F605"
         jmp fs_hook             ; SAVE, where the file would be opened
+
+; ---- border flash: the IRQ routine ($EA31) calls UDTIM through `JSR $FFEA`; point that call at irq_border instead ----
+.segment "P_EA32"
+        .word irq_border
 
 ; ---- hooks over the stock entry points (3 bytes each) ----------------------
 .segment "P_ED09"
@@ -430,3 +436,27 @@ fs_hook:
 @done:  clc
         rts
 @ff:    jmp $F707               ; mailbox stopped answering mid-save
+
+; ---- border flash (alt-button disk switching): called from the 60 Hz IRQ routine instead of UDTIM, ends in UDTIM ($F69B) ----
+; The Teensy publishes a request in BORDER: $C0|c = border colour c, $B0 = remember the border colour in $9C (a tape-only zero
+; page byte), $D0 = put it back (exact values). Anything else (idle = $80, or whatever the TR menu's registers read before the mailbox is live)
+; does nothing. Read twice, as everywhere: a bit-mixed byte must not flash anything.
+; A, X, Y are already on the stack at this point of the IRQ routine.
+irq_border:
+        lda MBX_BORDER
+        cmp MBX_BORDER
+        bne @done
+        eor #$C0                ; $C0|c -> c, $D0 -> $10, $B0 -> $70
+        cmp #$10
+        bcc @set
+        beq @rest
+        cmp #$70
+        bne @done               ; exact values only: $DE, what a late answer returns, must not look like a request
+        lda $D020               ; save: reads back $Fx, never zero, so the branch is always taken
+        sta $9C
+        bne @done
+@rest:  lda $9C                 ; restore: the colour saved earlier
+@set:   sta $D020
+@done:  jmp $F69B
+irq_border_end:
+.assert irq_border_end <= $FB8E, lderror, "reclaimed tape space overflows into the stock KERNAL"

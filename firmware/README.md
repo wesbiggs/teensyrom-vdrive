@@ -19,6 +19,7 @@ area (`eepAdNext` moves from 4235 to 4237, reset-to-defaults zeroes them); `eepM
 ## Remote control
 `VDrive_RemoteStatus` / `VDrive_RemoteSet` in `IOH_VDrive.c` implement commands `0x64E3` / `0x64E4` on the TeensyROM remote-control port; the dispatcher text is
 `vdrive_remote.inc`, inserted into `SerUSBIO.ino`. Framing and details are in `docs/DESIGN.md` section 20.
+The Alt button disk switching (`SpecialBtn_VDrive`, `VD_SwitchNext`, `/vdrive-config.txt`, the border flash through the `BORDER` register) is in the same file; see `docs/DESIGN.md` section 21.
 
 ## What changed in the KERNAL (`patches/vdrive.s`)
 * The 8 serial entry points (`LISTEN TALK SECOND TKSA CIOUT ACPTR UNLSN UNTLK`) `JMP` into stubs that ask the mailbox

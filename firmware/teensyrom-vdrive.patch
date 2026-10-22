@@ -15,7 +15,7 @@ index 6024ccd..2f5cbbf 100644
     else IOHandlerNextInit();
  }
 diff --git a/Source/Teensy/MinimalBoot/Common/Common_Defs.h b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
-index 7feae53..1b275d8 100644
+index 358ffff..fa39986 100644
 --- a/Source/Teensy/MinimalBoot/Common/Common_Defs.h
 +++ b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
 @@ -14,6 +14,7 @@
@@ -31,7 +31,7 @@ index 7feae53..1b275d8 100644
  
  
 -#define TRVersion              "0.9"    //*VERSION*
-+#define TRVersion              "0.9.0.15"    //*VERSION*  (stock 0.9 + VDrive rev 15)
++#define TRVersion              "0.9.0.16"    //*VERSION*  (stock 0.9 + VDrive rev 16)
  #ifdef Fab04_Features
     char strVersionNumber[] = "TeensyROM+ v" TRVersion; 
  #else
@@ -174,10 +174,10 @@ index d7213cf..c2557a1 100644
  
 diff --git a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c
 new file mode 100644
-index 0000000..9ffe33f
+index 0000000..b1cc50e
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c
-@@ -0,0 +1,600 @@
+@@ -0,0 +1,818 @@
 +// "VDrive" Special IO for TeensyROM+: replacement KERNAL + virtual IEC drive.
 +//   unit 0 = SD card, unit 1 = USB drive. Device numbers are automatic by default: the first free numbers from 8 up
 +//   (the KERNAL probes the real serial bus on the first disk access of a run, see vdrive_io.h), so 8 (SD) and 9 (USB) when
@@ -193,6 +193,7 @@ index 0000000..9ffe33f
 +// port. Off by default: the print runs right after the answer is published, i.e. while the C64 is still reading ST / DATA,
 +// and the USB serial interrupts then make the bus handler answer late (the C64 reads $00 / the previous bus byte).
 +
++#include <strings.h>               // strcasecmp
 +#define VD_COLD FLASHMEM          // everything except the bus-ISR register accessors lives in flash
 +#include "../vdrive/d64.c"
 +#include "../vdrive/vdrive.c"
@@ -551,14 +552,19 @@ index 0000000..9ffe33f
 +}
 +
 +// Handler start (the C64 is already running): only re-stage the KERNAL bus hook. No storage access here.
++void VD_AltButtonInit();          // alt-button disk switching, below
++void VD_AltPoll();
++
 +FLASHMEM void InitHndlr_VDrive()
 +{
 +   InitHndlr_KernalReplace();
++   VD_AltButtonInit();
 +}
 +
 +FLASHMEM void PollingHndlr_VDrive()
 +{
 +   if (vio == NULL) return;
++   VD_AltPoll();
 +   if (vio_poll(vio))
 +   {
 +      lastActivityMs = millis();
@@ -747,9 +753,221 @@ index 0000000..9ffe33f
 +   return 0;
 +}
 +
++// ---- alt button: cycle through the disk images listed in /vdrive-config.txt ----------------------------------------------------
++// One tap picks the next image of the SD card's list, two taps within VD_TapWindowMs the USB drive's list; each list is the file
++// /vdrive-config.txt in the root of its own drive. One image per line:   /path/IMAGE.D64, colour, flashes
++// (colour = C64 colour 0..15 for the border, default 1; flashes = how many times, default 1; '#' starts a comment line). After the
++// change the border flashes that way (250 ms on, 750 ms off) so the switch can be seen without a screen full of text; a card or
++// stick that is missing, an unreadable list or no usable image in it flashes red quickly for 2 s. An image that has disappeared is
++// skipped. With nothing mounted (or an image that is not in the list) the first usable image is picked.
++// Wired to the TR's Alt button only when its setting (TR menu, settings) is "None": a chosen action is never taken over.
++// The border change itself is done by the KERNAL's IRQ routine (patches/vdrive.s, irq_border), driven by the BORDER register.
++#define VD_CfgName       "/vdrive-config.txt"
++#define VD_CfgBufSize    2048
++#define VD_CfgMaxEntries 32
++#define VD_TapWindowMs   1000
++#define VD_FlashOnMs     250
++#define VD_FlashOffMs    750
++#define VD_ErrFlashMs    100    // red error flash: 100 ms on / 100 ms off for 2 s
++#define VD_ErrFlashes    10
++#define VD_SettleMs      100    // the IRQ routine must see a SAVE / RESTORE request at least once (every 16-20 ms)
++#define VD_ColorRed      2
++
++struct stcVDCfgEntry { char *path; uint8_t color, flashes; };
++
++DMAMEM static char          vdCfgBuf[VD_CfgBufSize];
++DMAMEM static stcVDCfgEntry vdCfg[VD_CfgMaxEntries];
++
++// "...,  12 " -> 12 and the line cut before the comma; false (line untouched) when the last field is not a plain number
++FLASHMEM static bool VD_TrailingNumber(char *line, int *val)
++{
++   char *comma = strrchr(line, ',');
++   if (!comma) return false;
++   const char *p = comma + 1;
++   while (*p == ' ' || *p == '\t') p++;
++   if (!*p) return false;
++   int v = 0, digits = 0;
++   for (; *p >= '0' && *p <= '9'; p++) { v = v * 10 + (*p - '0'); if (++digits > 3) return false; }
++   while (*p == ' ' || *p == '\t') p++;
++   if (digits == 0 || *p) return false;
++   *comma = 0;
++   *val = v;
++   return true;
++}
++
++// Parses the text in place; returns the number of usable entries (lines that are not a "/path" are skipped).
++FLASHMEM static int VD_ParseConfig(char *text, stcVDCfgEntry *out, int max)
++{
++   int n = 0;
++   while (*text && n < max)
++   {
++      char *line = text;
++      while (*text && *text != '\n') text++;
++      if (*text) *text++ = 0;
++      char *end = line + strlen(line);
++      while (end > line && (end[-1] == '\r' || end[-1] == ' ' || end[-1] == '\t')) *--end = 0;
++      while (*line == ' ' || *line == '\t') line++;
++      if (*line != '/') continue;                                 // comment, blank or not a path
++      int a = -1, b = -1;
++      if (VD_TrailingNumber(line, &a) && VD_TrailingNumber(line, &b)) { int t = a; a = b; b = t; }   // "path, colour, flashes"
++      else if (a >= 0) { b = -1; }                                // "path, colour"
++      end = line + strlen(line);
++      while (end > line && (end[-1] == ' ' || end[-1] == '\t')) *--end = 0;
++      if (end == line) continue;
++      out[n].path = line;
++      out[n].color = (a < 0) ? 1 : (uint8_t)(a & 0x0F);
++      out[n].flashes = (b < 0) ? 1 : (uint8_t)(b > 20 ? 20 : b);
++      n++;
++   }
++   return n;
++}
++
++// ---- border flash sequencer (main loop, driven from PollingHndlr_VDrive) ----
++enum { VDF_Idle, VDF_Save, VDF_On, VDF_Off, VDF_Restore };
++struct stcVDFlash
++{
++   uint8_t  phase, color, left;
++   uint16_t onMs, offMs;
++   uint32_t since;
++   bool     queued;            // a new sequence waits for the running one to give the colour back
++   uint8_t  qColor, qCount;
++   uint16_t qOnMs, qOffMs;
++};
++static stcVDFlash vdFlash;
++
++FLASHMEM static void VD_FlashPhase(uint8_t phase, uint8_t reg)
++{
++   vdFlash.phase = phase;
++   vdFlash.since = millis();
++   vioHot.border = reg;
++}
++
++FLASHMEM static void VD_FlashBegin(uint8_t color, uint8_t count, uint16_t onMs, uint16_t offMs)
++{
++   vdFlash.color = color; vdFlash.left = count; vdFlash.onMs = onMs; vdFlash.offMs = offMs;
++   if (count == 0) { VD_FlashPhase(VDF_Idle, VIO_BRD_IDLE); return; }
++   VD_FlashPhase(VDF_Save, VIO_BRD_SAVE);
++}
++
++FLASHMEM static void VD_Flash(uint8_t color, uint8_t count, uint16_t onMs, uint16_t offMs)
++{
++   if (vdFlash.phase == VDF_Idle) { VD_FlashBegin(color, count, onMs, offMs); return; }
++   vdFlash.queued = true;                                         // saving now would remember the flash colour: restore first
++   vdFlash.qColor = color; vdFlash.qCount = count; vdFlash.qOnMs = onMs; vdFlash.qOffMs = offMs;
++   VD_FlashPhase(VDF_Restore, VIO_BRD_RESTORE);
++}
++
++FLASHMEM static void VD_FlashPoll()
++{
++   if (vdFlash.phase == VDF_Idle) return;
++   uint32_t held = millis() - vdFlash.since;
++   switch (vdFlash.phase)
++   {
++      case VDF_Save:
++         if (held >= VD_SettleMs) VD_FlashPhase(VDF_On, VIO_BRD_SET | vdFlash.color);
++         break;
++      case VDF_On:
++         if (held >= vdFlash.onMs) { vdFlash.left--; VD_FlashPhase(VDF_Off, VIO_BRD_RESTORE); }
++         break;
++      case VDF_Off:
++         if (vdFlash.left == 0 ? held >= VD_SettleMs : held >= vdFlash.offMs)
++         {
++            if (vdFlash.left == 0) VD_FlashPhase(VDF_Idle, VIO_BRD_IDLE);     // the last flash needs no pause behind it
++            else VD_FlashPhase(VDF_On, VIO_BRD_SET | vdFlash.color);
++         }
++         break;
++      case VDF_Restore:                                            // aborted sequence: colour given back, then the queued one
++         if (held >= VD_SettleMs)
++         {
++            VD_FlashPhase(VDF_Idle, VIO_BRD_IDLE);
++            if (vdFlash.queued) { vdFlash.queued = false; VD_FlashBegin(vdFlash.qColor, vdFlash.qCount, vdFlash.qOnMs, vdFlash.qOffMs); }
++         }
++         break;
++   }
++}
++
++FLASHMEM static void VD_FlashError() { VD_Flash(VD_ColorRed, VD_ErrFlashes, VD_ErrFlashMs, VD_ErrFlashMs); }
++
++// ---- the switch itself ----
++FLASHMEM static bool VD_SameImage(const char *a, const char *b)
++{
++   char x[VD_CwdLen + 20], y[VD_CwdLen + 20];
++   strlcpy(x, a, sizeof x); strlcpy(y, b, sizeof y);
++   VD_Squeeze(x); VD_Squeeze(y);
++   return strcasecmp(x, y) == 0;
++}
++
++// Select the next usable image of the unit's list; flashes the result. Returns true when an image was mounted.
++FLASHMEM static bool VD_SwitchNext(int unit)
++{
++   char msg[64];
++   if (!VD_RemoteReady(unit)) { VD_FlashError(); return false; }           // no card / stick (or VDrive not running)
++   stcVDUnit *u = &vdUnit[unit];
++   if (VDrive_RemoteQuiet(msg, sizeof msg)) { VD_FlashError(); return false; }   // card access only at a quiet moment
++   File f = u->fs->open(VD_CfgName, FILE_READ);
++   if (!f || f.isDirectory()) { if (f) f.close(); VD_FlashError(); return false; }
++   int len = f.read(vdCfgBuf, VD_CfgBufSize - 1);
++   f.close();
++   if (len <= 0) { VD_FlashError(); return false; }
++   vdCfgBuf[len] = 0;
++   int n = VD_ParseConfig(vdCfgBuf, vdCfg, VD_CfgMaxEntries);
++   if (n == 0) { VD_FlashError(); return false; }
++
++   int start = 0;                                                          // nothing mounted, or not in the list: the first one
++   if (u->mounted)
++   {
++      char cur[VD_CwdLen + 20];
++      VD_PathFor(u, u->imgName, cur, sizeof cur);
++      for (int i = 0; i < n; i++) if (VD_SameImage(cur, vdCfg[i].path)) { start = (i + 1) % n; break; }
++   }
++   for (int k = 0; k < n; k++)
++   {
++      stcVDCfgEntry *e = &vdCfg[(start + k) % n];
++      if (VD_CheckImage(u->fs, e->path, msg, sizeof msg)) continue;       // gone (or not an image): next one
++      uint8_t color = e->color, count = e->flashes;
++      if (VDrive_RemoteSet(unit, e->path, msg, sizeof msg) == 0) { VD_Flash(color, count, VD_FlashOnMs, VD_FlashOffMs); return true; }
++      if (strstr(msg, "busy")) break;                                      // the C64 never let go of the drive
++   }
++   VD_FlashError();
++   return false;
++}
++
++// ---- Alt button: tap counting ----
++static uint8_t  vdTaps = 0;
++static uint32_t vdTapFirstMs = 0;
++static bool     vdSwitching = false;
++
++FLASHMEM void SpecialBtn_VDrive(bool Up_nDn)
++{
++   if (Up_nDn) return;                                // act on the press
++   if (vdTaps == 0) vdTapFirstMs = millis();
++   if (vdTaps < 2) vdTaps++;
++}
++
++FLASHMEM void VD_AltPoll()
++{
++   VD_FlashPoll();
++   if (vdTaps == 0 || vdSwitching) return;
++   if (vdTaps < 2 && millis() - vdTapFirstMs < VD_TapWindowMs) return;     // a second tap may still come
++   int unit = vdTaps >= 2 ? 1 : 0;
++   vdTaps = 0;
++   vdSwitching = true;                                // VDrive_RemoteQuiet() polls: do not re-enter from there
++   VD_SwitchNext(unit);
++   vdSwitching = false;
++}
++
++extern void (*fSpecialBtnChange)(bool Up_nDn);
++FLASHMEM void VD_AltButtonInit()
++{
++   vdTaps = 0; vdFlash.phase = VDF_Idle; vdFlash.queued = false;
++#ifdef Fab04_SpecialButton
++   if ((IO1[rwRegPwrUpDefaults2] & rpud2AltBtnActionMask) == rpud2AltBtnNone) fSpecialBtnChange = &SpecialBtn_VDrive;
++#endif
++}
++
 +static_assert(offsetof(vio_hot_t, cmd) == VIO_CMD && offsetof(vio_hot_t, arg) == VIO_ARG && offsetof(vio_hot_t, data) == VIO_DATA &&
 +              offsetof(vio_hot_t, stat) == VIO_STAT && offsetof(vio_hot_t, st) == VIO_ST && offsetof(vio_hot_t, len) == VIO_LEN &&
-+              offsetof(vio_hot_t, dev0) == VIO_DEV0 && offsetof(vio_hot_t, dev1) == VIO_DEV1, "register bytes must stay in register order");
++              offsetof(vio_hot_t, dev0) == VIO_DEV0 && offsetof(vio_hot_t, dev1) == VIO_DEV1 && offsetof(vio_hot_t, border) == VIO_BORDER, "register bytes must stay in register order");
 +
 +FASTRUN void IO1Hndlr_VDrive(uint8_t Address, bool R_Wn)
 +{
@@ -2510,10 +2728,10 @@ index 0000000..928050a
 +#endif
 diff --git a/Source/Teensy/MinimalBoot/Common/vdrive/vdrive_io.c b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive_io.c
 new file mode 100644
-index 0000000..a77d8a2
+index 0000000..2676879
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive_io.c
-@@ -0,0 +1,182 @@
+@@ -0,0 +1,184 @@
 +#include "vdrive_io.h"
 +#include "vd_cfg.h"
 +#include <string.h>
@@ -2524,6 +2742,7 @@ index 0000000..a77d8a2
 +    memset((void *)v, 0, sizeof *v);
 +    v->h = hot;
 +    hot->stat = VIO_OK;                   /* idle, nothing pending */
++    hot->border = VIO_BRD_IDLE;
 +    vdrive_init(&v->vd);
 +    vio_publish_devices(v);
 +}
@@ -2538,6 +2757,7 @@ index 0000000..a77d8a2
 +    case VIO_LEN:  return h->len;
 +    case VIO_DEV0: return h->dev0;
 +    case VIO_DEV1: return h->dev1;
++    case VIO_BORDER: return h->border;
 +    default:       return 0;
 +    }
 +}
@@ -2698,14 +2918,15 @@ index 0000000..a77d8a2
 +VD_COLD size_t vio_hot_sizeof(void) { return sizeof(vio_hot_t); }
 diff --git a/Source/Teensy/MinimalBoot/Common/vdrive/vdrive_io.h b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive_io.h
 new file mode 100644
-index 0000000..698301b
+index 0000000..4333d48
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive_io.h
-@@ -0,0 +1,77 @@
+@@ -0,0 +1,83 @@
 +/* Mailbox register engine for the TR+ virtual drive.
 + *
 + *   IO1 ($DE10, offsets below are relative to it): +0 CMD (W: trigger)  +1 ARG (RW)  +2 DATA (R)  +3 STAT (R)  +4 ST (R)  +5 LEN (RW)
 + *                                                  +6 DEV0 (R)  +7 DEV1 (R): IEC device number of the SD / USB drive now (0 = none)
++ *                                                  +8 BORDER (R): request for the KERNAL's IRQ routine, see VIO_BRD_* (disk-switch feedback)
 + *   IO2 ($DF00): 256-byte window (RW): file name in, data blocks in/out
 + *
 + * ISR side (vio_io*_read/write) is O(1) and never touches storage. Everything
@@ -2732,10 +2953,15 @@ index 0000000..698301b
 +extern "C" {
 +#endif
 +
-+enum { VIO_CMD = 0, VIO_ARG = 1, VIO_DATA = 2, VIO_STAT = 3, VIO_ST = 4, VIO_LEN = 5, VIO_DEV0 = 6, VIO_DEV1 = 7, VIO_NREGS = 8 };
++enum { VIO_CMD = 0, VIO_ARG = 1, VIO_DATA = 2, VIO_STAT = 3, VIO_ST = 4, VIO_LEN = 5, VIO_DEV0 = 6, VIO_DEV1 = 7, VIO_BORDER = 8, VIO_NREGS = 9 };
 +#define VIO_BUSY    0x80
 +#define VIO_OK      0x5A
 +#define VIO_NOTMINE 0xA5
++/* BORDER register values (exact: the 6502 reads it twice and ignores anything else, e.g. $DE from a late answer): */
++#define VIO_BRD_IDLE    0x80   /* nothing to do */
++#define VIO_BRD_SET     0xC0   /* | colour 0..15: set the border to it */
++#define VIO_BRD_SAVE    0xB0   /* remember the current border colour */
++#define VIO_BRD_RESTORE 0xD0   /* set the border back to the remembered colour */
 +#define VIO_SCANREQ 0x3C   /* answer to the first LISTEN / TALK / fast LOAD / fast SAVE of a run: "scan the bus, then ask again" (see VIO_SCAN) */
 +
 +/* Commands 1..8 are VD_LISTEN..VD_UNTLK (byte-level). Fast paths: */
@@ -2751,7 +2977,7 @@ index 0000000..698301b
 +
 +/* Registers + window: the only memory the bus ISR reads or writes (~270 bytes). Keep in DTCM. */
 +typedef struct {
-+    volatile uint8_t cmd, arg, data, stat, st, len, dev0, dev1, pending;
++    volatile uint8_t cmd, arg, data, stat, st, len, dev0, dev1, border, pending;   /* cmd..border are in register order (see the static_assert in IOH_VDrive.c) */
 +    uint8_t window[256];
 +} vio_hot_t;
 +
@@ -2780,10 +3006,10 @@ index 0000000..698301b
 +#endif
 +#endif
 diff --git a/Source/Teensy/SerUSBIO.ino b/Source/Teensy/SerUSBIO.ino
-index 92480e7..dd6a447 100644
+index db13b88..5116986 100644
 --- a/Source/Teensy/SerUSBIO.ino
 +++ b/Source/Teensy/SerUSBIO.ino
-@@ -600,6 +600,12 @@ FLASHMEM void ProcessCommand()
+@@ -605,6 +605,12 @@ FLASHMEM void ProcessCommand()
        case FWCheckToken: //Check firmware type
           SendU16(FWFullToken);
           return;   
@@ -2796,7 +3022,7 @@ index 92480e7..dd6a447 100644
     }
  
  
-@@ -610,7 +616,24 @@ FLASHMEM void ProcessCommand()
+@@ -615,7 +621,24 @@ FLASHMEM void ProcessCommand()
         TokenVal == SendFileToken     || TokenVal == PostFileToken     ||
         TokenVal == CopyFileToken     || TokenVal == DeleteFileToken);
  
@@ -2822,7 +3048,7 @@ index 92480e7..dd6a447 100644
     {
        SendU16(FailToken);
        CmdChannel->print("Busy!\n");
-@@ -805,6 +828,82 @@ FLASHMEM void LaunchFile()
+@@ -810,6 +833,82 @@ FLASHMEM void LaunchFile()
     }
  }
  
@@ -2906,7 +3132,7 @@ index 92480e7..dd6a447 100644
  {
     uint32_t RecDrive;
 diff --git a/Source/Teensy/Teensy.ino b/Source/Teensy/Teensy.ino
-index 99d0514..14060ce 100644
+index eae8a57..54ccf12 100644
 --- a/Source/Teensy/Teensy.ino
 +++ b/Source/Teensy/Teensy.ino
 @@ -54,6 +54,16 @@ uint8_t RAM_Image[RAM_ImageSize]; //Main RAM1 file storage buffer

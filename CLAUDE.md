@@ -25,6 +25,8 @@ Firmware integration and usage: `firmware/README.md`.
   (`vdrive_mock.py scan`: copy all, skip existing, replace, list/range selection, SD to USB, SD to 1541 and back, 1541 to USB; byte-exact PRG and SEQ), **on hardware (owner): the BASIC version worked vdrive to vdrive and vdrive to 1541; the machine-code rewrite is not on hardware yet**. Building it found a real-drive bug: the UNLSN hook at `$EDFE` overwrote the
   operand of the `BIT` that stock UNTLK falls through, so the real drive never got UNTALK (garbled bytes in `GET#` after the first `CLRCHN`). `hk_untlk` now spells the whole routine out. Any KERNAL image built before
   that fix must be rebuilt (`make build/kernal-tr.bin`). Lesson: a hook that overwrites bytes at an entry point inside another routine's operand needs every fall-through into those bytes checked.
+* **Alt-button disk switching (0.9.0.16, `docs/DESIGN.md` 21): host-tested only (`tests/fw_host`, the 6502 routine under py65 in a scratch script), NOT on hardware, not run in VICE (no ROM in the cloud session).**
+  Taps on the TR+ Alt button (setting "None" only) cycle `/vdrive-config.txt` (SD: one tap, USB: two taps within 1 s); border flash through the new `BORDER` register `$DE18` and `irq_border` in the KERNAL IRQ routine. Rebuild `kernal-tr.bin` and re-copy it with the firmware.
 * **Not yet checked on hardware:** the bus scan with a real 1541 on the bus (the SD drive must become 9; `PEEK(56854)`; a first access that is a `LOAD`; the time of the first access),
   `.d81` mounting on the card, `.d71` at all, `STATUS` compared with a real drive, IRQ/STOP-key interplay during loads.
 * **BASIC test programs** (`tests/basic/`, built into `build/testdisk/vdtest.d64` by `make testdisk`) run inside VICE in `make test` and on the C64; they
@@ -73,7 +75,7 @@ d64/            portable C99 library, also compiled as C++ by the firmware (keep
   vd_cfg.h        build knobs: VD_COLD (FLASHMEM), VD_NSLOT, VD_DEV0/VD_DEV1 defaults
 util/            VDCOPY: vdcopy.s (all machine code, BASIC SYS stub at $0801, tables BSS at $2000; tools/make_util.py assembles it)
 patches/        ca65 sources overlaid on the stock KERNAL by tools/build.py; segment name P_XXXX = load address
-  vdrive.s        serial entry hooks, fast LOAD ($F4C8) / SAVE ($F605), bus scan, code placed in reclaimed tape space $F8E2-$FB8D (629 of 683 bytes used)
+  vdrive.s        serial entry hooks, fast LOAD ($F4C8) / SAVE ($F605), bus scan, code placed in reclaimed tape space $F8E2-$FB8D (677 of 683 bytes used; `irq_border` for the border flash included, the build asserts the limit)
   banner.s        proof patch (changes the power-on banner)
 firmware/       TeensyROM integration: IOH_VDrive.c (Special IO) and teensyrom-vdrive.patch (git apply onto TeensyROM)
 tools/          build.py (patch overlay), make_tr_patch.sh (regenerate the TeensyROM patch), vdrive_mock.py (VICE mock),
@@ -85,6 +87,7 @@ build/          generated, git-ignored (kernal images derived from the ROM, libd
 ## Commands
 * `make test` — everything (rebuilds `build/libd64.dylib`, runs unit tests, device-number check, firmware host test, two VICE runs: `basic` and
   `scan`, the latter with true-drive 1541s at 8 and 10; about 4 minutes).
+* `make test-border` — the `irq_border` 6502 routine in py65 (skipped without `pip install py65`; also part of `make test`).
 * `make util` — `build/util/vdcopy.prg`, the file copy utility between any two units (also on the test disk).
 * `make build/kernal-tr.bin STOCK=/path/to/kernal-901227-03.bin` — hardware image (mailbox `$DE00`, window `$DF00`).
   `STOCK` defaults to VICE's bundled ROM under Homebrew. `make build/kernal-banner.bin`, `build/kernal-stock.bin` are bring-up images.

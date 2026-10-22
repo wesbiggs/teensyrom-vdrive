@@ -45,10 +45,31 @@ struct File {
 
 struct FS {
     fs_::path root;
-    bool exists(const char *path) { return fs_::exists(root / (path[0] == '/' ? path + 1 : path)); }
-    bool remove(const char *path) { return fs_::remove(root / (path[0] == '/' ? path + 1 : path)); }
+    // FAT is case-insensitive; so are the macOS hosts this was written on. Resolve each component by a case-insensitive match
+    // so the same tests run on a case-sensitive host file system. A missing last component keeps the requested spelling.
+    fs_::path resolve(const char *path) const {
+        fs_::path cur = root;
+        std::string p = path[0] == '/' ? path + 1 : path;
+        size_t i = 0;
+        while (i < p.size()) {
+            size_t j = p.find('/', i); if (j == std::string::npos) j = p.size();
+            std::string part = p.substr(i, j - i); i = j + 1;
+            if (part.empty()) continue;
+            fs_::path direct = cur / part;
+            if (!fs_::exists(direct) && fs_::is_directory(cur)) {
+                for (auto &e : fs_::directory_iterator(cur)) {
+                    std::string n = e.path().filename().string();
+                    if (n.size() == part.size() && std::equal(n.begin(), n.end(), part.begin(), [](char a, char b) { return tolower((unsigned char)a) == tolower((unsigned char)b); })) { direct = e.path(); break; }
+                }
+            }
+            cur = direct;
+        }
+        return cur;
+    }
+    bool exists(const char *path) { return fs_::exists(resolve(path)); }
+    bool remove(const char *path) { return fs_::remove(resolve(path)); }
     File open(const char *path, int mode = FILE_READ) {
-        File r; fs_::path p = root / (path[0] == '/' ? path + 1 : path);
+        File r; fs_::path p = resolve(path);
         if (!fs_::exists(p)) {
             if (mode != FILE_WRITE) return r;
             FILE *nf = fopen(p.c_str(), "w+b");           // real SD: FILE_WRITE = O_RDWR|O_CREAT, creates the file
@@ -89,6 +110,9 @@ extern EEPROMStub EEPROM;
 enum { eepAdVDriveDevs = 4235, eepAdNextIOHndlr = 6 };
 enum { IOH_None = 0, IOH_Swiftlink, IOH_VDrive, IOH_VDriveSwift, IOH_Other };   // only the order within the real enum is irrelevant here
 
+enum { rwRegPwrUpDefaults2 = 8, rpud2AltBtnActionMask = 0b00111000, rpud2AltBtnAutoLaunch = 0, rpud2AltBtnPause = 0b00001000, rpud2AltBtnNone = 0b00100000 };
+#define Fab04_SpecialButton
+extern void (*fSpecialBtnChange)(bool Up_nDn);
 enum { rWRegCurrMenuWAIT = 3, rmtUSBDrive = 0, rmtSD = 1, rmtTeensy = 2 };
 extern volatile uint8_t *IO1;
 extern char DriveDirPath[];

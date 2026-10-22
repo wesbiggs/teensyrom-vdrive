@@ -2,6 +2,7 @@
  *
  *   IO1 ($DE10, offsets below are relative to it): +0 CMD (W: trigger)  +1 ARG (RW)  +2 DATA (R)  +3 STAT (R)  +4 ST (R)  +5 LEN (RW)
  *                                                  +6 DEV0 (R)  +7 DEV1 (R): IEC device number of the SD / USB drive now (0 = none)
+ *                                                  +8 BORDER (R): request for the KERNAL's IRQ routine, see VIO_BRD_* (disk-switch feedback)
  *   IO2 ($DF00): 256-byte window (RW): file name in, data blocks in/out
  *
  * ISR side (vio_io*_read/write) is O(1) and never touches storage. Everything
@@ -28,10 +29,15 @@
 extern "C" {
 #endif
 
-enum { VIO_CMD = 0, VIO_ARG = 1, VIO_DATA = 2, VIO_STAT = 3, VIO_ST = 4, VIO_LEN = 5, VIO_DEV0 = 6, VIO_DEV1 = 7, VIO_NREGS = 8 };
+enum { VIO_CMD = 0, VIO_ARG = 1, VIO_DATA = 2, VIO_STAT = 3, VIO_ST = 4, VIO_LEN = 5, VIO_DEV0 = 6, VIO_DEV1 = 7, VIO_BORDER = 8, VIO_NREGS = 9 };
 #define VIO_BUSY    0x80
 #define VIO_OK      0x5A
 #define VIO_NOTMINE 0xA5
+/* BORDER register values (exact: the 6502 reads it twice and ignores anything else, e.g. $DE from a late answer): */
+#define VIO_BRD_IDLE    0x80   /* nothing to do */
+#define VIO_BRD_SET     0xC0   /* | colour 0..15: set the border to it */
+#define VIO_BRD_SAVE    0xB0   /* remember the current border colour */
+#define VIO_BRD_RESTORE 0xD0   /* set the border back to the remembered colour */
 #define VIO_SCANREQ 0x3C   /* answer to the first LISTEN / TALK / fast LOAD / fast SAVE of a run: "scan the bus, then ask again" (see VIO_SCAN) */
 
 /* Commands 1..8 are VD_LISTEN..VD_UNTLK (byte-level). Fast paths: */
@@ -47,7 +53,7 @@ enum {
 
 /* Registers + window: the only memory the bus ISR reads or writes (~270 bytes). Keep in DTCM. */
 typedef struct {
-    volatile uint8_t cmd, arg, data, stat, st, len, dev0, dev1, pending;
+    volatile uint8_t cmd, arg, data, stat, st, len, dev0, dev1, border, pending;   /* cmd..border are in register order (see the static_assert in IOH_VDrive.c) */
     uint8_t window[256];
 } vio_hot_t;
 

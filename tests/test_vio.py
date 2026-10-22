@@ -53,6 +53,12 @@ class VioTests(unittest.TestCase):
     def test_arg_reads_back(self):
         self.io.w(1, 0x5A); self.assertEqual(self.io.r(1), 0x5A)          # needed by the not-mine path
 
+    def test_border_register_idles_and_is_read_only(self):
+        # the KERNAL's IRQ routine reads it for the disk-switch border flash: idle is $80, only the firmware changes it
+        self.assertEqual(self.io.r(8), 0x80)
+        self.io.w(8, 0xC2); self.assertEqual(self.io.r(8), 0x80)
+        self.assertEqual(self.io.r(9), 0)                                # past it: nothing
+
     def test_window_rw(self):
         for i in range(256): self.io.win_w(i, i ^ 0xA5)
         self.assertTrue(all(self.io.win_r(i) == i ^ 0xA5 for i in range(256)))
