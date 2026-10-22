@@ -74,6 +74,9 @@ typedef struct {
     uint8_t  cur_t, cur_s;       /* sector being filled */
     uint16_t pos;                /* next free index in buf (2..256) */
     uint16_t blocks;             /* sectors allocated so far */
+    uint8_t  app_t, app_s;       /* append: the file's old last sector (0 = a new file), */
+    uint8_t  app_end, app_type;  /*   its old last-byte index and the old directory type byte, */
+    uint16_t app_blocks;         /*   and its old length: a failed append puts all of it back */
     uint8_t  buf[D64_SECTOR];
 } d64_wfile_t;
 
@@ -131,6 +134,9 @@ size_t d64_build_dir(d64_t *d, const char *pattern, uint8_t *out, size_t cap);
 int  d64_create(d64_t *d, const char *name, uint8_t type, int replace, d64_wfile_t *w);
 int  d64_write(d64_t *d, d64_wfile_t *w, const uint8_t *data, size_t n); /* n or <0; on D64_E_FULL the file is removed */
 int  d64_close_write(d64_t *d, d64_wfile_t *w);
+/* DOS ",A": reopen a file for writing at its end (the entry shows as unclosed until d64_close_write). D64_E_NOTFOUND,
+ * D64_E_TYPE for a REL file. On D64_E_FULL the file is put back as it was before the append. */
+int  d64_append(d64_t *d, const char *name, d64_wfile_t *w);
 int  d64_scratch_entry(d64_t *d, const d64_entry_t *e);          /* frees chain, marks entry deleted */
 int  d64_scratch(d64_t *d, const char *pattern);                 /* returns files scratched or <0 */
 int  d64_rename(d64_t *d, const char *oldname, const char *newname);

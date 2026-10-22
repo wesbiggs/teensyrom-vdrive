@@ -300,3 +300,9 @@ Relative files hold fixed-length records (1-254 bytes) over an ordinary data cha
 **Memory:** a REL channel caches one data block (`vd_rel_t` fits in the existing channel union, so `vio_t` does not grow). A record that spans two blocks is read and written through that one buffer; sequential blocks follow the chain link, others are found through the side sectors (two sector reads; three on a D81).
 
 **Not done:** the same REL file open on two channels at once does not share the cached block (the second channel can see stale data until the first writes it back, at the end of each record); a `LOAD` of a REL file sends its first record only. Not checked against a REL file written by a real drive.
+
+## 26. Append: `OPEN n,d,n,"NAME,A"` (0.9.0.21; done on the host, not in VICE or on hardware)
+
+`,A` (with or without a type, `"LOG,S,A"`, `"0:LOG,A"`) reopens an existing file for writing at its end: `d64_append()` walks the chain to the last sector, loads it into the write buffer with the cursor after its last byte, and marks the directory entry unclosed (the splat a real drive shows while the file is open); `CLOSE` closes it with the new block count. Missing file: `62`; a REL file: `64`.
+
+The write structure remembers the old last sector, its last-byte index, the old type byte and block count. On a disk full (`72`) during the append, `abort_write()` frees only the sectors added since, restores the old last sector's link and length and the directory entry, so the file is exactly what it was (BAM and directory byte-identical; tested with 3 sectors and with none left). A new file is still removed on a disk full, as before.

@@ -15,7 +15,7 @@ index 6024ccd..2f5cbbf 100644
     else IOHandlerNextInit();
  }
 diff --git a/Source/Teensy/MinimalBoot/Common/Common_Defs.h b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
-index 358ffff..6f4b6b0 100644
+index 358ffff..6ed52ea 100644
 --- a/Source/Teensy/MinimalBoot/Common/Common_Defs.h
 +++ b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
 @@ -14,6 +14,7 @@
@@ -31,7 +31,7 @@ index 358ffff..6f4b6b0 100644
  
  
 -#define TRVersion              "0.9"    //*VERSION*
-+#define TRVersion              "0.9.0.20"    //*VERSION*  (stock 0.9 + VDrive rev 20)
++#define TRVersion              "0.9.0.21"    //*VERSION*  (stock 0.9 + VDrive rev 21)
  #ifdef Fab04_Features
     char strVersionNumber[] = "TeensyROM+ v" TRVersion; 
  #else
@@ -1229,10 +1229,10 @@ index 166ecfe..ebb9a28 100644
  
 diff --git a/Source/Teensy/MinimalBoot/Common/vdrive/d64.c b/Source/Teensy/MinimalBoot/Common/vdrive/d64.c
 new file mode 100644
-index 0000000..3ff505c
+index 0000000..6c0bf31
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/vdrive/d64.c
-@@ -0,0 +1,1018 @@
+@@ -0,0 +1,1057 @@
 +#include "d64.h"
 +#include "vd_cfg.h"
 +#include <string.h>
@@ -1745,13 +1745,52 @@ index 0000000..3ff505c
 +    w->type = type & 7; w->dir_t = dt; w->dir_s = ds; w->dir_slot = slot;
 +    w->first_t = w->cur_t = ft; w->first_s = w->cur_s = fs;
 +    w->pos = 2; w->blocks = 1;
++    w->app_t = w->app_s = w->app_end = w->app_type = 0; w->app_blocks = 0;
 +    memset(w->buf, 0, sizeof w->buf);
 +    return 0;
 +}
 +
++VD_COLD int d64_append(d64_t *d, const char *name, d64_wfile_t *w)
++{
++    d64_entry_t e;
++    if (!d->write) return D64_E_RO;
++    int r = d64_find(d, name, &e);
++    if (r < 0) return r;
++    if (r == 0) return D64_E_NOTFOUND;
++    if ((e.type & 7) == 4) return D64_E_TYPE;
++    uint8_t t = e.track, s = e.sector;
++    uint16_t n = 0;
++    for (;;) {                                                   /* to the last sector of the chain */
++        if (++n > chain_limit(d)) return D64_E_LOOP;
++        if ((r = rd(d, t, s, w->buf))) return r;
++        if (!w->buf[0]) break;
++        t = w->buf[0]; s = w->buf[1];
++    }
++    w->type = e.type & 7; w->dir_t = e.dir_t; w->dir_s = e.dir_s; w->dir_slot = e.dir_slot;
++    w->first_t = e.track; w->first_s = e.sector; w->cur_t = t; w->cur_s = s;
++    w->pos = (uint16_t)(w->buf[1] < 1 ? 2 : w->buf[1] + 1);
++    w->blocks = n;
++    w->app_t = t; w->app_s = s; w->app_end = w->buf[1]; w->app_type = e.type; w->app_blocks = n;
++    return dir_update(d, e.dir_t, e.dir_s, e.dir_slot, NULL, e.type & 0x7F, -1);   /* unclosed while it is written */
++}
++
 +VD_COLD static void abort_write(d64_t *d, d64_wfile_t *w)
-+{   /* free exactly the sectors we allocated, then drop the directory entry */
++{   /* free exactly the sectors we allocated, then drop the directory entry (an append: put the old file back instead) */
 +    uint8_t t = w->first_t, s = w->first_s, b[D64_SECTOR];
++    if (w->app_t) {
++        if (rd(d, w->app_t, w->app_s, b)) return;
++        t = b[0]; s = b[1];                                      /* sectors added since the append began; the last one is cur, not yet written */
++        for (int i = w->app_blocks; i < w->blocks && t; i++) {
++            uint8_t nt = 0, ns = 0, c[D64_SECTOR];
++            if (i + 1 < w->blocks && rd(d, t, s, c) == 0) { nt = c[0]; ns = c[1]; }
++            free_sector(d, t, s);
++            t = nt; s = ns;
++        }
++        b[0] = 0; b[1] = w->app_end;
++        wr(d, w->app_t, w->app_s, b);
++        dir_update(d, w->dir_t, w->dir_s, w->dir_slot, NULL, w->app_type, w->app_blocks);
++        return;
++    }
 +    for (int i = 0; i < w->blocks; i++) {
 +        uint8_t nt = 0, ns = 0;
 +        if (i + 1 < w->blocks && rd(d, t, s, b) == 0) { nt = b[0]; ns = b[1]; }
@@ -2253,10 +2292,10 @@ index 0000000..3ff505c
 +VD_COLD size_t d64_sizeof_rel(void)   { return sizeof(d64_rel_t); }
 diff --git a/Source/Teensy/MinimalBoot/Common/vdrive/d64.h b/Source/Teensy/MinimalBoot/Common/vdrive/d64.h
 new file mode 100644
-index 0000000..5af88b0
+index 0000000..02701f4
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/vdrive/d64.h
-@@ -0,0 +1,179 @@
+@@ -0,0 +1,185 @@
 +/* Disk image engine (read + write) for .d64 (1541, 35/40 tracks), .d71 (1571, 70 tracks) and .d81 (1581, 80 tracks).
 + * Portable C99, no malloc: all state lives in caller structs and sectors are fetched through a callback, so the same
 + * code runs on the Teensy (SD/USB file backend) and on the host (tests, VICE mock). Names keep the d64_ prefix. */
@@ -2333,6 +2372,9 @@ index 0000000..5af88b0
 +    uint8_t  cur_t, cur_s;       /* sector being filled */
 +    uint16_t pos;                /* next free index in buf (2..256) */
 +    uint16_t blocks;             /* sectors allocated so far */
++    uint8_t  app_t, app_s;       /* append: the file's old last sector (0 = a new file), */
++    uint8_t  app_end, app_type;  /*   its old last-byte index and the old directory type byte, */
++    uint16_t app_blocks;         /*   and its old length: a failed append puts all of it back */
 +    uint8_t  buf[D64_SECTOR];
 +} d64_wfile_t;
 +
@@ -2390,6 +2432,9 @@ index 0000000..5af88b0
 +int  d64_create(d64_t *d, const char *name, uint8_t type, int replace, d64_wfile_t *w);
 +int  d64_write(d64_t *d, d64_wfile_t *w, const uint8_t *data, size_t n); /* n or <0; on D64_E_FULL the file is removed */
 +int  d64_close_write(d64_t *d, d64_wfile_t *w);
++/* DOS ",A": reopen a file for writing at its end (the entry shows as unclosed until d64_close_write). D64_E_NOTFOUND,
++ * D64_E_TYPE for a REL file. On D64_E_FULL the file is put back as it was before the append. */
++int  d64_append(d64_t *d, const char *name, d64_wfile_t *w);
 +int  d64_scratch_entry(d64_t *d, const d64_entry_t *e);          /* frees chain, marks entry deleted */
 +int  d64_scratch(d64_t *d, const char *pattern);                 /* returns files scratched or <0 */
 +int  d64_rename(d64_t *d, const char *oldname, const char *newname);
@@ -2469,10 +2514,10 @@ index 0000000..20f3ecc
 +#endif
 diff --git a/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.c b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.c
 new file mode 100644
-index 0000000..05cdccb
+index 0000000..583cc1f
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.c
-@@ -0,0 +1,858 @@
+@@ -0,0 +1,862 @@
 +#include "vdrive.h"
 +#include "vd_cfg.h"
 +#include <string.h>
@@ -2905,7 +2950,7 @@ index 0000000..05cdccb
 +    if (!o.has_name) { set_err(u, u->disk ? 33 : 74, 0, 0); return; }
 +    char mode = o.mode ? o.mode : (ch == 1 ? 'W' : 'R');
 +    if (o.name[0] == '!') { open_hostfile(v, unit, u, ch, o.name, mode); return; }
-+    if (mode != 'R' && mode != 'W') { set_err(u, 33, 0, 0); return; }   /* append not supported */
++    if (mode != 'R' && mode != 'W' && mode != 'A') { set_err(u, 33, 0, 0); return; }
 +    /* "DIR/IMAGE.D64/FILE" (or a bare "IMAGE.D64" read with nothing mounted): walk there first, the file name is what is left */
 +    if (strchr(o.name, '/') || (mode == 'R' && !u->disk && image_kind(o.name))) {
 +        char *rest;
@@ -2939,6 +2984,10 @@ index 0000000..05cdccb
 +        if (r == 0) { set_err(u, 62, 0, 0); chan_close(u, ch); return; }
 +        d64_file_open(u->disk, &e, &c->u.r);
 +        c->mode = 1;
++    } else if (mode == 'A') {                                                  /* ",A": more data at the end of an existing file */
++        int r = d64_append(u->disk, o.name, &c->u.w);
++        if (r) { err_from(u, r); chan_close(u, ch); return; }
++        c->mode = 3;
 +    } else {
 +        uint8_t type = o.type ? o.type : (ch == 1 ? 2 : 1);
 +        int r = d64_create(u->disk, o.name, type, o.replace, &c->u.w);

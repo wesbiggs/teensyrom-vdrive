@@ -510,13 +510,52 @@ VD_COLD int d64_create(d64_t *d, const char *name, uint8_t type, int replace, d6
     w->type = type & 7; w->dir_t = dt; w->dir_s = ds; w->dir_slot = slot;
     w->first_t = w->cur_t = ft; w->first_s = w->cur_s = fs;
     w->pos = 2; w->blocks = 1;
+    w->app_t = w->app_s = w->app_end = w->app_type = 0; w->app_blocks = 0;
     memset(w->buf, 0, sizeof w->buf);
     return 0;
 }
 
+VD_COLD int d64_append(d64_t *d, const char *name, d64_wfile_t *w)
+{
+    d64_entry_t e;
+    if (!d->write) return D64_E_RO;
+    int r = d64_find(d, name, &e);
+    if (r < 0) return r;
+    if (r == 0) return D64_E_NOTFOUND;
+    if ((e.type & 7) == 4) return D64_E_TYPE;
+    uint8_t t = e.track, s = e.sector;
+    uint16_t n = 0;
+    for (;;) {                                                   /* to the last sector of the chain */
+        if (++n > chain_limit(d)) return D64_E_LOOP;
+        if ((r = rd(d, t, s, w->buf))) return r;
+        if (!w->buf[0]) break;
+        t = w->buf[0]; s = w->buf[1];
+    }
+    w->type = e.type & 7; w->dir_t = e.dir_t; w->dir_s = e.dir_s; w->dir_slot = e.dir_slot;
+    w->first_t = e.track; w->first_s = e.sector; w->cur_t = t; w->cur_s = s;
+    w->pos = (uint16_t)(w->buf[1] < 1 ? 2 : w->buf[1] + 1);
+    w->blocks = n;
+    w->app_t = t; w->app_s = s; w->app_end = w->buf[1]; w->app_type = e.type; w->app_blocks = n;
+    return dir_update(d, e.dir_t, e.dir_s, e.dir_slot, NULL, e.type & 0x7F, -1);   /* unclosed while it is written */
+}
+
 VD_COLD static void abort_write(d64_t *d, d64_wfile_t *w)
-{   /* free exactly the sectors we allocated, then drop the directory entry */
+{   /* free exactly the sectors we allocated, then drop the directory entry (an append: put the old file back instead) */
     uint8_t t = w->first_t, s = w->first_s, b[D64_SECTOR];
+    if (w->app_t) {
+        if (rd(d, w->app_t, w->app_s, b)) return;
+        t = b[0]; s = b[1];                                      /* sectors added since the append began; the last one is cur, not yet written */
+        for (int i = w->app_blocks; i < w->blocks && t; i++) {
+            uint8_t nt = 0, ns = 0, c[D64_SECTOR];
+            if (i + 1 < w->blocks && rd(d, t, s, c) == 0) { nt = c[0]; ns = c[1]; }
+            free_sector(d, t, s);
+            t = nt; s = ns;
+        }
+        b[0] = 0; b[1] = w->app_end;
+        wr(d, w->app_t, w->app_s, b);
+        dir_update(d, w->dir_t, w->dir_s, w->dir_slot, NULL, w->app_type, w->app_blocks);
+        return;
+    }
     for (int i = 0; i < w->blocks; i++) {
         uint8_t nt = 0, ns = 0;
         if (i + 1 < w->blocks && rd(d, t, s, b) == 0) { nt = b[0]; ns = b[1]; }

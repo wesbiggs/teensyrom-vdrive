@@ -430,7 +430,7 @@ VD_COLD static void chan_open(vdrive_t *v, int unit, vd_unit_t *u, int ch, const
     if (!o.has_name) { set_err(u, u->disk ? 33 : 74, 0, 0); return; }
     char mode = o.mode ? o.mode : (ch == 1 ? 'W' : 'R');
     if (o.name[0] == '!') { open_hostfile(v, unit, u, ch, o.name, mode); return; }
-    if (mode != 'R' && mode != 'W') { set_err(u, 33, 0, 0); return; }   /* append not supported */
+    if (mode != 'R' && mode != 'W' && mode != 'A') { set_err(u, 33, 0, 0); return; }
     /* "DIR/IMAGE.D64/FILE" (or a bare "IMAGE.D64" read with nothing mounted): walk there first, the file name is what is left */
     if (strchr(o.name, '/') || (mode == 'R' && !u->disk && image_kind(o.name))) {
         char *rest;
@@ -464,6 +464,10 @@ VD_COLD static void chan_open(vdrive_t *v, int unit, vd_unit_t *u, int ch, const
         if (r == 0) { set_err(u, 62, 0, 0); chan_close(u, ch); return; }
         d64_file_open(u->disk, &e, &c->u.r);
         c->mode = 1;
+    } else if (mode == 'A') {                                                  /* ",A": more data at the end of an existing file */
+        int r = d64_append(u->disk, o.name, &c->u.w);
+        if (r) { err_from(u, r); chan_close(u, ch); return; }
+        c->mode = 3;
     } else {
         uint8_t type = o.type ? o.type : (ch == 1 ? 2 : 1);
         int r = d64_create(u->disk, o.name, type, o.replace, &c->u.w);
