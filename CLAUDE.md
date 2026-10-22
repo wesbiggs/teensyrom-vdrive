@@ -42,8 +42,9 @@ Firmware integration and usage: `firmware/README.md`.
   docs/UPSTREAM-kernal-replace-ram-under-rom.md). Fixed in 0.9.0.13 (`firmware/kernalreplace-fixes.patch`: no `/GAME` assert when HIRAM is known to be RAM; the image is served from a DTCM copy).
   (2) With Ethernet initialized (no cable needed) NativeEthernet runs the whole stack from a 1 ms PIT timer ISR, which made ~39 phi2 interrupts/s late; the first read after a `$01` write
   (the HIRAM sense) then answered late and q4k and CCGMS+SwiftLink over TCP glitched, NMI'd or froze. Masking the ENET interrupt did nothing. 0.9.0.14 masks `IRQ_PIT` and calls
-  `fnet_poll()` from `loop()` while a Kernal Replace/VDrive/SwiftLink handler runs (`ProcessATCommand` turns PIT back on while it runs, since `connect` etc. block). A rare late ISR still
-  shows now and then. Tried and dropped: a partial-serve map (broke disk access). Ideas left: an AT command to stop Ethernet; find the rest of the late ISRs.
+  `fnet_poll()` from `loop()` while a Kernal Replace/VDrive/SwiftLink handler runs (`ProcessATCommand` turns PIT back on while it runs, since `connect` etc. block). 0.9.0.15 starts that
+  poll in `PreStart` (until then ~15 late ISRs in the first 0.4 s after a launch crashed q4k; found with `LATE_ISR_TRACE`, a compile-time debug trace, see firmware/README.md); steady state is 0-1 late ISRs/s. CCGMS still glitches early in a BBS receive (not crashing; cause open).
+  Tried and dropped: a partial-serve map (broke disk access). Ideas left: an AT command to stop Ethernet; find the rest of the late ISRs.
 * **Feature notes (all hardware-verified unless listed above as not checked):**
   * VDrive+SwiftLink (0.9.0.4): mailbox moved to `$DE10` so the SwiftLink ACIA keeps `$DE00-$DE07`; Special IO "VDrive+SwiftLink" (`firmware/IOH_VDriveSwift.c`) runs both, and
     menu programs paired with SwiftLink (CCGMS...) get it when VDrive is the default Special IO. **KERNAL images built before this change (mailbox `$DE00`) no longer match the firmware: rebuild and re-copy `kernal-tr.bin`.**

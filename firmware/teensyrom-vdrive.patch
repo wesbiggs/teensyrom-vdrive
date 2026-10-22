@@ -15,7 +15,7 @@ index 6024ccd..2f5cbbf 100644
     else IOHandlerNextInit();
  }
 diff --git a/Source/Teensy/MinimalBoot/Common/Common_Defs.h b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
-index 7feae53..91a444e 100644
+index 7feae53..1b275d8 100644
 --- a/Source/Teensy/MinimalBoot/Common/Common_Defs.h
 +++ b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
 @@ -14,6 +14,7 @@
@@ -31,7 +31,7 @@ index 7feae53..91a444e 100644
  
  
 -#define TRVersion              "0.9"    //*VERSION*
-+#define TRVersion              "0.9.0.14"    //*VERSION*  (stock 0.9 + VDrive rev 14)
++#define TRVersion              "0.9.0.15"    //*VERSION*  (stock 0.9 + VDrive rev 15)
  #ifdef Fab04_Features
     char strVersionNumber[] = "TeensyROM+ v" TRVersion; 
  #else
@@ -54,6 +54,15 @@ index 7feae53..91a444e 100644
     eepAdUnused        = eepAdNext, // Reserved for future use, initialized to 0
     eepAdUnusedSize    = (4284-eepAdUnused), //Max size = 4284 (emulated in flash)
  };
+@@ -177,6 +181,8 @@ bool (*fBusSnoop)(uint16_t Address, bool R_Wn) = NULL;    //Bus snoop routine, r
+ bool (*PendingfBusSnoop)(uint16_t Address, bool R_Wn) = NULL;  //staged by an IO handler's InitHndlr instead of touching fBusSnoop directly
+ volatile bool HandshakeReady = false;    //true once IOHandlerInit has completed the current IO handler swap
+ 
++//#define LATE_ISR_TRACE  //debug: count late phi2 interrupts (ISRs.c) and print them on the serial console (Teensy.ino), reset at each Kernal Replace/VDrive launch
++
+ #ifdef Dbg_SerLog 
+    #define BigBufSize          1000
+ #else
 diff --git a/Source/Teensy/MinimalBoot/Common/IOHandlers.h b/Source/Teensy/MinimalBoot/Common/IOHandlers.h
 index 88bc75b..26e4a01 100644
 --- a/Source/Teensy/MinimalBoot/Common/IOHandlers.h
@@ -90,21 +99,26 @@ index 88bc75b..26e4a01 100644
        &IOHndlr_Debug,              //IOH_Debug, 
        
 diff --git a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_KernalReplace.c b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_KernalReplace.c
-index d7213cf..fc89daa 100644
+index d7213cf..c2557a1 100644
 --- a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_KernalReplace.c
 +++ b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_KernalReplace.c
-@@ -48,6 +48,10 @@ stcIOHandlers IOHndlr_KernalReplace =
+@@ -48,6 +48,15 @@ stcIOHandlers IOHndlr_KernalReplace =
  #endif
  
  uint8_t HIRAM_State;
 +//The image the bus ISR serves from lives in fast RAM1 (DTCM), not the malloc'ed copy in cached RAM2: a cold cache line there cost
 +//~100ns+ inside the time-critical window and the first byte of a rarely used run was answered late. (Also: the 6510 does not put
 +//the value of a $00/$01 write on the external data bus, so HIRAM cannot be tracked from the writes; it has to be sensed.)
++//#define KERNAL_NO_DTCM //experiment: serve straight from KernalBin (cached RAM2), saves 8 KB of RAM1
++#ifdef KERNAL_NO_DTCM
++#define KernalFast KernalBin
++#else
 +uint8_t KernalFast[8192];
++#endif
  
  enum enumHIRAM_States
  {
-@@ -68,14 +72,21 @@ FASTRUN bool KernalCheck(uint16_t Address, bool R_Wn)
+@@ -68,14 +77,21 @@ FASTRUN bool KernalCheck(uint16_t Address, bool R_Wn)
     if (!R_Wn || (Address & 0xe000) != 0xe000 || !GP9_BA(ReadGPIO9)) return false;  //continue with cycle processing
  
     // CPU read access from address $E000..$FFFF
@@ -128,7 +142,7 @@ index d7213cf..fc89daa 100644
     uint32_t RegDataBits = (Data & 0x0F) | ((Data & 0xF0) << 12);
     CORE_PIN10_PORTSET = RegDataBits;
     CORE_PIN10_PORTCLEAR = ~RegDataBits & GP7_DataMask;
-@@ -98,7 +109,6 @@ FASTRUN bool KernalCheck(uint16_t Address, bool R_Wn)
+@@ -98,7 +114,6 @@ FASTRUN bool KernalCheck(uint16_t Address, bool R_Wn)
        while (ARM_DWT_CYCCNT - begin < Cyc_KernProp);
        
        HIRAM_State = (GP9_ROMH(ReadGPIO9)==0 ? HIRAM_State_ROM : HIRAM_State_RAM); //read ROMH to determine if it's a Kernal or RAM access
@@ -136,23 +150,28 @@ index d7213cf..fc89daa 100644
        SetAddrPortDirIn;//set address ports to input
        SetAddrBufsIn;   //set address buffers to input
        SetExROMDeassert;
-@@ -206,6 +216,8 @@ FLASHMEM void InitHndlr_KERNALReplace_PreStart() //not called automatically via
+@@ -206,6 +221,10 @@ FLASHMEM void InitHndlr_KERNALReplace_PreStart() //not called automatically via
     //Serial.printf("Read %lu Bytes in %lumS\n", CharNum, millis()-StartmS);
     Serial.printf("Read %lu Bytes\nKernal replace Enabled\n", CharNum);
     LoadFile.close();
++#ifndef KERNAL_NO_DTCM
 +   memcpy(KernalFast, KernalBin, 8192); //fast copy for the bus ISR
++#endif
 +
     delay(250);
     
     //hook kernal checks: runs before BASIC init, well before any PRG-load handshake (see
-@@ -216,6 +228,7 @@ FLASHMEM void InitHndlr_KERNALReplace_PreStart() //not called automatically via
+@@ -215,6 +234,10 @@ FLASHMEM void InitHndlr_KERNALReplace_PreStart() //not called automatically via
+    fKernRepl = &KernalCheck;
  #else
     fBusSnoop = &KernalCheck;
++#endif
++   { extern void FnetLoopPollStart(); FnetLoopPollStart(); } //Ethernet poll off the PIT timer from now on, not only once loop() sees the new handler (~0.4 s later: ~15 late ISRs)
++#ifdef LATE_ISR_TRACE  //late-ISR counters (ISRs.c) count from the launch on
++   { extern volatile uint32_t LateIsrCnt, LateIsrBkt[4], TraceStartMs, TraceLoops; LateIsrCnt = 0; for (int i = 0; i < 4; i++) LateIsrBkt[i] = 0; TraceStartMs = millis(); TraceLoops = 0; }
  #endif
-+   { extern volatile uint32_t LateIsrCnt, LateIsrBkt[4]; LateIsrCnt = 0; for (int i = 0; i < 4; i++) LateIsrBkt[i] = 0; } //late-ISR counters (ISRs.c) count from the launch on
  }
  
- FLASHMEM void InitHndlr_KernalReplace()
 diff --git a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c
 new file mode 100644
 index 0000000..9ffe33f
@@ -868,27 +887,31 @@ index dc0b583..d0a7c48 100644
 +   return r;
 +}
 diff --git a/Source/Teensy/MinimalBoot/Common/ISRs.c b/Source/Teensy/MinimalBoot/Common/ISRs.c
-index 6c82c20..649a16c 100644
+index 6c82c20..995e7e8 100644
 --- a/Source/Teensy/MinimalBoot/Common/ISRs.c
 +++ b/Source/Teensy/MinimalBoot/Common/ISRs.c
-@@ -55,6 +55,8 @@ void DMAWaitAssertReady()
+@@ -55,6 +55,10 @@ void DMAWaitAssertReady()
     DMA_State = DMA_S_TransferReady;
  }
  
-+volatile uint32_t LateIsrCnt = 0, LateIsrBkt[4] = {0,0,0,0}, LateIsrLastMs = 0; //EXPERIMENT: phi2 gaps >1.1us, >1.5us, >3us, >100us (gaps >0.5s are boot artefacts, ignored)
++#ifdef LATE_ISR_TRACE
++volatile uint32_t LateIsrCnt = 0, LateIsrBkt[4] = {0,0,0,0}, LateIsrLastMs = 0; //phi2 gaps >1.1us, >1.5us, >3us, >100us (gaps >0.5s are boot artefacts, ignored)
++#endif
 +
  //Phi2 rising edge:
  FASTRUN void isrPHI2() 
  {
-@@ -64,6 +66,11 @@ FASTRUN void isrPHI2()
+@@ -64,6 +68,13 @@ FASTRUN void isrPHI2()
     
     if (CycSinceLast > nSToCyc(nS_MaxAdj)) // If we're late, adjust...
     {
++#ifdef LATE_ISR_TRACE
 +      if (CycSinceLast > 898 && CycSinceLast < 408000000)
 +      {
 +         LateIsrCnt++; LateIsrLastMs = millis();
 +         LateIsrBkt[CycSinceLast > 81600 ? 3 : CycSinceLast > 2448 ? 2 : CycSinceLast > 1224 ? 1 : 0]++;
 +      }
++#endif
        StartCycCnt += nSToCyc(nS_MaxAdj) - CycSinceLast; 
        #ifdef DbgCycAdjLog      
           if (BigBuf != NULL)
@@ -2883,22 +2906,32 @@ index 92480e7..dd6a447 100644
  {
     uint32_t RecDrive;
 diff --git a/Source/Teensy/Teensy.ino b/Source/Teensy/Teensy.ino
-index 99d0514..a6f916b 100644
+index 99d0514..14060ce 100644
 --- a/Source/Teensy/Teensy.ino
 +++ b/Source/Teensy/Teensy.ino
-@@ -54,6 +54,7 @@ uint8_t RAM_Image[RAM_ImageSize]; //Main RAM1 file storage buffer
+@@ -54,6 +54,16 @@ uint8_t RAM_Image[RAM_ImageSize]; //Main RAM1 file storage buffer
  volatile uint8_t BtnPressed = false; 
  volatile uint8_t EmulateVicCycles = false;
  uint8_t CurrentIOHandler = IOH_None;
++#ifdef LATE_ISR_TRACE
++volatile uint32_t TraceStartMs = 0, TraceLoops = 0; //startup LATE-ISR trace, set at Kernal Replace/VDrive PreStart
++#endif
 +volatile bool FnetLoopPoll = false; //Ethernet stack polled from loop(), PIT timer masked (see loop)
++volatile bool FnetPollHold = false; //set by Kernal Replace/VDrive PreStart, before CurrentIOHandler changes; cleared with the main menu
++void FnetLoopPollStart()
++{
++   FnetPollHold = true;
++   if (fnet_netif_get_default() != 0 && !FnetLoopPoll) { NVIC_DISABLE_IRQ(IRQ_PIT); FnetLoopPoll = true; }
++}
  StructMenuItem *DriveDirMenu = NULL;
  uint16_t NumDrvDirMenuItems = 0;
  char DriveDirPath[MaxPathLength];
-@@ -376,6 +377,45 @@ void loop()
+@@ -376,6 +386,78 @@ void loop()
     if (IO1[rwRegPwrUpDefaults2] & rpud2TRContEnabled)
        if (USBHostSerial.available()) ServiceSerial(&USBHostSerial);
  
-+   {  //EXPERIMENT: report late phi2 interrupts (after the replaced KERNAL is served), at most every 2s
++#ifdef LATE_ISR_TRACE
++   {  //report late phi2 interrupts (after the replaced KERNAL is served), at most every 2s
 +      extern volatile uint32_t LateIsrCnt, LateIsrBkt[4], LateIsrLastMs;
 +      static uint32_t lastCnt = 0, lastRepMs = 0;
 +      if (LateIsrCnt == 0) lastCnt = 0; //counters were reset at a program launch
@@ -2909,12 +2942,44 @@ index 99d0514..a6f916b 100644
 +            LateIsrBkt[0], LateIsrBkt[1], LateIsrBkt[2], LateIsrBkt[3], LateIsrLastMs, millis());
 +      }
 +   }
++   {  //first 20 s after the handler's PreStart: every 250 ms print the late-ISR counters with the PIT/ENET state
++      extern volatile uint32_t LateIsrCnt, LateIsrBkt[4], LateIsrLastMs;
++      static uint32_t lastStart = 0, lastTraceMs = 0, lastLoopMs = 0, maxLoopGap = 0, prevCnt = 0, pollOnMs = 0;
++      static bool prevPoll = false;
++      if (TraceStartMs != 0)
++      {
++         uint32_t now = millis(), since = now - TraceStartMs;
++         if (TraceStartMs != lastStart)  //new launch: start the per-launch state over
++         {
++            lastStart = TraceStartMs; lastTraceMs = lastLoopMs = maxLoopGap = prevCnt = pollOnMs = 0; prevPoll = false;
++            Serial.printf("TRACE start: PIT:%d ENET:%d looppoll:%d hold:%d\n", NVIC_IS_ENABLED(IRQ_PIT) ? 1 : 0, NVIC_IS_ENABLED(IRQ_ENET) ? 1 : 0, FnetLoopPoll ? 1 : 0, FnetPollHold ? 1 : 0);
++         }
++         if (since < 20000)
++         {
++            TraceLoops++;
++            if (lastLoopMs && now - lastLoopMs > maxLoopGap) maxLoopGap = now - lastLoopMs; //longest time loop() was away
++            lastLoopMs = now;
++            if (FnetLoopPoll && !prevPoll) pollOnMs = since;
++            prevPoll = FnetLoopPoll;
++            if (now - lastTraceMs >= 250)
++            {
++               lastTraceMs = now;
++               Serial.printf("TRACE +%5lu ms  late(total %3lu, new %3ld) >1.1:%lu >1.5:%lu >3:%lu >100us:%lu  PIT:%d ENET:%d looppoll:%d (on at +%lu) loops:%lu maxgap:%lums ioh:%d\n",
++                  since, LateIsrCnt, (long)(LateIsrCnt - prevCnt), LateIsrBkt[0], LateIsrBkt[1], LateIsrBkt[2], LateIsrBkt[3],
++                  NVIC_IS_ENABLED(IRQ_PIT) ? 1 : 0, NVIC_IS_ENABLED(IRQ_ENET) ? 1 : 0, FnetLoopPoll ? 1 : 0, pollOnMs, TraceLoops, maxLoopGap, CurrentIOHandler);
++               prevCnt = LateIsrCnt; maxLoopGap = 0;
++            }
++         }
++         else TraceStartMs = 0;
++      }
++   }
++#endif
 +   {  //While a handler that snoops the bus is active, run the Ethernet stack poll from here instead of NativeEthernet's 1ms PIT timer ISR:
 +      //measured with the Kernal Replace late-ISR counters, the poll in the PIT interrupt made ~39 phi2 interrupts/s late (>1.1us) even with
 +      //the GPIO interrupt at a higher priority; called from loop() they are down to about one every 2s. (The PIT is only used by that timer,
 +      //except for ASID, which is not in this list.)
 +      static uint32_t lastPollUs = 0;
-+      bool want = (CurrentIOHandler == IOH_Swiftlink)
++      bool want = FnetPollHold || (CurrentIOHandler == IOH_Swiftlink)
 +#ifdef Fab04_GlobalKernalReplace
 +                  || (fKernRepl != NULL)
 +#endif
@@ -2940,7 +3005,15 @@ index 99d0514..a6f916b 100644
  #ifdef FeatTCPListen
     if (NetListenEnable)
     {
-@@ -527,6 +567,11 @@ FLASHMEM void SetEEPDefaults()
+@@ -401,6 +483,7 @@ void loop()
+ FLASHMEM void SetUpMainMenuROM()
+ {
+    PendingfBusSnoop = fBusSnoop = NULL;
++   FnetPollHold = false;
+ #ifdef Fab04_GlobalKernalReplace
+    fKernRepl = NULL;
+ #endif
+@@ -527,6 +610,11 @@ FLASHMEM void SetEEPDefaults()
     EEPROM.write(eepAdMIDISettings, 0xff);  //see RegMIDISettingsMasks
     EEPROM.write(eepAdMIDISettings2, 0x0f); //see RegMIDISettingsMasks2
     

@@ -31,6 +31,8 @@ area (`eepAdNext` moves from 4235 to 4237, reset-to-defaults zeroes them); `eepM
 
 Build with `-DVD_TRACE` for a per-command serial trace; it is off by default because the printing makes the bus handler answer late.
 
+Uncomment `#define LATE_ISR_TRACE` in `Common_Defs.h` (after the patch is applied) to count late phi2 interrupts (`ISRs.c`) and print them on the serial console: `LATE-ISR ...` at most every 2 s, and for the first 20 s after each Kernal Replace/VDrive launch a `TRACE +ms ...` line every 250 ms with the counters, the PIT/ENET interrupt state and whether `loop()` polls the Ethernet stack. Off by default: nothing of it is compiled in. `#define KERNAL_NO_DTCM` (`IOH_KernalReplace.c`) serves the image from the malloc'ed `KernalBin` instead of the 8 KB RAM1 copy `KernalFast`.
+
 ## What is and isn't verified
 Host (`make test`): the D64 / D71 / D81 engine against `c1541` (contents, BAM equality with `c1541 -validate`, formats), the bus scan in VICE with
 true-drive 1541s at 8 and 10 (the SD drive lands on 9, the USB drive on 11), the register-level engine, the 6502 patches in VICE (via a RAM mailbox +

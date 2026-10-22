@@ -51,6 +51,7 @@ Three more findings from that work, useful for the Kernal Replace code in genera
   **0.9.0.14 fix (Teensy.ino `loop()`):** while a Kernal Replace, VDrive or SwiftLink handler runs and the stack is initialized, mask `IRQ_PIT` and call
   `fnet_poll()` from `loop()` every ms. Blocking calls (`connect`, DHCP, DNS inside AT commands) wait for the stack and would hang, so `ProcessATCommand`
   unmasks PIT while it runs. Hardware: no stalls or flow-control problems in CCGMS over TCP (a rare glitch lines up with a rare late ISR),
-  q4k and VDrive fine with Ethernet on. The counters are in `ISRs.c` (`LateIsrCnt`, `LateIsrBkt[]`), printed by `Teensy.ino` as `LATE-ISR ...`.
+  q4k and VDrive fine with Ethernet on. The counters are in `ISRs.c` (`LateIsrCnt`, `LateIsrBkt[]`), printed by `Teensy.ino` as `LATE-ISR ...`; compiled in only with `LATE_ISR_TRACE`.
+  A start-up trace (`TRACE +ms ...`, same define) showed that 0.9.0.14 still had ~15 late ISRs in the first ~0.4 s after a launch, enough to crash q4k: `loop()` only masked the PIT timer once it saw the new handler. **0.9.0.15:** `PreStart` masks `IRQ_PIT` and starts the `loop()` poll immediately (`FnetLoopPollStart()`, held by `FnetPollHold` until the main menu returns); afterwards 0-1 late ISRs per second.
 * **Tried and dropped:** a "serve map" (TR answers only the bytes that differ from the stock ROM, the real ROM serves the rest) broke disk access and made the
   first banner character wrong in every build that used it; whole-image serving is back.
