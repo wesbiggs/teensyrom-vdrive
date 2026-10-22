@@ -40,6 +40,7 @@ typedef struct {
     void       *ctx;
     uint8_t     tracks;          /* 35 or 40 (d64), 70 (d71), 80 (d81) */
     uint8_t     fmt;             /* D64_FMT_* */
+    uint8_t     ro;              /* write protect set from the C64 (W-1): writes fail as on a read-only image; d64_open clears it */
 } d64_t;
 
 typedef struct {
@@ -144,6 +145,9 @@ int  d64_format(d64_t *d, const char *name, const char *id);     /* id==NULL: qu
 /* DOS "V": rebuild the BAM from the directory, the data chains and REL side sectors; unclosed (splat) files are deleted.
  * Returns the number of files deleted, or <0. A broken chain is followed as far as it is valid. */
 int  d64_validate(d64_t *d);
+/* lock flag (bit 6 of the type: no scratch) of every closed file matching pattern: lock=1 set, 0 clear, -1 toggle.
+ * Returns the number of files changed, or <0. */
+int  d64_lock(d64_t *d, const char *pattern, int lock);
 /* DOS "C:new=old1,old2,...": new file, type of the first source, holding the sources one after the other. Sources are
  * patterns (first match); D64_E_NOTFOUND if one is missing, D64_E_EXISTS if newname is taken, D64_E_TYPE for a REL source
  * among several. On failure nothing is left behind (D64_E_FULL included). */

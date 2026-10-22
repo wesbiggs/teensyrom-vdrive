@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- `L:name` toggles the lock flag of matching files, `W-1` / `W-0` turn write protection of the mounted image on / off (CMD drive syntax; firmware 0.9.0.23, `docs/DESIGN.md` section 28). Unit tests only, not in VICE or on hardware.
 - `V` (validate) rebuilds the BAM from the files, REL side sectors included, and deletes unclosed files; it used to do nothing (firmware 0.9.0.22, `docs/DESIGN.md` section 27). Byte-identical to `c1541 -validate` in the unit tests; not in VICE or on hardware.
 - Append mode: `OPEN n,d,n,"NAME,A"` (or `"NAME,S,A"`) adds to the end of an existing file; a disk full puts the file back as it was (firmware 0.9.0.21, `docs/DESIGN.md` section 26). Unit tests only, not in VICE or on hardware.
 - REL (relative) files: `OPEN n,d,n,"NAME,L,"+CHR$(len)`, `P` positioning, one record per `PRINT#`, reads up to the last non-zero byte; D64/D71 up to 720 blocks, D81 with super side sectors; `C` and `S` handle them (firmware 0.9.0.20, `docs/DESIGN.md` section 25). Unit tests only, not in VICE or on hardware.

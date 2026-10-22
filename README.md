@@ -101,6 +101,7 @@ The USB drive works the same. Any other device number uses the real IEC bus unto
 | Directory with `$:pattern` | |
 | REL files | `OPEN 2,8,2,"NAME,L,"+CHR$(len)`, `P` positioning, `PRINT#` one record, `INPUT#`/`GET#`; D64/D71 up to 720 blocks, D81 with super side sectors |
 | `V` validate | Rebuilds the BAM from the files (REL side sectors included); unclosed files are deleted, as on a real drive |
+| `L:name` lock, `W-1` / `W-0` write protect | CMD-drive syntax. `L` toggles the lock flag (`<`, the file cannot be scratched); `W-1` makes the mounted image read-only until `W-0` or the next mount |
 | `C:new=old` copy | Also joins files: `C:new=a,b,c` (up to 8); the new file has the first source's type |
 
 ### Not yet supported

@@ -259,6 +259,32 @@ class VDriveTests(unittest.TestCase):
         self.assertEqual(self.vd.load(8, b"OX"), self.seed[b"OTHER"])
         self.valid()
 
+    def test_lock_toggle(self):
+        self.assertEqual(self.cmd(b"L:SEED"), "00, OK,00,00\r")
+        self.assertRegex(self.vd.load(8, b"$"), rb'"SEED" +PRG<')
+        self.assertEqual(self.cmd(b"S:SEED"), "01,FILES SCRATCHED,00,00\r")      # locked: not scratched
+        self.assertEqual(self.vd.load(8, b"SEED"), self.seed[b"SEED"])
+        self.assertEqual(self.cmd(b"L0:S*"), "00, OK,00,00\r")                   # toggles back
+        self.assertNotRegex(self.vd.load(8, b"$"), rb'"SEED" +PRG<')
+        self.assertEqual(self.cmd(b"S:SEED"), "01,FILES SCRATCHED,01,00\r")
+        self.assertEqual(self.cmd(b"L:NOPE"), "62,FILE NOT FOUND,00,00\r")
+        self.assertEqual(self.cmd(b"L:"), "34,SYNTAX ERROR,00,00\r")
+        self.valid()
+
+    def test_write_protect_from_the_c64(self):
+        self.assertEqual(self.cmd(b"W-1"), "00, OK,00,00\r")
+        self.vd.save(8, b"NEW", b"\x01\x08abc")
+        self.assertEqual(self.vd.status(), "26,WRITE PROTECT ON,00,00\r")
+        for c in (b"S:SEED", b"R:X=SEED", b"C:X=SEED", b"N:X", b"V", b"L:SEED", b"B-A:0,1,0"):
+            self.assertEqual(self.cmd(c), "26,WRITE PROTECT ON,00,00\r", c)
+        self.assertEqual(self.vd.load(8, b"SEED"), self.seed[b"SEED"])          # reading still works
+        self.assertEqual(self.cmd(b"W-0"), "00, OK,00,00\r")
+        self.assertEqual(self.vd.save(8, b"NEW", b"\x01\x08abc"), 0)
+        self.assertEqual(self.vd.status(), "00, OK,00,00\r")
+        self.cmd(b"W-1")
+        self.disk = Disk(self.disk.dump()); self.vd.attach(0, self.disk)         # another image (a remount) is not protected
+        self.assertEqual(self.cmd(b"S:NEW"), "01,FILES SCRATCHED,01,00\r")
+
     def test_unknown_command_is_syntax_error(self):
         self.vd.listen(8, 0x6F, b"X:FOO")
         self.assertTrue(self.vd.status().startswith("31,SYNTAX ERROR"))

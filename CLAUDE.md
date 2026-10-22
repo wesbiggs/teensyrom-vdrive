@@ -71,6 +71,7 @@ Firmware integration and usage: `firmware/README.md`.
 * 0.9.0.20: REL files (`,L,`+length, `P`, one record per `PRINT#`, side sectors; D81 super side sectors; `C` and `S` handle them; docs/DESIGN.md 25, `tests/test_rel.py`). Unit tests only; **not in VICE or on hardware yet**.
 * 0.9.0.21: append (`,A`; `d64_append`, a disk full restores the file; docs/DESIGN.md 26). Unit tests only.
 * 0.9.0.22: `V`alidate rebuilds the BAM (`d64_validate`, splats deleted, REL side sectors kept; byte-identical to `c1541 -validate`; docs/DESIGN.md 27). Unit tests only.
+* 0.9.0.23: `L:name` (toggle lock) and `W-1`/`W-0` (write protect, `d64_t.ro`), CMD syntax (docs/DESIGN.md 28). Unit tests only.
 * Known open risks: C128 not supported (see above); tape (device 1) intentionally broken (its code space was reclaimed).
 
 ## Layout

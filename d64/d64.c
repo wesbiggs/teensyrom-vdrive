@@ -49,7 +49,7 @@ VD_COLD static void geometry(d64_t *d, uint8_t tracks)
 VD_COLD static int mem_write(void *ctx, uint8_t t, uint8_t s, const uint8_t *buf)
 {
     d64_mem_t *m = (d64_mem_t *)ctx;
-    d64_t tmp = { 0, 0, 0, 0, 0 };
+    d64_t tmp = { 0, 0, 0, 0, 0, 0 };
     if (classify(m->len, &tmp.tracks, &tmp.fmt)) return -1;
     long off = d64_sector_offset(&tmp, t, s);
     if (off < 0 || (size_t)off + D64_SECTOR > m->len) return -1;
@@ -60,7 +60,7 @@ VD_COLD static int mem_write(void *ctx, uint8_t t, uint8_t s, const uint8_t *buf
 VD_COLD static int mem_read(void *ctx, uint8_t t, uint8_t s, uint8_t *buf)
 {
     d64_mem_t *m = (d64_mem_t *)ctx;
-    d64_t tmp = { 0, 0, 0, 0, 0 };
+    d64_t tmp = { 0, 0, 0, 0, 0, 0 };
     if (classify(m->len, &tmp.tracks, &tmp.fmt)) return -1;
     long off = d64_sector_offset(&tmp, t, s);
     if (off < 0 || (size_t)off + D64_SECTOR > m->len) return -1;
@@ -70,7 +70,7 @@ VD_COLD static int mem_read(void *ctx, uint8_t t, uint8_t s, uint8_t *buf)
 VD_COLD void d64_mem_init(d64_mem_t *m, uint8_t *data, size_t len) { m->data = data; m->len = len; }
 VD_COLD int d64_open(d64_t *d, d64_read_fn rd, void *ctx, uint8_t tracks)
 {
-    d->read = rd; d->write = NULL; d->ctx = ctx;
+    d->read = rd; d->write = NULL; d->ctx = ctx; d->ro = 0;
     geometry(d, tracks);
     return 0;
 }
@@ -95,7 +95,7 @@ VD_COLD static int rd(d64_t *d, uint8_t t, uint8_t s, uint8_t *b)
 }
 VD_COLD static int wr(d64_t *d, uint8_t t, uint8_t s, const uint8_t *b)
 {
-    if (!d->write) return D64_E_RO;
+    if (!d->write || d->ro) return D64_E_RO;
     if (d64_sector_offset(d, t, s) < 0) return D64_E_IO;
     return d->write(d->ctx, t, s, b) ? D64_E_IO : 0;
 }
@@ -352,14 +352,14 @@ VD_COLD static int free_sector(d64_t *d, uint8_t t, uint8_t s)
 
 VD_COLD int d64_block_read(d64_t *d, uint8_t t, uint8_t s, uint8_t *buf) { return rd(d, t, s, buf); }
 VD_COLD int d64_block_write(d64_t *d, uint8_t t, uint8_t s, const uint8_t *buf) { return wr(d, t, s, buf); }
-VD_COLD int d64_block_free(d64_t *d, uint8_t t, uint8_t s) { return d->write ? free_sector(d, t, s) : D64_E_RO; }
+VD_COLD int d64_block_free(d64_t *d, uint8_t t, uint8_t s) { return d->write && !d->ro ? free_sector(d, t, s) : D64_E_RO; }
 
 VD_COLD int d64_block_alloc(d64_t *d, uint8_t t, uint8_t s, uint8_t *nt, uint8_t *ns)
 {
     uint8_t bufA[D64_SECTOR], bufB[D64_SECTOR], *cnt, *bits;
     bamloc_t L;
     if (t < 1 || t > bam_tracks(d) || s >= spt(d, t)) return D64_E_IO;
-    if (!d->write) return D64_E_RO;
+    if (!d->write || d->ro) return D64_E_RO;
     int r = bam_load(d, t, &L, bufA, bufB, &cnt, &bits);
     if (r) return r;
     if (bits[s / 8] & (1 << (s % 8))) {
@@ -419,7 +419,7 @@ VD_COLD static int free_chain(d64_t *d, uint8_t t, uint8_t s)
 VD_COLD int d64_scratch_entry(d64_t *d, const d64_entry_t *e)
 {
     int r;
-    if (!d->write) return D64_E_RO;
+    if (!d->write || d->ro) return D64_E_RO;
     if (e->type & 0x40) return D64_E_LOCKED;
     if ((r = free_chain(d, e->track, e->sector))) return r;
     if ((e->type & 7) == 4 && (r = free_chain(d, e->ss_t, e->ss_s))) return r;   /* REL: the side sectors (d81: from the super side sector) */
@@ -445,7 +445,7 @@ VD_COLD int d64_rename(d64_t *d, const char *oldn, const char *newn)
 {
     d64_entry_t e, x;
     if (!valid_name(newn)) return D64_E_NAME;
-    if (!d->write) return D64_E_RO;
+    if (!d->write || d->ro) return D64_E_RO;
     int r = d64_find(d, oldn, &e);
     if (r < 0) return r;
     if (r == 0) return D64_E_NOTFOUND;
@@ -488,7 +488,7 @@ VD_COLD static int dir_slot_alloc(d64_t *d, uint8_t *dt, uint8_t *ds, uint8_t *s
 VD_COLD int d64_create(d64_t *d, const char *name, uint8_t type, int replace, d64_wfile_t *w)
 {
     d64_entry_t e;
-    if (!d->write) return D64_E_RO;
+    if (!d->write || d->ro) return D64_E_RO;
     if (!valid_name(name)) return D64_E_NAME;
     int r = d64_find(d, name, &e);
     if (r < 0) return r;
@@ -518,7 +518,7 @@ VD_COLD int d64_create(d64_t *d, const char *name, uint8_t type, int replace, d6
 VD_COLD int d64_append(d64_t *d, const char *name, d64_wfile_t *w)
 {
     d64_entry_t e;
-    if (!d->write) return D64_E_RO;
+    if (!d->write || d->ro) return D64_E_RO;
     int r = d64_find(d, name, &e);
     if (r < 0) return r;
     if (r == 0) return D64_E_NOTFOUND;
@@ -661,7 +661,7 @@ VD_COLD int d64_rel_get(d64_t *d, d64_rel_t *r, uint32_t off, uint8_t *b)
 
 VD_COLD int d64_rel_put(d64_t *d, d64_rel_t *r, uint32_t off, uint8_t b)
 {
-    if (!d->write) return D64_E_RO;
+    if (!d->write || d->ro) return D64_E_RO;
     int rr = rel_load(d, r, (uint16_t)(off / 254));
     if (rr) return rr;
     r->buf[2 + off % 254] = b; r->dirty = 1;
@@ -745,7 +745,7 @@ VD_COLD static int rel_add_block(d64_t *d, d64_rel_t *r)
 
 VD_COLD int d64_rel_extend(d64_t *d, d64_rel_t *r, uint32_t nrec)
 {
-    if (!d->write) return D64_E_RO;
+    if (!d->write || d->ro) return D64_E_RO;
     while (d64_rel_records(r) < nrec) { int rr = rel_add_block(d, r); if (rr) return rr; }
     return 0;
 }
@@ -769,7 +769,7 @@ VD_COLD int d64_rel_create(d64_t *d, const char *name, uint8_t reclen, d64_rel_t
     uint8_t tmp[D64_SECTOR], st = 0, ss = 0, pt = 0, ps = 0, dt, ds, slot;
     const int d81 = d->fmt == D64_FMT_D81;
     int rr;
-    if (!d->write) return D64_E_RO;
+    if (!d->write || d->ro) return D64_E_RO;
     if (!valid_name(name) || reclen < 1 || reclen > 254) return D64_E_NAME;
     if ((rr = d64_find(d, name, &e)) < 0) return rr;
     if (rr == 1) return D64_E_EXISTS;
@@ -864,7 +864,7 @@ VD_COLD int d64_copy(d64_t *d, const char *newname, const char *const *src, int 
     d64_wfile_t w;
     uint8_t type = 0, chunk[64];
     int r;
-    if (!d->write) return D64_E_RO;
+    if (!d->write || d->ro) return D64_E_RO;
     if (nsrc < 1 || !valid_name(newname)) return D64_E_NAME;
     for (int i = 0; i < nsrc; i++) {                           /* every source must exist before anything is written */
         if ((r = find_except(d, src[i], NULL, &e)) < 0) return r;
@@ -891,7 +891,7 @@ VD_COLD int d64_format(d64_t *d, const char *name, const char *id)
     const int d81 = d->fmt == D64_FMT_D81, d71 = d->fmt == D64_FMT_D71;
     const uint8_t dt = dir_track(d);
     const int name_off = d81 ? 0x04 : 0x90, id_off = d81 ? 0x16 : 0xA2;
-    if (!d->write) return D64_E_RO;
+    if (!d->write || d->ro) return D64_E_RO;
     if (!valid_name(name)) return D64_E_NAME;
     if (id) {
         if (strlen(id) != 2) return D64_E_NAME;
@@ -987,7 +987,7 @@ VD_COLD int d64_validate(d64_t *d)
     const int d81 = d->fmt == D64_FMT_D81, d71 = d->fmt == D64_FMT_D71;
     const uint8_t dt = dir_track(d);
     int r, deleted = 0;
-    if (!d->write) return D64_E_RO;
+    if (!d->write || d->ro) return D64_E_RO;
     v.t0 = dt; v.s0 = d81 ? 1 : 0; v.t1 = d81 ? 40 : 53; v.s1 = d81 ? 2 : 0;
     if ((r = rd(d, v.t0, v.s0, v.b[0]))) return r;
     if ((d81 || d71) && (r = rd(d, v.t1, v.s1, v.b[1]))) return r;
@@ -1021,6 +1021,22 @@ VD_COLD int d64_validate(d64_t *d)
     if ((r = wr(d, v.t0, v.s0, v.b[0]))) return r;
     if ((d81 || d71) && (r = wr(d, v.t1, v.s1, v.b[1]))) return r;
     return deleted;
+}
+
+VD_COLD int d64_lock(d64_t *d, const char *pat, int lock)
+{
+    d64_dir_t it; d64_entry_t e;
+    int r = d64_dir_first(d, &it), n = 0;
+    if (!d->write || d->ro) return D64_E_RO;
+    if (r) return r;
+    while ((r = d64_dir_next(d, &it, &e)) > 0) {
+        if (!(e.type & 0x80) || !d64_match(e.name, pat)) continue;
+        uint8_t type = lock < 0 ? (uint8_t)(e.type ^ 0x40) : lock ? (uint8_t)(e.type | 0x40) : (uint8_t)(e.type & ~0x40);
+        if (type == e.type) continue;
+        if ((r = dir_update(d, e.dir_t, e.dir_s, e.dir_slot, NULL, type, -1))) return r;
+        n++;
+    }
+    return r < 0 ? r : n;
 }
 
 /* ---- BASIC listing ------------------------------------------------------ */

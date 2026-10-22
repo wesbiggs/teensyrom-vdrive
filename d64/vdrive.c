@@ -629,6 +629,12 @@ VD_COLD static void exec_command(vdrive_t *v, int unit, vd_unit_t *u, uint8_t *c
         default: set_err(u, 31, 0, 0); return;
         }
     }
+    if (cmd[0] == 'W' && len == 3 && cmd[1] == '-' && (cmd[2] == '0' || cmd[2] == '1')) {   /* CMD "W-1" / "W-0": write protect on / off */
+        if (cmd[2] == '1') u->disk->ro = 1;
+        else if (u->disk->write) u->disk->ro = 0;
+        else set_err(u, 26, 0, 0);                      /* a read-only image stays read-only */
+        return;
+    }
     const char *p = (const char *)cmd + 1, *end = (const char *)cmd + len;
     while (p < end && *p >= '0' && *p <= '9') p++;       /* optional drive number */
     switch (cmd[0]) {
@@ -677,6 +683,16 @@ VD_COLD static void exec_command(vdrive_t *v, int unit, vd_unit_t *u, uint8_t *c
     case 'C':
         cmd_copy(u, p, end);
         break;
+    case 'L': {                                        /* CMD "L:pattern": toggle the lock flag ("<" in the listing; locked files cannot be scratched) */
+        if (p < end && *p == ':') p++;
+        size_t n = (size_t)(end - p);
+        char pat[17];
+        if (n < 1 || n > 16) { set_err(u, 34, 0, 0); break; }
+        memcpy(pat, p, n); pat[n] = 0;
+        int r = d64_lock(u->disk, pat, -1);
+        if (r < 0) err_from(u, r);
+        else if (r == 0) set_err(u, 62, 0, 0);
+        break; }
     case 'V': {                                        /* validate: the BAM rebuilt from the files, unclosed files dropped */
         int r = d64_validate(u->disk);
         if (r < 0) err_from(u, r);
