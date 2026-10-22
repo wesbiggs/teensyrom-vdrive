@@ -677,7 +677,11 @@ VD_COLD static void exec_command(vdrive_t *v, int unit, vd_unit_t *u, uint8_t *c
     case 'C':
         cmd_copy(u, p, end);
         break;
-    case 'I': case 'V':                                /* initialize / validate: nothing to do */
+    case 'V': {                                        /* validate: the BAM rebuilt from the files, unclosed files dropped */
+        int r = d64_validate(u->disk);
+        if (r < 0) err_from(u, r);
+        break; }
+    case 'I':                                          /* initialize: nothing to do */
         break;
     default:
         set_err(u, 31, 0, 0);

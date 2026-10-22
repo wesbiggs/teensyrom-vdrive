@@ -1,6 +1,7 @@
 """REL files through the bus protocol (OPEN ",L,", P, PRINT#, INPUT#), checked against an independent reading of the side sectors
-and against c1541 -validate (which rebuilds the BAM from the data chains and the side sectors of REL files)."""
-import pathlib, random, shutil, subprocess, sys, tempfile, unittest
+and against c1541 -validate (which rebuilds the BAM from the data chains and the side sectors of REL files). Also the V command,
+which must rebuild the same BAM as c1541 -validate."""
+import ctypes, pathlib, random, shutil, subprocess, sys, tempfile, unittest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / 'tools'))
 from d64py import LIB, Disk, VDrive
 
@@ -261,6 +262,65 @@ class RelTests(RelBase):
         self.vd.close(8, 2); self.vd.close(8, 3)
         self.structure(b"A"); self.structure(b"B")
         self.valid()
+
+
+class ValidateTests(RelBase):
+    """V rebuilds the BAM; it must agree with c1541 -validate on the same disk."""
+    BAM = {"d64": ((18, 0),), "d71": ((18, 0), (53, 0)), "d81": ((40, 1), (40, 2))}
+
+    def bam(self, img=None):
+        img = img if img is not None else self.disk.dump()
+        out = b""
+        for t, s in self.BAM[self.FMT]:
+            off = LIB.d64_sector_offset(self.disk.d, t, s)
+            out += img[off: off + 256]
+        return out
+
+    def populate(self):
+        self.vd.save(8, b"PROG", bytes(self.rnd.randrange(256) for _ in range(5000)))
+        self.vd.open(8, 2, b"SEQ,S,W"); self.vd.listen(8, 0x62, b"x" * 3000); self.vd.close(8, 2)
+        self.vd.open(8, 2, b"REL,L," + bytes([200])); self.put(2, 150, b"END"); self.vd.close(8, 2)
+        self.vd.open(8, 2, b"GONE,S,W"); self.vd.listen(8, 0x62, b"y" * 600); self.vd.close(8, 2)
+        self.cmd(b"S:GONE")
+        w = ctypes.create_string_buffer(LIB.d64_sizeof_wfile())                   # written but never closed: a splat
+        self.assertEqual(LIB.d64_create(self.disk.d, b"SPLAT", 1, 0, w), 0)
+        self.assertEqual(LIB.d64_write(self.disk.d, w, b"z" * 700, ctypes.c_size_t(700)), 700)
+        self.assertEqual({e["name"]: e["type"] for e in self.disk.entries()}[b"SPLAT"], 0x01)
+
+    def test_validate_matches_c1541(self):
+        self.populate()
+        ref = self.tmp / ("ref." + self.FMT); ref.write_bytes(self.disk.dump())
+        c1541(ref, "-validate")
+        img = bytearray(self.disk.dump())                                          # scramble the counts and bitmaps
+        ranges = {"d64": {(18, 0): [range(4, 0x90)]},
+                  "d71": {(18, 0): [range(4, 0x90), range(0xDD, 0x100)], (53, 0): [range(0, 105)]},
+                  "d81": {(40, 1): [range(16, 256)], (40, 2): [range(16, 256)]}}[self.FMT]
+        for (t, s), rs in ranges.items():
+            off = LIB.d64_sector_offset(self.disk.d, t, s)
+            for rg in rs:
+                for i in rg: img[off + i] ^= self.rnd.randrange(256)
+        self.disk = Disk(bytes(img)); self.vd.attach(0, self.disk)
+        self.assertEqual(self.cmd(b"V"), "00, OK,00,00\r")
+        self.assertEqual(self.bam(), self.bam(ref.read_bytes()))
+        names = sorted(e["name"] for e in self.disk.entries())
+        self.assertEqual(names, [b"PROG", b"REL", b"SEQ"])                         # the splat entry is gone
+        self.assertEqual(self.vd.load(8, b"PROG")[:2], self.disk.read_file(b"PROG")[:2])
+        self.valid()
+
+    def test_validate_frees_blocks_no_file_uses(self):
+        free = self.disk.free()
+        self.assertEqual(self.cmd(b"B-A:0,1,0"), "00, OK,00,00\r")
+        self.assertEqual(self.disk.free(), free - 1)
+        self.assertEqual(self.cmd(b"V0"), "00, OK,00,00\r")
+        self.assertEqual(self.disk.free(), free)
+
+
+class ValidateD71Tests(ValidateTests):
+    FMT = "d71"
+
+
+class ValidateD81Tests(ValidateTests):
+    FMT = "d81"
 
 
 class RelD71Tests(RelBase):

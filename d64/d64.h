@@ -141,6 +141,9 @@ int  d64_scratch_entry(d64_t *d, const d64_entry_t *e);          /* frees chain,
 int  d64_scratch(d64_t *d, const char *pattern);                 /* returns files scratched or <0 */
 int  d64_rename(d64_t *d, const char *oldname, const char *newname);
 int  d64_format(d64_t *d, const char *name, const char *id);     /* id==NULL: quick (BAM + directory only) */
+/* DOS "V": rebuild the BAM from the directory, the data chains and REL side sectors; unclosed (splat) files are deleted.
+ * Returns the number of files deleted, or <0. A broken chain is followed as far as it is valid. */
+int  d64_validate(d64_t *d);
 /* DOS "C:new=old1,old2,...": new file, type of the first source, holding the sources one after the other. Sources are
  * patterns (first match); D64_E_NOTFOUND if one is missing, D64_E_EXISTS if newname is taken, D64_E_TYPE for a REL source
  * among several. On failure nothing is left behind (D64_E_FULL included). */

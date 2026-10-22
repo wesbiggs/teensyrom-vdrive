@@ -15,7 +15,7 @@ index 6024ccd..2f5cbbf 100644
     else IOHandlerNextInit();
  }
 diff --git a/Source/Teensy/MinimalBoot/Common/Common_Defs.h b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
-index 358ffff..6ed52ea 100644
+index 358ffff..b53acc0 100644
 --- a/Source/Teensy/MinimalBoot/Common/Common_Defs.h
 +++ b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
 @@ -14,6 +14,7 @@
@@ -31,7 +31,7 @@ index 358ffff..6ed52ea 100644
  
  
 -#define TRVersion              "0.9"    //*VERSION*
-+#define TRVersion              "0.9.0.21"    //*VERSION*  (stock 0.9 + VDrive rev 21)
++#define TRVersion              "0.9.0.22"    //*VERSION*  (stock 0.9 + VDrive rev 22)
  #ifdef Fab04_Features
     char strVersionNumber[] = "TeensyROM+ v" TRVersion; 
  #else
@@ -1229,10 +1229,10 @@ index 166ecfe..ebb9a28 100644
  
 diff --git a/Source/Teensy/MinimalBoot/Common/vdrive/d64.c b/Source/Teensy/MinimalBoot/Common/vdrive/d64.c
 new file mode 100644
-index 0000000..6c0bf31
+index 0000000..4c8153e
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/vdrive/d64.c
-@@ -0,0 +1,1057 @@
+@@ -0,0 +1,1124 @@
 +#include "d64.h"
 +#include "vd_cfg.h"
 +#include <string.h>
@@ -2191,6 +2191,73 @@ index 0000000..6c0bf31
 +    return wr(d, 18, 1, b);
 +}
 +
++/* ---- validate ------------------------------------------------------------ */
++typedef struct { uint8_t b[2][D64_SECTOR]; uint8_t t0, s0, t1, s1; } vbam_t;   /* the BAM sectors (d64: one; d71: 18/0, 53/0; d81: 40/1, 40/2) */
++
++VD_COLD static uint8_t *vbam_at(vbam_t *v, uint8_t t, uint8_t s) { return t == v->t0 && s == v->s0 ? v->b[0] : v->b[1]; }
++
++VD_COLD static void vbam_use(d64_t *d, vbam_t *v, uint8_t t, uint8_t s)
++{
++    bamloc_t L;
++    if (t < 1 || t > bam_tracks(d) || s >= spt(d, t)) return;   /* 40-track images: tracks 36-40 are not in the BAM */
++    bam_loc(d, t, &L);
++    uint8_t *bits = vbam_at(v, L.bt, L.bs) + L.bo, *cnt = vbam_at(v, L.ct, L.cs) + L.co, bit = (uint8_t)(1 << (s % 8));
++    if (bits[s / 8] & bit) { bits[s / 8] &= (uint8_t)~bit; if (*cnt) (*cnt)--; }
++}
++
++/* mark a whole chain used; stops at an illegal link or after chain_limit sectors */
++VD_COLD static void vbam_chain(d64_t *d, vbam_t *v, uint8_t t, uint8_t s, uint8_t *tmp)
++{
++    for (uint16_t n = 0; t && n < chain_limit(d); n++) {
++        if (rd(d, t, s, tmp)) return;
++        vbam_use(d, v, t, s);
++        t = tmp[0]; s = tmp[1];
++    }
++}
++
++VD_COLD int d64_validate(d64_t *d)
++{
++    vbam_t v;
++    uint8_t tmp[D64_SECTOR], dirb[D64_SECTOR];
++    const int d81 = d->fmt == D64_FMT_D81, d71 = d->fmt == D64_FMT_D71;
++    const uint8_t dt = dir_track(d);
++    int r, deleted = 0;
++    if (!d->write) return D64_E_RO;
++    v.t0 = dt; v.s0 = d81 ? 1 : 0; v.t1 = d81 ? 40 : 53; v.s1 = d81 ? 2 : 0;
++    if ((r = rd(d, v.t0, v.s0, v.b[0]))) return r;
++    if ((d81 || d71) && (r = rd(d, v.t1, v.s1, v.b[1]))) return r;
++    for (uint8_t t = 1; t <= bam_tracks(d); t++) {              /* everything free (d71 track 53 stays all used, as formatted) */
++        bamloc_t L;
++        bam_loc(d, t, &L);
++        uint8_t *bits = vbam_at(&v, L.bt, L.bs) + L.bo, n = (uint8_t)spt(d, t);
++        if (d71 && t == 53) { vbam_at(&v, L.ct, L.cs)[L.co] = 0; memset(bits, 0, 3); continue; }
++        vbam_at(&v, L.ct, L.cs)[L.co] = n;
++        memset(bits, 0, L.nb);
++        for (int k = 0; k < n; k++) bits[k / 8] |= (uint8_t)(1 << (k % 8));
++    }
++    vbam_use(d, &v, dt, 0);                                     /* header (d81: and the two BAM sectors) */
++    if (d81) { vbam_use(d, &v, 40, 1); vbam_use(d, &v, 40, 2); }
++    if ((r = rd(d, dt, 0, tmp))) return r;
++    uint8_t t = tmp[0] ? tmp[0] : dt, s = tmp[0] ? tmp[1] : dir_sector0(d);
++    for (int guard = 0; t && guard < 64; guard++) {             /* the directory and every file in it */
++        if ((r = rd(d, t, s, dirb))) return r;
++        vbam_use(d, &v, t, s);
++        int dirty = 0;
++        for (int i = 0; i < 8; i++) {
++            uint8_t *p = dirb + i * 32;
++            if (!p[2]) continue;
++            if (!(p[2] & 0x80)) { p[2] = 0; dirty = 1; deleted++; continue; }   /* unclosed: its chain is not trusted, the entry goes */
++            vbam_chain(d, &v, p[3], p[4], tmp);
++            if ((p[2] & 7) == 4) vbam_chain(d, &v, p[21], p[22], tmp);           /* REL side sectors (d81: from the super side sector) */
++        }
++        if (dirty && (r = wr(d, t, s, dirb))) return r;
++        t = dirb[0]; s = dirb[1];
++    }
++    if ((r = wr(d, v.t0, v.s0, v.b[0]))) return r;
++    if ((d81 || d71) && (r = wr(d, v.t1, v.s1, v.b[1]))) return r;
++    return deleted;
++}
++
 +/* ---- BASIC listing ------------------------------------------------------ */
 +VD_COLD static void put(d64_bas_t *b, uint8_t c)
 +{
@@ -2292,10 +2359,10 @@ index 0000000..6c0bf31
 +VD_COLD size_t d64_sizeof_rel(void)   { return sizeof(d64_rel_t); }
 diff --git a/Source/Teensy/MinimalBoot/Common/vdrive/d64.h b/Source/Teensy/MinimalBoot/Common/vdrive/d64.h
 new file mode 100644
-index 0000000..02701f4
+index 0000000..377242b
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/vdrive/d64.h
-@@ -0,0 +1,185 @@
+@@ -0,0 +1,188 @@
 +/* Disk image engine (read + write) for .d64 (1541, 35/40 tracks), .d71 (1571, 70 tracks) and .d81 (1581, 80 tracks).
 + * Portable C99, no malloc: all state lives in caller structs and sectors are fetched through a callback, so the same
 + * code runs on the Teensy (SD/USB file backend) and on the host (tests, VICE mock). Names keep the d64_ prefix. */
@@ -2439,6 +2506,9 @@ index 0000000..02701f4
 +int  d64_scratch(d64_t *d, const char *pattern);                 /* returns files scratched or <0 */
 +int  d64_rename(d64_t *d, const char *oldname, const char *newname);
 +int  d64_format(d64_t *d, const char *name, const char *id);     /* id==NULL: quick (BAM + directory only) */
++/* DOS "V": rebuild the BAM from the directory, the data chains and REL side sectors; unclosed (splat) files are deleted.
++ * Returns the number of files deleted, or <0. A broken chain is followed as far as it is valid. */
++int  d64_validate(d64_t *d);
 +/* DOS "C:new=old1,old2,...": new file, type of the first source, holding the sources one after the other. Sources are
 + * patterns (first match); D64_E_NOTFOUND if one is missing, D64_E_EXISTS if newname is taken, D64_E_TYPE for a REL source
 + * among several. On failure nothing is left behind (D64_E_FULL included). */
@@ -2514,10 +2584,10 @@ index 0000000..20f3ecc
 +#endif
 diff --git a/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.c b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.c
 new file mode 100644
-index 0000000..583cc1f
+index 0000000..33d8ee8
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.c
-@@ -0,0 +1,862 @@
+@@ -0,0 +1,866 @@
 +#include "vdrive.h"
 +#include "vd_cfg.h"
 +#include <string.h>
@@ -3197,7 +3267,11 @@ index 0000000..583cc1f
 +    case 'C':
 +        cmd_copy(u, p, end);
 +        break;
-+    case 'I': case 'V':                                /* initialize / validate: nothing to do */
++    case 'V': {                                        /* validate: the BAM rebuilt from the files, unclosed files dropped */
++        int r = d64_validate(u->disk);
++        if (r < 0) err_from(u, r);
++        break; }
++    case 'I':                                          /* initialize: nothing to do */
 +        break;
 +    default:
 +        set_err(u, 31, 0, 0);

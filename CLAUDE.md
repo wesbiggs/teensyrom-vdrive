@@ -70,6 +70,7 @@ Firmware integration and usage: `firmware/README.md`.
 * 0.9.0.19: `C:new=old[,old2...]` copy / join on the mounted image (`d64_copy`, docs/DESIGN.md 24). Unit tests only (no VICE run in the cloud session that built it); **not on hardware yet**.
 * 0.9.0.20: REL files (`,L,`+length, `P`, one record per `PRINT#`, side sectors; D81 super side sectors; `C` and `S` handle them; docs/DESIGN.md 25, `tests/test_rel.py`). Unit tests only; **not in VICE or on hardware yet**.
 * 0.9.0.21: append (`,A`; `d64_append`, a disk full restores the file; docs/DESIGN.md 26). Unit tests only.
+* 0.9.0.22: `V`alidate rebuilds the BAM (`d64_validate`, splats deleted, REL side sectors kept; byte-identical to `c1541 -validate`; docs/DESIGN.md 27). Unit tests only.
 * Known open risks: C128 not supported (see above); tape (device 1) intentionally broken (its code space was reclaimed).
 
 ## Layout
@@ -141,5 +142,5 @@ build/          generated, git-ignored (kernal images derived from the ROM, libd
 4. **TeensyROM menu integration** (last, only if the BASIC utility feels clumsy): a `Shift-D` hotkey like the existing `Shift-K`
    (KERNAL image) / `Shift-R` (REU) that sets the highlighted file as the disk for device 8/9. Needs changes to the 6502 menu
    (`Source/C64/MainMenuCRT`, ACME) and regenerated headers, and probably an EEPROM map extension that upstream must agree to.
-5. Smaller follow-ups: `V`alidate, D81 sub-directories/partitions, plain `.prg` loading straight from the card, file names > 16
+5. Smaller follow-ups: D81 sub-directories/partitions, plain `.prg` loading straight from the card, file names > 16
    characters in host listings, `MD:`/`RD:`, a scan that re-runs after a device is switched on later.

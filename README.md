@@ -100,12 +100,12 @@ The USB drive works the same. Any other device number uses the real IEC bus unto
 | Error channel | |
 | Directory with `$:pattern` | |
 | REL files | `OPEN 2,8,2,"NAME,L,"+CHR$(len)`, `P` positioning, `PRINT#` one record, `INPUT#`/`GET#`; D64/D71 up to 720 blocks, D81 with super side sectors |
+| `V` validate | Rebuilds the BAM from the files (REL side sectors included); unclosed files are deleted, as on a real drive |
 | `C:new=old` copy | Also joins files: `C:new=a,b,c` (up to 8); the new file has the first source's type |
 
 ### Not yet supported
 | Feature | Notes |
 |---|---|
-| `V` validate | Accepted, does nothing |
 | Plain `.prg` files loaded straight from the card | Mount an image instead |
 | File names longer than 16 characters | Hidden in host listings |
 | Tape (device 1) | Its code space was reused by the patch |

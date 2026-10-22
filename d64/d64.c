@@ -956,6 +956,73 @@ VD_COLD int d64_format(d64_t *d, const char *name, const char *id)
     return wr(d, 18, 1, b);
 }
 
+/* ---- validate ------------------------------------------------------------ */
+typedef struct { uint8_t b[2][D64_SECTOR]; uint8_t t0, s0, t1, s1; } vbam_t;   /* the BAM sectors (d64: one; d71: 18/0, 53/0; d81: 40/1, 40/2) */
+
+VD_COLD static uint8_t *vbam_at(vbam_t *v, uint8_t t, uint8_t s) { return t == v->t0 && s == v->s0 ? v->b[0] : v->b[1]; }
+
+VD_COLD static void vbam_use(d64_t *d, vbam_t *v, uint8_t t, uint8_t s)
+{
+    bamloc_t L;
+    if (t < 1 || t > bam_tracks(d) || s >= spt(d, t)) return;   /* 40-track images: tracks 36-40 are not in the BAM */
+    bam_loc(d, t, &L);
+    uint8_t *bits = vbam_at(v, L.bt, L.bs) + L.bo, *cnt = vbam_at(v, L.ct, L.cs) + L.co, bit = (uint8_t)(1 << (s % 8));
+    if (bits[s / 8] & bit) { bits[s / 8] &= (uint8_t)~bit; if (*cnt) (*cnt)--; }
+}
+
+/* mark a whole chain used; stops at an illegal link or after chain_limit sectors */
+VD_COLD static void vbam_chain(d64_t *d, vbam_t *v, uint8_t t, uint8_t s, uint8_t *tmp)
+{
+    for (uint16_t n = 0; t && n < chain_limit(d); n++) {
+        if (rd(d, t, s, tmp)) return;
+        vbam_use(d, v, t, s);
+        t = tmp[0]; s = tmp[1];
+    }
+}
+
+VD_COLD int d64_validate(d64_t *d)
+{
+    vbam_t v;
+    uint8_t tmp[D64_SECTOR], dirb[D64_SECTOR];
+    const int d81 = d->fmt == D64_FMT_D81, d71 = d->fmt == D64_FMT_D71;
+    const uint8_t dt = dir_track(d);
+    int r, deleted = 0;
+    if (!d->write) return D64_E_RO;
+    v.t0 = dt; v.s0 = d81 ? 1 : 0; v.t1 = d81 ? 40 : 53; v.s1 = d81 ? 2 : 0;
+    if ((r = rd(d, v.t0, v.s0, v.b[0]))) return r;
+    if ((d81 || d71) && (r = rd(d, v.t1, v.s1, v.b[1]))) return r;
+    for (uint8_t t = 1; t <= bam_tracks(d); t++) {              /* everything free (d71 track 53 stays all used, as formatted) */
+        bamloc_t L;
+        bam_loc(d, t, &L);
+        uint8_t *bits = vbam_at(&v, L.bt, L.bs) + L.bo, n = (uint8_t)spt(d, t);
+        if (d71 && t == 53) { vbam_at(&v, L.ct, L.cs)[L.co] = 0; memset(bits, 0, 3); continue; }
+        vbam_at(&v, L.ct, L.cs)[L.co] = n;
+        memset(bits, 0, L.nb);
+        for (int k = 0; k < n; k++) bits[k / 8] |= (uint8_t)(1 << (k % 8));
+    }
+    vbam_use(d, &v, dt, 0);                                     /* header (d81: and the two BAM sectors) */
+    if (d81) { vbam_use(d, &v, 40, 1); vbam_use(d, &v, 40, 2); }
+    if ((r = rd(d, dt, 0, tmp))) return r;
+    uint8_t t = tmp[0] ? tmp[0] : dt, s = tmp[0] ? tmp[1] : dir_sector0(d);
+    for (int guard = 0; t && guard < 64; guard++) {             /* the directory and every file in it */
+        if ((r = rd(d, t, s, dirb))) return r;
+        vbam_use(d, &v, t, s);
+        int dirty = 0;
+        for (int i = 0; i < 8; i++) {
+            uint8_t *p = dirb + i * 32;
+            if (!p[2]) continue;
+            if (!(p[2] & 0x80)) { p[2] = 0; dirty = 1; deleted++; continue; }   /* unclosed: its chain is not trusted, the entry goes */
+            vbam_chain(d, &v, p[3], p[4], tmp);
+            if ((p[2] & 7) == 4) vbam_chain(d, &v, p[21], p[22], tmp);           /* REL side sectors (d81: from the super side sector) */
+        }
+        if (dirty && (r = wr(d, t, s, dirb))) return r;
+        t = dirb[0]; s = dirb[1];
+    }
+    if ((r = wr(d, v.t0, v.s0, v.b[0]))) return r;
+    if ((d81 || d71) && (r = wr(d, v.t1, v.s1, v.b[1]))) return r;
+    return deleted;
+}
+
 /* ---- BASIC listing ------------------------------------------------------ */
 VD_COLD static void put(d64_bas_t *b, uint8_t c)
 {
