@@ -119,6 +119,8 @@ The full `make test`, VICE runs included, works in a cloud session; do not skip 
 * The `--env` line also puts a `c++` → `clang++` link first on `PATH`: with GCC, `tests/fw_host` fails to compile on existing glue code
   (`-Wextra` enum/`-Wformat-truncation` under `-Werror`); the owner's compiler is clang.
 * Still say in the pull request what was not run: a VICE run is not a hardware run.
+* **GitHub Actions** (`.github/workflows/test.yml`) runs the same setup and `make test` on every push to `main`/`bleeding-edge` and every pull request,
+  plus `make build/kernal-tr.bin` and `make util`. `cloud_setup.sh` uses `sudo` when not root; py65 comes from `actions/setup-python` (`python3 -I` skips the user site).
 
 ## Gotchas
 * **Firmware version stamp:** our builds are `<stock>.<REV>` (stock 0.9 -> `0.9.0.1`), written into `TRVersion` by `tools/make_tr_patch.sh` from

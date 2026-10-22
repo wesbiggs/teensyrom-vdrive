@@ -1,6 +1,9 @@
 # make STOCK=/path/to/kernal-901227-03.bin   (your own dump; not stored here)
 STOCK ?= /opt/homebrew/Cellar/vice/3.10/share/vice/C64/kernal-901227-03.bin
 
+# util/ is also a directory: without .PHONY `make util` is always "up to date"
+.PHONY: test test-d64 test-devcfg test-fw test-vdconfig test-border shot testdisk util
+
 # Hardware image: mailbox at IO1 ($DE10, above the SwiftLink ACIA at $DE00-$DE07)
 build/kernal-tr.bin: $(wildcard patches/*.s) tools/build.py
 	python3 -I tools/build.py $(STOCK) $@

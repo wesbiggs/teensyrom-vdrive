@@ -17,9 +17,10 @@ if [ "$1" = "--env" ]; then
 fi
 
 need=""
+SUDO=""; [ "$(id -u)" = 0 ] || SUDO=sudo   # cloud containers run as root, GitHub Actions runners do not
 for t in x64sc c1541 petcat ca65 ld65 xvfb-run clang++; do command -v "$t" >/dev/null 2>&1 || need=1; done
 if [ -n "$need" ]; then
-   apt-get install -y vice cc65 xvfb clang >/dev/null 2>&1 || { apt-get update >/dev/null 2>&1; apt-get install -y vice cc65 xvfb clang >/dev/null; }
+   $SUDO apt-get install -y vice cc65 xvfb clang >/dev/null 2>&1 || { $SUDO apt-get update >/dev/null 2>&1; $SUDO apt-get install -y vice cc65 xvfb clang >/dev/null; }
 fi
 python3 -c "import py65" 2>/dev/null || pip install -q py65 2>/dev/null || pip install -q --break-system-packages py65
 
