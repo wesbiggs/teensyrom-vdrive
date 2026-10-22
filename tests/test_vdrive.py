@@ -111,6 +111,64 @@ class VDriveTests(unittest.TestCase):
         self.assertEqual(t[b"DATA"], 0x81)                              # closed SEQ
         self.valid()
 
+    def test_append_to_a_seq_file(self):
+        first = self.data(300)
+        self.vd.open(8, 2, b"LOG,S,W"); self.vd.listen(8, 0x62, first); self.vd.close(8, 2)
+        more = self.data(1000)                                          # crosses into new sectors
+        self.vd.open(8, 2, b"LOG,S,A")
+        self.assertEqual(self.vd.status(), "00, OK,00,00\r")
+        t = {e["name"]: e["type"] for e in self.disk.entries()}
+        self.assertEqual(t[b"LOG"], 0x01)                               # unclosed while appending, like a real drive
+        self.vd.listen(8, 0x62, more[:500]); self.vd.listen(8, 0x62, more[500:])
+        self.vd.close(8, 2)
+        self.assertEqual(self.vd.status(), "00, OK,00,00\r")
+        self.vd.open(8, 3, b"LOG")
+        self.assertEqual(self.vd.talk(8, 0x63)[0], first + more)
+        e = {e["name"]: e for e in self.disk.entries()}[b"LOG"]
+        self.assertEqual((e["type"], e["blocks"]), (0x81, (1300 + 253) // 254))
+        out = self.tmp / "log.bin"
+        c1541(self.img(), "-read", "log,s", str(out))
+        self.assertEqual(out.read_bytes(), first + more)
+        self.valid()
+
+    def test_append_at_a_sector_boundary_and_with_nothing_written(self):
+        self.vd.open(8, 2, b"EXACT,S,W"); self.vd.listen(8, 0x62, b"x" * 254); self.vd.close(8, 2)
+        self.vd.open(8, 2, b"0:EXACT,A"); self.vd.close(8, 2)           # append nothing: unchanged, closed again
+        self.assertEqual(self.vd.status(), "00, OK,00,00\r")
+        self.vd.open(8, 2, b"EXACT,A"); self.vd.listen(8, 0x62, b"y"); self.vd.close(8, 2)
+        self.vd.open(8, 3, b"EXACT")
+        self.assertEqual(self.vd.talk(8, 0x63)[0], b"x" * 254 + b"y")
+        self.valid()
+
+    def test_append_errors(self):
+        self.vd.open(8, 2, b"NOPE,A")
+        self.assertEqual(self.vd.status(), "62,FILE NOT FOUND,00,00\r")
+        self.vd.open(8, 2, b"REL,L," + bytes([10])); self.vd.close(8, 2)
+        self.vd.open(8, 2, b"REL,A")
+        self.assertEqual(self.vd.status(), "64,FILE TYPE MISMATCH,00,00\r")
+
+    def test_append_disk_full_puts_the_file_back(self):
+        self.vd.save(8, b"FILL", self.data((self.disk.free() - 3) * 254))      # three sectors left
+        before = self.disk.dump()
+        self.vd.open(8, 2, b"SEED,A")
+        self.vd.listen(8, 0x62, self.data(254 * 5))
+        self.assertEqual(self.vd.status(), "72,DISK FULL,00,00\r")
+        self.vd.close(8, 2)
+        track18 = lambda img: img[357 * 256: 376 * 256]
+        self.assertEqual(track18(self.disk.dump()), track18(before))   # BAM and directory as before the append
+        self.assertEqual(self.vd.load(8, b"SEED"), self.seed[b"SEED"])
+        self.valid()
+
+    def test_append_on_a_full_disk_puts_the_file_back(self):
+        self.vd.save(8, b"FILL", self.data(self.disk.free() * 254))           # nothing left at all
+        self.assertEqual(self.disk.free(), 0)
+        before = self.disk.dump()[357 * 256: 376 * 256]
+        self.vd.open(8, 2, b"SEED,A"); self.vd.listen(8, 0x62, self.data(300)); self.vd.close(8, 2)
+        self.assertEqual(self.vd.status(), "72,DISK FULL,00,00\r")
+        self.assertEqual(self.disk.dump()[357 * 256: 376 * 256], before)
+        self.assertEqual(self.vd.load(8, b"SEED"), self.seed[b"SEED"])
+        self.valid()
+
     def test_unclosed_file_is_splat(self):
         self.vd.open(8, 2, b"HALF,S,W")
         self.vd.listen(8, 0x62, b"abc")
@@ -145,6 +203,87 @@ class VDriveTests(unittest.TestCase):
         self.assertEqual(self.disk.header(), (b"FRESH", b"ZZ", b"2A"))
         self.assertEqual(self.disk.entries(), [])
         self.valid()
+
+    def test_copy_command(self):
+        self.vd.listen(8, 0x6F, b"C:DUP=SEED")
+        self.assertEqual(self.vd.status(), "00, OK,00,00\r")
+        self.assertEqual(self.vd.load(8, b"DUP"), self.seed[b"SEED"])
+        self.vd.listen(8, 0x6F, b"C0:BOTH=0:SEED,OTH*\r")                 # join two files; drive prefixes, a pattern, PRINT#'s CR
+        self.assertEqual(self.vd.status(), "00, OK,00,00\r")
+        self.assertEqual(self.vd.load(8, b"BOTH"), self.seed[b"SEED"] + self.seed[b"OTHER"])
+        t = {e["name"]: e for e in self.disk.entries()}
+        self.assertEqual(t[b"BOTH"]["type"], t[b"SEED"]["type"])
+        self.assertEqual(t[b"BOTH"]["blocks"], (740 + 253) // 254)
+        out = self.tmp / "both.bin"
+        c1541(self.img(), "-read", "both", str(out))
+        self.assertEqual(out.read_bytes(), self.seed[b"SEED"] + self.seed[b"OTHER"])
+        self.valid()
+
+    def test_copy_of_a_seq_file_keeps_its_type(self):
+        self.vd.open(8, 2, b"DATA,S,W"); self.vd.listen(8, 0x62, b"HELLO\r"); self.vd.close(8, 2)
+        self.vd.listen(8, 0x6F, b"C:DATA2=DATA")
+        self.assertEqual(self.vd.status(), "00, OK,00,00\r")
+        t = {e["name"]: e["type"] for e in self.disk.entries()}
+        self.assertEqual(t[b"DATA2"], 0x81)
+        self.vd.open(8, 3, b"DATA2,S,R")
+        self.assertEqual(self.vd.talk(8, 0x63)[0], b"HELLO\r")
+
+    def test_copy_errors_leave_nothing_behind(self):
+        free = self.disk.free()
+        names = lambda: sorted(e["name"] for e in self.disk.entries())
+        before = names()
+        for cmd, want in ((b"C:NEW=NOPE", "62,FILE NOT FOUND"), (b"C:NEW=SEED,NOPE", "62,FILE NOT FOUND"),
+                          (b"C:OTHER=SEED", "63,FILE EXISTS"), (b"C:NEW", "34,SYNTAX ERROR"), (b"C:=SEED", "34,SYNTAX ERROR"),
+                          (b"C:NEW=SEED,", "34,SYNTAX ERROR"), (b"C:N*W=SEED", "33,SYNTAX ERROR"), (b"C1=0", "31,SYNTAX ERROR")):
+            self.vd.listen(8, 0x6F, cmd)
+            self.assertTrue(self.vd.status().startswith(want + ","), cmd)
+        self.assertEqual(names(), before); self.assertEqual(self.disk.free(), free)
+        self.valid()
+
+    def test_copy_disk_full_removes_the_new_file(self):
+        big = self.data((self.disk.free() - 2) * 254)                    # the copy needs more than is left
+        self.assertEqual(self.vd.save(8, b"BIG", big), 0)
+        free = self.disk.free()
+        self.vd.listen(8, 0x6F, b"C:BIG2=BIG")
+        self.assertEqual(self.vd.status(), "72,DISK FULL,00,00\r")
+        self.assertEqual(self.disk.free(), free)
+        self.assertIsNone(self.disk.read_file(b"BIG2"))
+        self.valid()
+
+    def test_copy_source_pattern_does_not_pick_the_new_file(self):
+        # S:SEED frees directory slot 0, so the new file OX takes it, ahead of OTHER: "O*" must still mean OTHER
+        self.vd.listen(8, 0x6F, b"S:SEED"); self.vd.status()
+        self.vd.listen(8, 0x6F, b"C:OX=O*")
+        self.assertEqual(self.vd.status(), "00, OK,00,00\r")
+        self.assertEqual(self.disk.entries()[0]["name"], b"OX")
+        self.assertEqual(self.vd.load(8, b"OX"), self.seed[b"OTHER"])
+        self.valid()
+
+    def test_lock_toggle(self):
+        self.assertEqual(self.cmd(b"L:SEED"), "00, OK,00,00\r")
+        self.assertRegex(self.vd.load(8, b"$"), rb'"SEED" +PRG<')
+        self.assertEqual(self.cmd(b"S:SEED"), "01,FILES SCRATCHED,00,00\r")      # locked: not scratched
+        self.assertEqual(self.vd.load(8, b"SEED"), self.seed[b"SEED"])
+        self.assertEqual(self.cmd(b"L0:S*"), "00, OK,00,00\r")                   # toggles back
+        self.assertNotRegex(self.vd.load(8, b"$"), rb'"SEED" +PRG<')
+        self.assertEqual(self.cmd(b"S:SEED"), "01,FILES SCRATCHED,01,00\r")
+        self.assertEqual(self.cmd(b"L:NOPE"), "62,FILE NOT FOUND,00,00\r")
+        self.assertEqual(self.cmd(b"L:"), "34,SYNTAX ERROR,00,00\r")
+        self.valid()
+
+    def test_write_protect_from_the_c64(self):
+        self.assertEqual(self.cmd(b"W-1"), "00, OK,00,00\r")
+        self.vd.save(8, b"NEW", b"\x01\x08abc")
+        self.assertEqual(self.vd.status(), "26,WRITE PROTECT ON,00,00\r")
+        for c in (b"S:SEED", b"R:X=SEED", b"C:X=SEED", b"N:X", b"V", b"L:SEED", b"B-A:0,1,0"):
+            self.assertEqual(self.cmd(c), "26,WRITE PROTECT ON,00,00\r", c)
+        self.assertEqual(self.vd.load(8, b"SEED"), self.seed[b"SEED"])          # reading still works
+        self.assertEqual(self.cmd(b"W-0"), "00, OK,00,00\r")
+        self.assertEqual(self.vd.save(8, b"NEW", b"\x01\x08abc"), 0)
+        self.assertEqual(self.vd.status(), "00, OK,00,00\r")
+        self.cmd(b"W-1")
+        self.disk = Disk(self.disk.dump()); self.vd.attach(0, self.disk)         # another image (a remount) is not protected
+        self.assertEqual(self.cmd(b"S:NEW"), "01,FILES SCRATCHED,01,00\r")
 
     def test_unknown_command_is_syntax_error(self):
         self.vd.listen(8, 0x6F, b"X:FOO")

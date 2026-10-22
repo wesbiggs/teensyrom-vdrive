@@ -49,7 +49,7 @@ VD_COLD static void geometry(d64_t *d, uint8_t tracks)
 VD_COLD static int mem_write(void *ctx, uint8_t t, uint8_t s, const uint8_t *buf)
 {
     d64_mem_t *m = (d64_mem_t *)ctx;
-    d64_t tmp = { 0, 0, 0, 0, 0 };
+    d64_t tmp = { 0, 0, 0, 0, 0, 0 };
     if (classify(m->len, &tmp.tracks, &tmp.fmt)) return -1;
     long off = d64_sector_offset(&tmp, t, s);
     if (off < 0 || (size_t)off + D64_SECTOR > m->len) return -1;
@@ -60,7 +60,7 @@ VD_COLD static int mem_write(void *ctx, uint8_t t, uint8_t s, const uint8_t *buf
 VD_COLD static int mem_read(void *ctx, uint8_t t, uint8_t s, uint8_t *buf)
 {
     d64_mem_t *m = (d64_mem_t *)ctx;
-    d64_t tmp = { 0, 0, 0, 0, 0 };
+    d64_t tmp = { 0, 0, 0, 0, 0, 0 };
     if (classify(m->len, &tmp.tracks, &tmp.fmt)) return -1;
     long off = d64_sector_offset(&tmp, t, s);
     if (off < 0 || (size_t)off + D64_SECTOR > m->len) return -1;
@@ -70,7 +70,7 @@ VD_COLD static int mem_read(void *ctx, uint8_t t, uint8_t s, uint8_t *buf)
 VD_COLD void d64_mem_init(d64_mem_t *m, uint8_t *data, size_t len) { m->data = data; m->len = len; }
 VD_COLD int d64_open(d64_t *d, d64_read_fn rd, void *ctx, uint8_t tracks)
 {
-    d->read = rd; d->write = NULL; d->ctx = ctx;
+    d->read = rd; d->write = NULL; d->ctx = ctx; d->ro = 0;
     geometry(d, tracks);
     return 0;
 }
@@ -95,7 +95,7 @@ VD_COLD static int rd(d64_t *d, uint8_t t, uint8_t s, uint8_t *b)
 }
 VD_COLD static int wr(d64_t *d, uint8_t t, uint8_t s, const uint8_t *b)
 {
-    if (!d->write) return D64_E_RO;
+    if (!d->write || d->ro) return D64_E_RO;
     if (d64_sector_offset(d, t, s) < 0) return D64_E_IO;
     return d->write(d->ctx, t, s, b) ? D64_E_IO : 0;
 }
@@ -216,6 +216,7 @@ VD_COLD int d64_dir_next(d64_t *d, d64_dir_t *it, d64_entry_t *e)
         e->blocks = p[30] | (p[31] << 8);
         strip(e->name, p + 5, 16);
         e->dir_t = it->cur_t; e->dir_s = it->cur_s; e->dir_slot = (uint8_t)(it->slot - 1);
+        e->ss_t = p[21]; e->ss_s = p[22]; e->reclen = p[23];
         return 1;
     }
 }
@@ -351,14 +352,14 @@ VD_COLD static int free_sector(d64_t *d, uint8_t t, uint8_t s)
 
 VD_COLD int d64_block_read(d64_t *d, uint8_t t, uint8_t s, uint8_t *buf) { return rd(d, t, s, buf); }
 VD_COLD int d64_block_write(d64_t *d, uint8_t t, uint8_t s, const uint8_t *buf) { return wr(d, t, s, buf); }
-VD_COLD int d64_block_free(d64_t *d, uint8_t t, uint8_t s) { return d->write ? free_sector(d, t, s) : D64_E_RO; }
+VD_COLD int d64_block_free(d64_t *d, uint8_t t, uint8_t s) { return d->write && !d->ro ? free_sector(d, t, s) : D64_E_RO; }
 
 VD_COLD int d64_block_alloc(d64_t *d, uint8_t t, uint8_t s, uint8_t *nt, uint8_t *ns)
 {
     uint8_t bufA[D64_SECTOR], bufB[D64_SECTOR], *cnt, *bits;
     bamloc_t L;
     if (t < 1 || t > bam_tracks(d) || s >= spt(d, t)) return D64_E_IO;
-    if (!d->write) return D64_E_RO;
+    if (!d->write || d->ro) return D64_E_RO;
     int r = bam_load(d, t, &L, bufA, bufB, &cnt, &bits);
     if (r) return r;
     if (bits[s / 8] & (1 << (s % 8))) {
@@ -402,11 +403,9 @@ VD_COLD static int dir_update(d64_t *d, uint8_t dt, uint8_t ds, uint8_t slot, co
     return wr(d, dt, ds, b);
 }
 
-VD_COLD int d64_scratch_entry(d64_t *d, const d64_entry_t *e)
+VD_COLD static int free_chain(d64_t *d, uint8_t t, uint8_t s)
 {
-    if (!d->write) return D64_E_RO;
-    if (e->type & 0x40) return D64_E_LOCKED;
-    uint8_t t = e->track, s = e->sector, b[D64_SECTOR];
+    uint8_t b[D64_SECTOR];
     for (int guard = 0; t && guard < chain_limit(d); guard++) {
         int r = rd(d, t, s, b);
         if (r) break;                       /* broken chain: free what we can */
@@ -414,6 +413,16 @@ VD_COLD int d64_scratch_entry(d64_t *d, const d64_entry_t *e)
         if ((r = free_sector(d, t, s))) return r;
         t = nt; s = ns;
     }
+    return 0;
+}
+
+VD_COLD int d64_scratch_entry(d64_t *d, const d64_entry_t *e)
+{
+    int r;
+    if (!d->write || d->ro) return D64_E_RO;
+    if (e->type & 0x40) return D64_E_LOCKED;
+    if ((r = free_chain(d, e->track, e->sector))) return r;
+    if ((e->type & 7) == 4 && (r = free_chain(d, e->ss_t, e->ss_s))) return r;   /* REL: the side sectors (d81: from the super side sector) */
     return dir_update(d, e->dir_t, e->dir_s, e->dir_slot, NULL, 0, -1);
 }
 
@@ -436,7 +445,7 @@ VD_COLD int d64_rename(d64_t *d, const char *oldn, const char *newn)
 {
     d64_entry_t e, x;
     if (!valid_name(newn)) return D64_E_NAME;
-    if (!d->write) return D64_E_RO;
+    if (!d->write || d->ro) return D64_E_RO;
     int r = d64_find(d, oldn, &e);
     if (r < 0) return r;
     if (r == 0) return D64_E_NOTFOUND;
@@ -479,7 +488,7 @@ VD_COLD static int dir_slot_alloc(d64_t *d, uint8_t *dt, uint8_t *ds, uint8_t *s
 VD_COLD int d64_create(d64_t *d, const char *name, uint8_t type, int replace, d64_wfile_t *w)
 {
     d64_entry_t e;
-    if (!d->write) return D64_E_RO;
+    if (!d->write || d->ro) return D64_E_RO;
     if (!valid_name(name)) return D64_E_NAME;
     int r = d64_find(d, name, &e);
     if (r < 0) return r;
@@ -501,13 +510,52 @@ VD_COLD int d64_create(d64_t *d, const char *name, uint8_t type, int replace, d6
     w->type = type & 7; w->dir_t = dt; w->dir_s = ds; w->dir_slot = slot;
     w->first_t = w->cur_t = ft; w->first_s = w->cur_s = fs;
     w->pos = 2; w->blocks = 1;
+    w->app_t = w->app_s = w->app_end = w->app_type = 0; w->app_blocks = 0;
     memset(w->buf, 0, sizeof w->buf);
     return 0;
 }
 
+VD_COLD int d64_append(d64_t *d, const char *name, d64_wfile_t *w)
+{
+    d64_entry_t e;
+    if (!d->write || d->ro) return D64_E_RO;
+    int r = d64_find(d, name, &e);
+    if (r < 0) return r;
+    if (r == 0) return D64_E_NOTFOUND;
+    if ((e.type & 7) == 4) return D64_E_TYPE;
+    uint8_t t = e.track, s = e.sector;
+    uint16_t n = 0;
+    for (;;) {                                                   /* to the last sector of the chain */
+        if (++n > chain_limit(d)) return D64_E_LOOP;
+        if ((r = rd(d, t, s, w->buf))) return r;
+        if (!w->buf[0]) break;
+        t = w->buf[0]; s = w->buf[1];
+    }
+    w->type = e.type & 7; w->dir_t = e.dir_t; w->dir_s = e.dir_s; w->dir_slot = e.dir_slot;
+    w->first_t = e.track; w->first_s = e.sector; w->cur_t = t; w->cur_s = s;
+    w->pos = (uint16_t)(w->buf[1] < 1 ? 2 : w->buf[1] + 1);
+    w->blocks = n;
+    w->app_t = t; w->app_s = s; w->app_end = w->buf[1]; w->app_type = e.type; w->app_blocks = n;
+    return dir_update(d, e.dir_t, e.dir_s, e.dir_slot, NULL, e.type & 0x7F, -1);   /* unclosed while it is written */
+}
+
 VD_COLD static void abort_write(d64_t *d, d64_wfile_t *w)
-{   /* free exactly the sectors we allocated, then drop the directory entry */
+{   /* free exactly the sectors we allocated, then drop the directory entry (an append: put the old file back instead) */
     uint8_t t = w->first_t, s = w->first_s, b[D64_SECTOR];
+    if (w->app_t) {
+        if (rd(d, w->app_t, w->app_s, b)) return;
+        t = b[0]; s = b[1];                                      /* sectors added since the append began; the last one is cur, not yet written */
+        for (int i = w->app_blocks; i < w->blocks && t; i++) {
+            uint8_t nt = 0, ns = 0, c[D64_SECTOR];
+            if (i + 1 < w->blocks && rd(d, t, s, c) == 0) { nt = c[0]; ns = c[1]; }
+            free_sector(d, t, s);
+            t = nt; s = ns;
+        }
+        b[0] = 0; b[1] = w->app_end;
+        wr(d, w->app_t, w->app_s, b);
+        dir_update(d, w->dir_t, w->dir_s, w->dir_slot, NULL, w->app_type, w->app_blocks);
+        return;
+    }
     for (int i = 0; i < w->blocks; i++) {
         uint8_t nt = 0, ns = 0;
         if (i + 1 < w->blocks && rd(d, t, s, b) == 0) { nt = b[0]; ns = b[1]; }
@@ -547,20 +595,310 @@ VD_COLD int d64_close_write(d64_t *d, d64_wfile_t *w)
     return dir_update(d, w->dir_t, w->dir_s, w->dir_slot, NULL, 0x80 | w->type, w->blocks);
 }
 
-VD_COLD int d64_format(d64_t *d, const char *name, const char *id)
+/* ---- REL files ----------------------------------------------------------- */
+#define SS_PER   120                                   /* data-block pointers in a side sector (bytes 16..255) */
+#define SS_GROUP 6                                     /* side sectors listed in each one (bytes 4..15): a d64/d71 file, a d81 group */
+
+VD_COLD static uint16_t rel_max_ss(const d64_t *d) { return d->fmt == D64_FMT_D81 ? 126 * SS_GROUP : SS_GROUP; }
+VD_COLD static uint8_t rel_fill(const d64_rel_t *r, uint32_t off) { return off % r->reclen ? 0x00 : 0xFF; }   /* empty records */
+
+VD_COLD uint32_t d64_rel_records(const d64_rel_t *r)
+{
+    if (!r->nblocks || !r->reclen) return 0;
+    return ((uint32_t)(r->nblocks - 1) * 254 + (r->last > 1 ? r->last - 1 : 0)) / r->reclen;
+}
+
+VD_COLD int d64_rel_flush(d64_t *d, d64_rel_t *r)
+{
+    if (!r->dirty) return 0;
+    r->dirty = 0;
+    return wr(d, r->cur_t, r->cur_s, r->buf);
+}
+
+/* t/s of side sector k (counted over the whole file) */
+VD_COLD static int rel_ss_find(d64_t *d, const d64_rel_t *r, uint16_t k, uint8_t *t, uint8_t *s, uint8_t *tmp)
+{
+    uint8_t gt = r->ss_t, gs = r->ss_s;
+    int rr;
+    if (k + 1 == r->nss) { *t = r->lss_t; *s = r->lss_s; return 0; }
+    if (d->fmt == D64_FMT_D81) {
+        if (k / SS_GROUP >= 126) return D64_E_IO;
+        if ((rr = rd(d, r->ss_t, r->ss_s, tmp))) return rr;
+        gt = tmp[3 + 2 * (k / SS_GROUP)]; gs = tmp[4 + 2 * (k / SS_GROUP)];
+    } else if (k >= SS_GROUP) return D64_E_IO;
+    if ((rr = rd(d, gt, gs, tmp))) return rr;
+    *t = tmp[4 + 2 * (k % SS_GROUP)]; *s = tmp[5 + 2 * (k % SS_GROUP)];
+    return *t ? 0 : D64_E_IO;
+}
+
+/* bring data block idx into buf */
+VD_COLD static int rel_load(d64_t *d, d64_rel_t *r, uint16_t idx)
+{
+    uint8_t t, s, tmp[D64_SECTOR];
+    int rr;
+    if (r->cur == idx) return 0;
+    if (idx >= r->nblocks) return D64_E_IO;
+    if ((rr = d64_rel_flush(d, r))) return rr;
+    if (r->cur != 0xFFFF && idx == r->cur + 1 && r->buf[0]) { t = r->buf[0]; s = r->buf[1]; }   /* the next one: follow the link */
+    else if (idx + 1 == r->nblocks) { t = r->last_t; s = r->last_s; }
+    else {
+        if ((rr = rel_ss_find(d, r, (uint16_t)(idx / SS_PER), &t, &s, tmp)) || (rr = rd(d, t, s, tmp))) return rr;
+        t = tmp[16 + 2 * (idx % SS_PER)]; s = tmp[17 + 2 * (idx % SS_PER)];
+    }
+    r->cur = 0xFFFF;
+    if ((rr = rd(d, t, s, r->buf))) return rr;
+    r->cur = idx; r->cur_t = t; r->cur_s = s;
+    return 0;
+}
+
+VD_COLD int d64_rel_get(d64_t *d, d64_rel_t *r, uint32_t off, uint8_t *b)
+{
+    int rr = rel_load(d, r, (uint16_t)(off / 254));
+    if (rr) return rr;
+    *b = r->buf[2 + off % 254];
+    return 0;
+}
+
+VD_COLD int d64_rel_put(d64_t *d, d64_rel_t *r, uint32_t off, uint8_t b)
+{
+    if (!d->write || d->ro) return D64_E_RO;
+    int rr = rel_load(d, r, (uint16_t)(off / 254));
+    if (rr) return rr;
+    r->buf[2 + off % 254] = b; r->dirty = 1;
+    return 0;
+}
+
+/* block count (data + side sectors + d81 super side sector) and, for the first data block, its t/s into the directory entry */
+VD_COLD static int rel_dir_sync(d64_t *d, const d64_rel_t *r, uint8_t first_t, uint8_t first_s)
+{
+    uint8_t b[D64_SECTOR];
+    int rr = rd(d, r->dir_t, r->dir_s, b);
+    if (rr) return rr;
+    uint8_t *p = b + r->dir_slot * 32;
+    unsigned n = r->nblocks + r->nss + (d->fmt == D64_FMT_D81);
+    if (first_t) { p[3] = first_t; p[4] = first_s; }
+    p[30] = (uint8_t)n; p[31] = (uint8_t)(n >> 8);
+    return wr(d, r->dir_t, r->dir_s, b);
+}
+
+/* Append one data block of empty records, and a side sector (on a d81 maybe a new group) when the last one is full. */
+VD_COLD static int rel_add_block(d64_t *d, d64_rel_t *r)
+{
+    uint8_t tmp[D64_SECTOR], t = r->last_t, s = r->last_s, nt, ns = 0;
+    const uint16_t idx = r->nblocks, k = (uint16_t)(idx / SS_PER), j = (uint16_t)(k % SS_GROUP);
+    const int new_ss = idx && idx % SS_PER == 0;
+    int rr;
+    if (new_ss && k >= rel_max_ss(d)) return D64_E_TOOBIG;
+    if ((rr = d64_rel_flush(d, r))) return rr;
+    r->cur = 0xFFFF;
+    if ((rr = alloc_sector(d, &t, &s, 10, 0))) return rr;
+    nt = t; ns = s;
+    if (new_ss && (rr = alloc_sector(d, &nt, &ns, 10, 0))) { free_sector(d, t, s); return rr; }
+
+    if (new_ss) {
+        uint8_t list[2 * SS_GROUP];
+        memset(list, 0, sizeof list);
+        if (j) { if ((rr = rd(d, r->lss_t, r->lss_s, tmp))) return rr; memcpy(list, tmp + 4, sizeof list); }
+        list[2 * j] = nt; list[2 * j + 1] = ns;
+        memset(tmp, 0, sizeof tmp);
+        tmp[1] = 17; tmp[2] = (uint8_t)j; tmp[3] = r->reclen;
+        memcpy(tmp + 4, list, sizeof list);
+        tmp[16] = t; tmp[17] = s;
+        if ((rr = wr(d, nt, ns, tmp))) return rr;
+        for (uint16_t i = 0; i < j; i++) {                     /* the others in the group learn of it; the previous one links to it */
+            uint8_t ot = list[2 * i], os = list[2 * i + 1];
+            if ((rr = rd(d, ot, os, tmp))) return rr;
+            memcpy(tmp + 4, list, sizeof list);
+            if (i + 1 == j) { tmp[0] = nt; tmp[1] = ns; }
+            if ((rr = wr(d, ot, os, tmp))) return rr;
+        }
+        if (!j) {                                                /* new d81 group: the last side sector links on, the super side sector lists it */
+            if ((rr = rd(d, r->lss_t, r->lss_s, tmp))) return rr;
+            tmp[0] = nt; tmp[1] = ns;
+            if ((rr = wr(d, r->lss_t, r->lss_s, tmp))) return rr;
+            if ((rr = rd(d, r->ss_t, r->ss_s, tmp))) return rr;
+            tmp[3 + 2 * (k / SS_GROUP)] = nt; tmp[4 + 2 * (k / SS_GROUP)] = ns;
+            if ((rr = wr(d, r->ss_t, r->ss_s, tmp))) return rr;
+        }
+        r->lss_t = nt; r->lss_s = ns; r->nss++;
+    } else {
+        uint8_t e = (uint8_t)(16 + 2 * (idx % SS_PER));
+        if ((rr = rd(d, r->lss_t, r->lss_s, tmp))) return rr;
+        tmp[e] = t; tmp[e + 1] = s; tmp[1] = (uint8_t)(e + 1);
+        if ((rr = wr(d, r->lss_t, r->lss_s, tmp))) return rr;
+    }
+
+    uint32_t base = (uint32_t)idx * 254, end = (base + 254) / r->reclen * r->reclen;   /* the last whole record ends here */
+    tmp[0] = 0; tmp[1] = (uint8_t)(end - base + 1);
+    for (int i = 0; i < 254; i++) tmp[2 + i] = rel_fill(r, base + (uint32_t)i);
+    if ((rr = wr(d, t, s, tmp))) return rr;
+    if (idx) {                                                   /* the old last block links on; its unused tail becomes empty records */
+        if ((rr = rd(d, r->last_t, r->last_s, tmp))) return rr;
+        for (int i = r->last + 1; i < 256; i++) tmp[i] = rel_fill(r, base - 254 + (uint32_t)(i - 2));
+        tmp[0] = t; tmp[1] = s;
+        if ((rr = wr(d, r->last_t, r->last_s, tmp))) return rr;
+    }
+    r->last_t = t; r->last_s = s; r->last = (uint8_t)(end - base + 1);
+    r->nblocks++;
+    return rel_dir_sync(d, r, idx ? 0 : t, s);
+}
+
+VD_COLD int d64_rel_extend(d64_t *d, d64_rel_t *r, uint32_t nrec)
+{
+    if (!d->write || d->ro) return D64_E_RO;
+    while (d64_rel_records(r) < nrec) { int rr = rel_add_block(d, r); if (rr) return rr; }
+    return 0;
+}
+
+/* drop a REL file we were making (creation or copy failed) */
+VD_COLD static void rel_discard(d64_t *d, const d64_rel_t *r)
+{
+    uint8_t b[D64_SECTOR];
+    if (rd(d, r->dir_t, r->dir_s, b)) return;
+    const uint8_t *p = b + r->dir_slot * 32;
+    d64_entry_t e;
+    memset(&e, 0, sizeof e);
+    e.type = 0x84; e.track = p[3]; e.sector = p[4]; e.ss_t = p[21]; e.ss_s = p[22];
+    e.dir_t = r->dir_t; e.dir_s = r->dir_s; e.dir_slot = r->dir_slot;
+    d64_scratch_entry(d, &e);
+}
+
+VD_COLD int d64_rel_create(d64_t *d, const char *name, uint8_t reclen, d64_rel_t *r)
+{
+    d64_entry_t e;
+    uint8_t tmp[D64_SECTOR], st = 0, ss = 0, pt = 0, ps = 0, dt, ds, slot;
+    const int d81 = d->fmt == D64_FMT_D81;
+    int rr;
+    if (!d->write || d->ro) return D64_E_RO;
+    if (!valid_name(name) || reclen < 1 || reclen > 254) return D64_E_NAME;
+    if ((rr = d64_find(d, name, &e)) < 0) return rr;
+    if (rr == 1) return D64_E_EXISTS;
+    if ((rr = alloc_sector(d, &st, &ss, 10, 0))) return rr;                       /* side sector 0 */
+    pt = st; ps = ss;
+    if (d81 && (rr = alloc_sector(d, &pt, &ps, 10, 0))) { free_sector(d, st, ss); return rr; }   /* super side sector */
+    if ((rr = dir_slot_alloc(d, &dt, &ds, &slot))) { free_sector(d, st, ss); if (d81) free_sector(d, pt, ps); return rr; }
+    memset(tmp, 0, sizeof tmp);
+    tmp[1] = 15; tmp[3] = reclen; tmp[4] = st; tmp[5] = ss;                       /* no data blocks yet */
+    if (!(rr = wr(d, st, ss, tmp)) && d81) {
+        memset(tmp, 0, sizeof tmp);
+        tmp[0] = st; tmp[1] = ss; tmp[2] = 0xFE; tmp[3] = st; tmp[4] = ss;
+        rr = wr(d, pt, ps, tmp);
+    }
+    if (!rr) {
+        memset(tmp, 0, 30);
+        tmp[0] = 0x84;                                           /* REL files are never "splat": closed from the start */
+        memset(tmp + 3, 0xA0, 16); memcpy(tmp + 3, name, strlen(name));
+        tmp[19] = d81 ? pt : st; tmp[20] = d81 ? ps : ss; tmp[21] = reclen;
+        rr = dir_update(d, dt, ds, slot, tmp, -1, -1);
+    }
+    if (rr) { free_sector(d, st, ss); if (d81) free_sector(d, pt, ps); return rr; }
+    memset(r, 0, sizeof *r);
+    r->dir_t = dt; r->dir_s = ds; r->dir_slot = slot;
+    r->ss_t = d81 ? pt : st; r->ss_s = d81 ? ps : ss;
+    r->lss_t = st; r->lss_s = ss; r->nss = 1;
+    r->reclen = reclen; r->cur = 0xFFFF;
+    if ((rr = rel_add_block(d, r))) { rel_discard(d, r); return rr; }
+    return 0;
+}
+
+VD_COLD int d64_rel_open(d64_t *d, const d64_entry_t *e, d64_rel_t *r)
+{
+    uint8_t tmp[D64_SECTOR], t = e->ss_t, s = e->ss_s;
+    int rr;
+    if ((e->type & 7) != 4) return D64_E_TYPE;
+    memset(r, 0, sizeof *r);
+    r->dir_t = e->dir_t; r->dir_s = e->dir_s; r->dir_slot = e->dir_slot;
+    r->ss_t = e->ss_t; r->ss_s = e->ss_s; r->reclen = e->reclen; r->cur = 0xFFFF;
+    if (!r->reclen) return D64_E_IO;
+    if (d->fmt == D64_FMT_D81) { if ((rr = rd(d, t, s, tmp))) return rr; t = tmp[0]; s = tmp[1]; }
+    while (t) {                                                  /* count the data blocks through the side sectors */
+        if (r->nss >= rel_max_ss(d)) return D64_E_LOOP;
+        if ((rr = rd(d, t, s, tmp))) return rr;
+        uint16_t n = tmp[0] ? SS_PER : (uint16_t)(tmp[1] >= 17 ? (tmp[1] - 15) / 2 : 0);
+        if (n > SS_PER) n = SS_PER;
+        if (n) { r->last_t = tmp[14 + 2 * n]; r->last_s = tmp[15 + 2 * n]; }
+        r->nblocks = (uint16_t)(r->nblocks + n); r->nss++;
+        r->lss_t = t; r->lss_s = s;
+        t = tmp[0]; s = tmp[1];
+    }
+    if (r->nblocks) {
+        if ((rr = rd(d, r->last_t, r->last_s, tmp))) return rr;
+        r->last = tmp[0] ? 255 : tmp[1];
+    }
+    return 0;
+}
+
+VD_COLD static int rel_copy(d64_t *d, const char *newname, const d64_entry_t *e)
+{
+    d64_rel_t a, b;
+    int rr;
+    if ((rr = d64_rel_open(d, e, &a)) || (rr = d64_rel_create(d, newname, a.reclen, &b))) return rr;
+    while (!rr && b.nblocks < a.nblocks) rr = rel_add_block(d, &b);
+    for (uint16_t i = 0; !rr && i < a.nblocks; i++)
+        if (!(rr = rel_load(d, &a, i)) && !(rr = rel_load(d, &b, i))) {
+            memcpy(b.buf + 2, a.buf + 2, 254);
+            if (i + 1 == a.nblocks) { b.buf[1] = a.last; b.last = a.last; }
+            b.dirty = 1;
+        }
+    if (!rr) rr = d64_rel_flush(d, &b);
+    if (rr) rel_discard(d, &b);
+    return rr;
+}
+
+/* d64_find, but never the entry being written (a pattern could match the new file's own splat entry) */
+VD_COLD static int find_except(d64_t *d, const char *pat, const d64_wfile_t *w, d64_entry_t *e)
+{
+    d64_dir_t it;
+    int r = d64_dir_first(d, &it);
+    if (r) return r;
+    while ((r = d64_dir_next(d, &it, e)) > 0)
+        if (((e->type & 7) != 0 || (e->type & 0x80)) && d64_match(e->name, pat)
+            && !(w && e->dir_t == w->dir_t && e->dir_s == w->dir_s && e->dir_slot == w->dir_slot)) return 1;
+    return r;
+}
+
+VD_COLD int d64_copy(d64_t *d, const char *newname, const char *const *src, int nsrc)
+{
+    d64_entry_t e;
+    d64_file_t f;
+    d64_wfile_t w;
+    uint8_t type = 0, chunk[64];
+    int r;
+    if (!d->write || d->ro) return D64_E_RO;
+    if (nsrc < 1 || !valid_name(newname)) return D64_E_NAME;
+    for (int i = 0; i < nsrc; i++) {                           /* every source must exist before anything is written */
+        if ((r = find_except(d, src[i], NULL, &e)) < 0) return r;
+        if (r == 0) return D64_E_NOTFOUND;
+        if ((e.type & 7) == 4 && nsrc > 1) return D64_E_TYPE;  /* REL: records + side sectors, not a byte stream to join */
+        if (i == 0) type = e.type & 7;
+    }
+    if (type == 4) return rel_copy(d, newname, &e);
+    if ((r = d64_create(d, newname, type, 0, &w))) return r;
+    for (int i = 0; i < nsrc; i++) {
+        if ((r = find_except(d, src[i], &w, &e)) <= 0) { abort_write(d, &w); return r ? r : D64_E_NOTFOUND; }
+        d64_file_open(d, &e, &f);
+        while ((r = d64_file_read(d, &f, chunk, sizeof chunk)) > 0)
+            if ((r = d64_write(d, &w, chunk, (size_t)r)) < 0) return r;     /* d64_write already removed the new file */
+        if (r < 0) { abort_write(d, &w); return D64_E_IO; }
+    }
+    return d64_close_write(d, &w);
+}
+
+/* clear: zero every sector that is not header / BAM / first directory sector (a full format); 0 for an image known to be blank */
+VD_COLD static int format(d64_t *d, const char *name, const char *id, int clear)
 {
     uint8_t b[D64_SECTOR];
     uint8_t idb[2];
     const int d81 = d->fmt == D64_FMT_D81, d71 = d->fmt == D64_FMT_D71;
     const uint8_t dt = dir_track(d);
     const int name_off = d81 ? 0x04 : 0x90, id_off = d81 ? 0x16 : 0xA2;
-    if (!d->write) return D64_E_RO;
+    if (!d->write || d->ro) return D64_E_RO;
     if (!valid_name(name)) return D64_E_NAME;
     if (id) {
         if (strlen(id) != 2) return D64_E_NAME;
         idb[0] = (uint8_t)id[0]; idb[1] = (uint8_t)id[1];
         memset(b, 0, sizeof b);
-        for (uint8_t t = 1; t <= d->tracks; t++)
+        if (clear) for (uint8_t t = 1; t <= d->tracks; t++)
             for (int sct = 0; sct < spt(d, t); sct++)
                 if (t != dt || sct > (d81 ? 3 : 1)) { int r = wr(d, t, (uint8_t)sct, b); if (r) return r; }
     } else {
@@ -617,6 +955,92 @@ VD_COLD int d64_format(d64_t *d, const char *name, const char *id)
     if (d71 && (r = wr(d, 53, 0, bam[1]))) return r;
     memset(b, 0, sizeof b); b[1] = 0xFF;
     return wr(d, 18, 1, b);
+}
+
+VD_COLD int d64_format(d64_t *d, const char *name, const char *id) { return format(d, name, id, 1); }
+VD_COLD int d64_format_blank(d64_t *d, const char *name, const char *id) { return id ? format(d, name, id, 0) : D64_E_NAME; }
+
+/* ---- validate ------------------------------------------------------------ */
+typedef struct { uint8_t b[2][D64_SECTOR]; uint8_t t0, s0, t1, s1; } vbam_t;   /* the BAM sectors (d64: one; d71: 18/0, 53/0; d81: 40/1, 40/2) */
+
+VD_COLD static uint8_t *vbam_at(vbam_t *v, uint8_t t, uint8_t s) { return t == v->t0 && s == v->s0 ? v->b[0] : v->b[1]; }
+
+VD_COLD static void vbam_use(d64_t *d, vbam_t *v, uint8_t t, uint8_t s)
+{
+    bamloc_t L;
+    if (t < 1 || t > bam_tracks(d) || s >= spt(d, t)) return;   /* 40-track images: tracks 36-40 are not in the BAM */
+    bam_loc(d, t, &L);
+    uint8_t *bits = vbam_at(v, L.bt, L.bs) + L.bo, *cnt = vbam_at(v, L.ct, L.cs) + L.co, bit = (uint8_t)(1 << (s % 8));
+    if (bits[s / 8] & bit) { bits[s / 8] &= (uint8_t)~bit; if (*cnt) (*cnt)--; }
+}
+
+/* mark a whole chain used; stops at an illegal link or after chain_limit sectors */
+VD_COLD static void vbam_chain(d64_t *d, vbam_t *v, uint8_t t, uint8_t s, uint8_t *tmp)
+{
+    for (uint16_t n = 0; t && n < chain_limit(d); n++) {
+        if (rd(d, t, s, tmp)) return;
+        vbam_use(d, v, t, s);
+        t = tmp[0]; s = tmp[1];
+    }
+}
+
+VD_COLD int d64_validate(d64_t *d)
+{
+    vbam_t v;
+    uint8_t tmp[D64_SECTOR], dirb[D64_SECTOR];
+    const int d81 = d->fmt == D64_FMT_D81, d71 = d->fmt == D64_FMT_D71;
+    const uint8_t dt = dir_track(d);
+    int r, deleted = 0;
+    if (!d->write || d->ro) return D64_E_RO;
+    v.t0 = dt; v.s0 = d81 ? 1 : 0; v.t1 = d81 ? 40 : 53; v.s1 = d81 ? 2 : 0;
+    if ((r = rd(d, v.t0, v.s0, v.b[0]))) return r;
+    if ((d81 || d71) && (r = rd(d, v.t1, v.s1, v.b[1]))) return r;
+    for (uint8_t t = 1; t <= bam_tracks(d); t++) {              /* everything free (d71 track 53 stays all used, as formatted) */
+        bamloc_t L;
+        bam_loc(d, t, &L);
+        uint8_t *bits = vbam_at(&v, L.bt, L.bs) + L.bo, n = (uint8_t)spt(d, t);
+        if (d71 && t == 53) { vbam_at(&v, L.ct, L.cs)[L.co] = 0; memset(bits, 0, 3); continue; }
+        vbam_at(&v, L.ct, L.cs)[L.co] = n;
+        memset(bits, 0, L.nb);
+        for (int k = 0; k < n; k++) bits[k / 8] |= (uint8_t)(1 << (k % 8));
+    }
+    vbam_use(d, &v, dt, 0);                                     /* header (d81: and the two BAM sectors) */
+    if (d81) { vbam_use(d, &v, 40, 1); vbam_use(d, &v, 40, 2); }
+    if ((r = rd(d, dt, 0, tmp))) return r;
+    uint8_t t = tmp[0] ? tmp[0] : dt, s = tmp[0] ? tmp[1] : dir_sector0(d);
+    for (int guard = 0; t && guard < 64; guard++) {             /* the directory and every file in it */
+        if ((r = rd(d, t, s, dirb))) return r;
+        vbam_use(d, &v, t, s);
+        int dirty = 0;
+        for (int i = 0; i < 8; i++) {
+            uint8_t *p = dirb + i * 32;
+            if (!p[2]) continue;
+            if (!(p[2] & 0x80)) { p[2] = 0; dirty = 1; deleted++; continue; }   /* unclosed: its chain is not trusted, the entry goes */
+            vbam_chain(d, &v, p[3], p[4], tmp);
+            if ((p[2] & 7) == 4) vbam_chain(d, &v, p[21], p[22], tmp);           /* REL side sectors (d81: from the super side sector) */
+        }
+        if (dirty && (r = wr(d, t, s, dirb))) return r;
+        t = dirb[0]; s = dirb[1];
+    }
+    if ((r = wr(d, v.t0, v.s0, v.b[0]))) return r;
+    if ((d81 || d71) && (r = wr(d, v.t1, v.s1, v.b[1]))) return r;
+    return deleted;
+}
+
+VD_COLD int d64_lock(d64_t *d, const char *pat, int lock)
+{
+    d64_dir_t it; d64_entry_t e;
+    int r = d64_dir_first(d, &it), n = 0;
+    if (!d->write || d->ro) return D64_E_RO;
+    if (r) return r;
+    while ((r = d64_dir_next(d, &it, &e)) > 0) {
+        if (!(e.type & 0x80) || !d64_match(e.name, pat)) continue;
+        uint8_t type = lock < 0 ? (uint8_t)(e.type ^ 0x40) : lock ? (uint8_t)(e.type | 0x40) : (uint8_t)(e.type & ~0x40);
+        if (type == e.type) continue;
+        if ((r = dir_update(d, e.dir_t, e.dir_s, e.dir_slot, NULL, type, -1))) return r;
+        n++;
+    }
+    return r < 0 ? r : n;
 }
 
 /* ---- BASIC listing ------------------------------------------------------ */
@@ -717,3 +1141,4 @@ VD_COLD size_t d64_sizeof_dir(void)   { return sizeof(d64_dir_t); }
 VD_COLD size_t d64_sizeof_wfile(void) { return sizeof(d64_wfile_t); }
 VD_COLD size_t d64_sizeof_file(void)  { return sizeof(d64_file_t); }
 VD_COLD size_t d64_sizeof_entry(void) { return sizeof(d64_entry_t); }
+VD_COLD size_t d64_sizeof_rel(void)   { return sizeof(d64_rel_t); }

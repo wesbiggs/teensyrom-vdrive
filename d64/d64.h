@@ -27,7 +27,9 @@ enum {
     D64_E_NAME = -5,     /* bad file name              -> DOS 33 */
     D64_E_RO = -6,       /* read-only disk             -> DOS 26 */
     D64_E_LOCKED = -7,   /* file is locked             -> DOS 26 */
-    D64_E_NOTFOUND = -8  /* file not found             -> DOS 62 */
+    D64_E_NOTFOUND = -8, /* file not found             -> DOS 62 */
+    D64_E_TYPE = -9,     /* file type mismatch         -> DOS 64 */
+    D64_E_TOOBIG = -10   /* REL file at its size limit -> DOS 52 */
 };
 
 enum { D64_FMT_D64 = 0, D64_FMT_D71 = 1, D64_FMT_D81 = 2 };
@@ -38,6 +40,7 @@ typedef struct {
     void       *ctx;
     uint8_t     tracks;          /* 35 or 40 (d64), 70 (d71), 80 (d81) */
     uint8_t     fmt;             /* D64_FMT_* */
+    uint8_t     ro;              /* write protect set from the C64 (W-1): writes fail as on a read-only image; d64_open clears it */
 } d64_t;
 
 typedef struct {
@@ -46,6 +49,7 @@ typedef struct {
     uint16_t blocks;
     char     name[17];           /* PETSCII, $A0 padding stripped, NUL terminated */
     uint8_t  dir_t, dir_s, dir_slot;   /* where this entry lives (for update/scratch) */
+    uint8_t  ss_t, ss_s, reclen;       /* REL: first side sector (D81: super side sector), record length */
 } d64_entry_t;
 
 typedef struct {
@@ -71,8 +75,29 @@ typedef struct {
     uint8_t  cur_t, cur_s;       /* sector being filled */
     uint16_t pos;                /* next free index in buf (2..256) */
     uint16_t blocks;             /* sectors allocated so far */
+    uint8_t  app_t, app_s;       /* append: the file's old last sector (0 = a new file), */
+    uint8_t  app_end, app_type;  /*   its old last-byte index and the old directory type byte, */
+    uint16_t app_blocks;         /*   and its old length: a failed append puts all of it back */
     uint8_t  buf[D64_SECTOR];
 } d64_wfile_t;
+
+/* Relative (REL) file: fixed-length records over a normal data chain, indexed by side sectors.
+ *   d64/d71: up to 6 side sectors (720 data blocks); each holds its number, the record length, the list of all 6 and
+ *            120 data-block pointers. d81: a super side sector (in the directory entry) points to up to 126 such groups.
+ * New records are $FF followed by zeros; growing the file fills its last block with whole empty records, as DOS does.
+ * One data block is cached in buf (written back by d64_rel_flush or when another block is needed). */
+typedef struct {
+    uint8_t  dir_t, dir_s, dir_slot;
+    uint8_t  ss_t, ss_s;         /* first side sector (d81: super side sector) */
+    uint8_t  lss_t, lss_s;       /* last side sector */
+    uint8_t  last_t, last_s;     /* last data block */
+    uint8_t  reclen;
+    uint8_t  last;               /* byte 1 of the last data block: index of the last used byte */
+    uint16_t nblocks, nss;       /* data blocks, side sectors (without the super side sector) */
+    uint16_t cur;                /* block index held in buf, 0xFFFF = none */
+    uint8_t  cur_t, cur_s, dirty;
+    uint8_t  buf[D64_SECTOR];
+} d64_rel_t;
 
 /* Memory-image backend (host tests / mock). Writable if data is. */
 typedef struct { uint8_t *data; size_t len; } d64_mem_t;
@@ -110,10 +135,33 @@ size_t d64_build_dir(d64_t *d, const char *pattern, uint8_t *out, size_t cap);
 int  d64_create(d64_t *d, const char *name, uint8_t type, int replace, d64_wfile_t *w);
 int  d64_write(d64_t *d, d64_wfile_t *w, const uint8_t *data, size_t n); /* n or <0; on D64_E_FULL the file is removed */
 int  d64_close_write(d64_t *d, d64_wfile_t *w);
+/* DOS ",A": reopen a file for writing at its end (the entry shows as unclosed until d64_close_write). D64_E_NOTFOUND,
+ * D64_E_TYPE for a REL file. On D64_E_FULL the file is put back as it was before the append. */
+int  d64_append(d64_t *d, const char *name, d64_wfile_t *w);
 int  d64_scratch_entry(d64_t *d, const d64_entry_t *e);          /* frees chain, marks entry deleted */
 int  d64_scratch(d64_t *d, const char *pattern);                 /* returns files scratched or <0 */
 int  d64_rename(d64_t *d, const char *oldname, const char *newname);
 int  d64_format(d64_t *d, const char *name, const char *id);     /* id==NULL: quick (BAM + directory only) */
+int  d64_format_blank(d64_t *d, const char *name, const char *id);   /* an all-zero new image: header, BAM, first directory sector only */
+/* DOS "V": rebuild the BAM from the directory, the data chains and REL side sectors; unclosed (splat) files are deleted.
+ * Returns the number of files deleted, or <0. A broken chain is followed as far as it is valid. */
+int  d64_validate(d64_t *d);
+/* lock flag (bit 6 of the type: no scratch) of every closed file matching pattern: lock=1 set, 0 clear, -1 toggle.
+ * Returns the number of files changed, or <0. */
+int  d64_lock(d64_t *d, const char *pattern, int lock);
+/* DOS "C:new=old1,old2,...": new file, type of the first source, holding the sources one after the other. Sources are
+ * patterns (first match); D64_E_NOTFOUND if one is missing, D64_E_EXISTS if newname is taken, D64_E_TYPE for a REL source
+ * among several. On failure nothing is left behind (D64_E_FULL included). */
+int  d64_copy(d64_t *d, const char *newname, const char *const *src, int nsrc);
+
+/* ---- REL files ---- */
+int      d64_rel_create(d64_t *d, const char *name, uint8_t reclen, d64_rel_t *r);   /* reclen 1..254; one block of empty records */
+int      d64_rel_open(d64_t *d, const d64_entry_t *e, d64_rel_t *r);
+uint32_t d64_rel_records(const d64_rel_t *r);
+int      d64_rel_extend(d64_t *d, d64_rel_t *r, uint32_t nrec);    /* make records 1..nrec exist; D64_E_TOOBIG / D64_E_FULL */
+int      d64_rel_get(d64_t *d, d64_rel_t *r, uint32_t off, uint8_t *b); /* byte at offset off of the record data */
+int      d64_rel_put(d64_t *d, d64_rel_t *r, uint32_t off, uint8_t b);
+int      d64_rel_flush(d64_t *d, d64_rel_t *r);
 
 /* ---- raw blocks (direct access: U1/U2, B-A, B-F) ----
  * Sector numbers are checked against the geometry: D64_E_IO for an illegal track/sector or a failed transfer. */
@@ -137,6 +185,7 @@ size_t d64_bas_end(d64_bas_t *b);                    /* length, or 0 if the buff
 
 size_t d64_sizeof_d64(void);  size_t d64_sizeof_mem(void);
 size_t d64_sizeof_dir(void);  size_t d64_sizeof_wfile(void);  size_t d64_sizeof_file(void);  size_t d64_sizeof_entry(void);
+size_t d64_sizeof_rel(void);
 
 #ifdef __cplusplus
 }

@@ -60,6 +60,7 @@ The examples here use `8` as an illustration only, and work the same on both SD 
 | `OPEN15,8,15,"CD:/GAMES/G.D81"` | Paths work: absolute (leading `/`) or relative, folders and an image in one go |
 | `OPEN15,8,15,"S:OLD*"` | Scratch |
 | `OPEN15,8,15,"N:NAME,ID"` | Format the mounted disk |
+| `OPEN15,8,15,"N:NAME.D64,ID"` | With nothing mounted: create a new blank image (`.D64`, `.D71` or `.D81`) in the current folder (or `N:/DIR/NAME.D64`), mount it and format it with disk name `NAME` (ID `00` if left out). Never replaces an existing file (63) |
 | `OPEN15,8,15,"R:NEW=OLD"` | Rename a file |
 | `OPEN15,8,15,"UI"` / `"UJ"` | Reset (status 73) |
 
@@ -93,20 +94,23 @@ The USB drive works the same. Any other device number uses the real IEC bus unto
 |---|---|
 | `LOAD` / `SAVE` | Fast path, ~255 B per mailbox transaction |
 | `VERIFY`, `OPEN` / `PRINT#` / `INPUT#` | Byte path |
-| File types | PRG, SEQ, USR |
+| File types | PRG, SEQ, USR, REL |
 | Wildcards | |
 | `@0:` replace | |
+| Append (`,A`) | `OPEN 2,8,2,"LOG,S,A"`; a disk full puts the file back as it was |
 | Error channel | |
 | Directory with `$:pattern` | |
+| REL files | `OPEN 2,8,2,"NAME,L,"+CHR$(len)`, `P` positioning, `PRINT#` one record, `INPUT#`/`GET#`; D64/D71 up to 720 blocks, D81 with super side sectors |
+| `V` validate | Rebuilds the BAM from the files (REL side sectors included); unclosed files are deleted, as on a real drive |
+| `L:name` lock, `W-1` / `W-0` write protect | CMD-drive syntax. `L` toggles the lock flag (`<`, the file cannot be scratched); `W-1` makes the mounted image read-only until `W-0` or the next mount |
+| Plain files on the card | With nothing mounted, `LOAD"GAME.PRG",8` (also `"GAME"`, `"GA*"`, `"DIR/GAME.PRG"`) loads the file itself; reading only |
+| `MD:NAME` / `RD:NAME` | With nothing mounted: make / remove (empty) folders on the card. With an image mounted (D81 partitions): not supported |
+| `C:new=old` copy | Also joins files: `C:new=a,b,c` (up to 8); the new file has the first source's type |
 
 ### Not yet supported
 | Feature | Notes |
 |---|---|
-| REL files | |
-| Append (`,A`) | |
-| `C` copy | |
-| `V` validate | Accepted, does nothing |
-| Plain `.prg` files loaded straight from the card | Mount an image instead |
+| Writing plain files to the card (`SAVE` with nothing mounted) | Mount an image (or create one with `N:NAME.D64,ID`) |
 | File names longer than 16 characters | Hidden in host listings |
 | Tape (device 1) | Its code space was reused by the patch |
 

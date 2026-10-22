@@ -3,6 +3,14 @@
 ## Unreleased
 
 ### Added
+- `MD:NAME` / `RD:NAME` make and remove (empty) folders on the card when nothing is mounted (CMD syntax; firmware 0.9.0.26, `docs/DESIGN.md` section 31). With an image mounted they answer 31 (no D81 partitions). Unit and glue host tests, not on hardware.
+- Plain files on the card: with nothing mounted, `LOAD"GAME.PRG",8` (also `"GAME"`, `"GA*"`, `"DIR/GAME.PRG"`) loads the file itself; reading only (firmware 0.9.0.25, `docs/DESIGN.md` section 30). Unit and glue host tests, not on hardware.
+- `N:NAME.D64,ID` (or `.D71` / `.D81`) with nothing mounted creates a new blank image in the current folder (or `N:/DIR/NAME.D64`), mounts it and formats it; an existing file is never replaced (firmware 0.9.0.24, `docs/DESIGN.md` section 29). Unit and glue host tests, not on hardware: time a D81 on a USB stick against the KERNAL mailbox wait.
+- `L:name` toggles the lock flag of matching files, `W-1` / `W-0` turn write protection of the mounted image on / off (CMD drive syntax; firmware 0.9.0.23, `docs/DESIGN.md` section 28). Unit tests only, not in VICE or on hardware.
+- `V` (validate) rebuilds the BAM from the files, REL side sectors included, and deletes unclosed files; it used to do nothing (firmware 0.9.0.22, `docs/DESIGN.md` section 27). Byte-identical to `c1541 -validate` in the unit tests; not in VICE or on hardware.
+- Append mode: `OPEN n,d,n,"NAME,A"` (or `"NAME,S,A"`) adds to the end of an existing file; a disk full puts the file back as it was (firmware 0.9.0.21, `docs/DESIGN.md` section 26). Unit tests only, not in VICE or on hardware.
+- REL (relative) files: `OPEN n,d,n,"NAME,L,"+CHR$(len)`, `P` positioning, one record per `PRINT#`, reads up to the last non-zero byte; D64/D71 up to 720 blocks, D81 with super side sectors; `C` and `S` handle them (firmware 0.9.0.20, `docs/DESIGN.md` section 25). Unit tests only, not in VICE or on hardware.
+- `C:new=old[,old2...]` copies a file on the mounted image, or joins up to 8 files into one (firmware 0.9.0.19, `docs/DESIGN.md` section 24). A failed copy leaves the disk unchanged. Unit tests only, not in VICE or on hardware.
 - `VDrive Config.prg` (`util/vdconfig.bas`, built by `make util`; firmware 0.9.0.18, `docs/DESIGN.md` section 23): a text-screen BASIC utility to
   add / edit / delete / reorder the entries of `/vdrive-config.txt` for the SD and USB drives, show what each drive has mounted, and mount
   any image (from the list, or by browsing the card). New channel names `"!CONFIG"` (read, `,W` write) and `"!STATE"` give a C64 program the

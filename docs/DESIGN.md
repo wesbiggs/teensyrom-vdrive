@@ -273,3 +273,70 @@ Text crosses as PETSCII with CR line ends; the glue converts to ASCII with LF (a
 **Things this had to respect.** Closing channel 15 closes every channel of the unit (as on a real drive), so the program keeps one command channel open per drive (logical files 15 and 14) for the whole run and only closes them at the end. `FOR` always runs its body once (all loops that can be empty are guarded). Variables are distinct in their first two characters, and the tokenised program was checked for keywords hiding in names.
 **Tests.** `tests/test_vdconfig.py` runs the program in `tests/basic_interp.py`, a small BASIC V2 interpreter (screen with cursor addressing and scrolling detection, scripted keys, `GET#` of a 0 byte giving `""`, `FOR` semantics, `RETURN` dropping FORs), against a model of the drive that follows `vdrive.c`. That checks the program's logic, screen layout and keystrokes, **not** the real C64 BASIC or timing; `make test` runs it. The channel code itself is tested in `tests/test_vio.py` (`test_host_text_files`) and `tests/fw_host` (real files, PETSCII/ASCII, chunking).
 
+## 24. Copy: `C:new=old[,old2...]` (0.9.0.19; done on the host, not in VICE or on hardware)
+
+`OPEN 15,8,15,"C:NEW=OLD"` copies a file on the mounted image; `"C:NEW=A,B,C"` joins up to 8 files into one, byte after byte (two PRGs joined keep the second load address in the data, as on a real drive). Drive prefixes (`C0:NEW=0:OLD`) are accepted and ignored, and each source is a pattern (its first match). The new file gets the type of the first source; locked flags are not copied.
+
+`d64_copy()` in `d64.c` checks every source before anything is written (`62` and no new file if one is missing; `63` if the new name is taken), creates the new file and streams the sources through a 64-byte buffer. A disk full (`72`) or a broken source chain removes the partial copy, so a failed `C` leaves the disk as it was. The second lookup of each source skips the new file's own entry, which could otherwise match a source pattern (it can take a freed directory slot ahead of the source). Errors: `34` no `=` or an empty name, `33` a wildcard in the new name or more than 8 sources, `31` for the dual-drive forms (`C1=0`, whole-disk duplicate), `64` for a REL source among several (a single REL source is copied record for record, see 25).
+
+**Not done:** copying between the two units (`VDCOPY` does that, through the C64) or from the host file system.
+
+## 25. REL files (0.9.0.20; done on the host, not in VICE or on hardware)
+
+Relative files hold fixed-length records (1-254 bytes) over an ordinary data chain, with side sectors that index the data blocks so a record can be reached without walking the chain.
+
+| On the C64 | Here |
+|---|---|
+| `OPEN 2,8,2,"NAME,L,"+CHR$(len)` | creates the file (one data block of empty records + side sector 0; on a D81 also the super side sector), or opens it if it exists. The length byte is taken raw, so `CHR$(44)` (",") or `CHR$(82)` ("R") are lengths, not syntax. A length that differs from the file's: `50`. `,L` on a file of another type: `64`. Without a length and no such file: `62`. Length 255: `33`. |
+| `OPEN 2,8,2,"NAME"` | an existing REL file opens as REL whatever mode is asked for. |
+| `PRINT#15,"P"CHR$(96+ch)CHR$(lo)CHR$(hi)CHR$(pos)` | record `lo+256*hi` and byte `pos`, both from 1 (0 means 1); `hi` and `pos` may be left out. Handled before the command's CR/LF are stripped, since the bytes are binary (13 is a record number like any other); bytes after the fifth are ignored. A record past the end answers `50,RECORD NOT PRESENT` (a write then makes it); `pos` past the record length: `51`. |
+| `PRINT#2,...` | one LISTEN session = one record: bytes go in from the position, the rest of the record is zero-filled at `UNLSN`, then the next record is current. More bytes than the record holds: `51,OVERFLOW IN RECORD`, the excess is dropped. Writing past the end grows the file to that record, the records in between empty (`$FF` + zeros), and the last block is filled with whole empty records, as DOS does. |
+| `INPUT#2` / `GET#2` | a read sends the record from the position up to its last non-zero byte (at least one byte, so an empty record reads as `CHR$(255)`), with EOI on the last, and moves to the next record. Reading past the last record: `50`, and the read times out. |
+| `C:NEW=OLD` | a REL source is copied block for block (same record length, same records). Joining a REL file with others: `64`. |
+| `S:NAME` | frees the data blocks and the side-sector chain (on a D81 starting at the super side sector). |
+
+**Layout** (`d64_rel_*` in `d64.c`): directory entry type `$84`, bytes 21/22 the first side sector (D81: the super side sector), byte 23 the record length, the block count includes the side sectors (and the super side sector). A side sector holds a link, its number in its group (0-5), the record length, the t/s of all 6 side sectors of its group, and 120 data-block pointers; the last one's byte 1 is the index of its last used byte. D64 and D71 files have one group (720 data blocks, then `52,FILE TOO LARGE`). A D81 file has a super side sector (link to the first side sector, `$FE`, then up to 126 group pointers) and its side sectors are linked across groups. `tests/test_rel.py` walks every file the way a drive would (pointers equal the data chain, group lists, block count, record fill) and `c1541 -validate` must leave the BAM unchanged (it re-allocates side sectors, checked by hand).
+
+**Memory:** a REL channel caches one data block (`vd_rel_t` fits in the existing channel union, so `vio_t` does not grow). A record that spans two blocks is read and written through that one buffer; sequential blocks follow the chain link, others are found through the side sectors (two sector reads; three on a D81).
+
+**Not done:** the same REL file open on two channels at once does not share the cached block (the second channel can see stale data until the first writes it back, at the end of each record); a `LOAD` of a REL file sends its first record only. Not checked against a REL file written by a real drive.
+
+## 26. Append: `OPEN n,d,n,"NAME,A"` (0.9.0.21; done on the host, not in VICE or on hardware)
+
+`,A` (with or without a type, `"LOG,S,A"`, `"0:LOG,A"`) reopens an existing file for writing at its end: `d64_append()` walks the chain to the last sector, loads it into the write buffer with the cursor after its last byte, and marks the directory entry unclosed (the splat a real drive shows while the file is open); `CLOSE` closes it with the new block count. Missing file: `62`; a REL file: `64`.
+
+The write structure remembers the old last sector, its last-byte index, the old type byte and block count. On a disk full (`72`) during the append, `abort_write()` frees only the sectors added since, restores the old last sector's link and length and the directory entry, so the file is exactly what it was (BAM and directory byte-identical; tested with 3 sectors and with none left). A new file is still removed on a disk full, as before.
+
+## 27. Validate: `V` (0.9.0.22; done on the host, not in VICE or on hardware)
+
+`V` (`V0`) used to be accepted and ignored. `d64_validate()` now rebuilds the BAM the way DOS does: every sector free (D71 track 53 stays all used, as `N` formats it), then the header (D81: and the two BAM sectors), the directory chain, the data chain of every closed file and the side-sector chain of every REL file (on a D81 from the super side sector) are marked used. An unclosed ("splat") entry is deleted without following its chain, so a file left open by a crash stops holding blocks. Sectors marked used by `B-A` but not in any file become free again. The BAM sectors are held in memory (two buffers: D64 18/0; D71 18/0 + 53/0; D81 40/1 + 40/2) and written once at the end; the directory sectors are rewritten only where an entry was deleted. A broken chain is followed as long as its links are legal (at most a disk's worth of sectors). Tracks 36-40 of a 40-track image are not in the standard BAM and are left alone. Read-only image: `26`.
+
+Tested against `c1541 -validate` on D64, D71 and D81 holding a PRG, a SEQ, a REL file (with a second side sector), a scratched entry and a splat, after scrambling the BAM bytes: the BAM sectors come out byte-identical.
+
+## 28. Lock and write protect from the C64: `L:name`, `W-1` / `W-0` (0.9.0.23; done on the host, not in VICE or on hardware)
+
+Commodore DOS has no command for either (on a 1541 the lock flag needs a disk editor, write protect a notch tab). The CMD drives' syntax is the one software knows, so it is used here:
+
+- `L[n]:pattern` toggles the lock flag (bit 6 of the type byte, `<` in the listing) of every closed file matching the pattern (`d64_lock`). `S` already skips locked files. No match: `62`; no name: `34`.
+- `W-1` sets `d64_t.ro`, and every write path (`wr()` and the early checks in create / scratch / rename / format / copy / validate / block alloc / lock) then answers `26,WRITE PROTECT ON` as on a read-only image; reading is unaffected. `W-0` clears it, unless the image itself is read-only (`26`). It is not stored anywhere: `d64_open` clears it, so mounting an image (the same one again included) starts unprotected.
+
+## 29. New images: `N:NAME.D64,ID` with nothing mounted (0.9.0.24; host and glue tests, not on hardware)
+
+The agreed design from CLAUDE.md "next steps": with no image mounted, `N:` names a new image file instead of a disk. `N[0]:[path/]NAME.D64[,ID]` (or `.D71` / `.D81`) walks the folders of the path (a leading `/` = the card's root, as in `CD:`), asks the host to create the file, mounts it and writes a blank disk: header and disk name `NAME` (the file name without the suffix, at most 16 characters), ID (`00` when none is given), BAM and the first directory sector. With an image mounted, `N:` formats it as before, even with a `.D64` in the name.
+
+- Host callback `vd_host_t.create(ctx, unit, name, size, &disk)`: 174,848 / 349,696 / 819,200 bytes, all zero, in the current folder, then mounted like `mount()` (so the `/.vdrive` sidecar remembers it). An existing file (or folder) of that name: `63`, nothing touched. The glue (`VD_Create`) probes with `exists()` first (FILE_WRITE would create or append), writes 4 KB zero blocks from a heap buffer, removes the file again if a write fails (`72`), and answers `26` if the card refuses the open.
+- `d64_format_blank()` is `d64_format()` without the pass that zeroes every sector: the file is already zero, and writing it twice would double the time. The whole command still has to finish inside the KERNAL's mailbox wait (`vcall`, ~65,536 polls, about 1.6 s): a D64 is about what a full `N:` writes (verified on hardware), a D81 is 800 KB, which on a slow USB stick may not make it. **If it does not**, the KERNAL gives up on that one transaction (treats it as "not mine") but the Teensy finishes the job; the status channel then reports the result. To be checked on hardware.
+- Errors: `33` no image suffix, a wildcard, an empty or over-long disk name, an ID that is not 2 characters, a path through an image; folder errors as in `CD:`.
+
+Tested in `tests/test_vio.py` (all three formats, `c1541 -validate` leaves each new image unchanged, writable at once, folders, default ID, never replacing) and in the glue host test (`N:MADE.D81` on the stub SD card, read back by `c1541`; a folder path).
+
+## 30. Plain files on the card (0.9.0.25; host and glue tests, not on hardware)
+
+With nothing mounted, the host listing already showed every file of the folder as `PRG`; now a read opens it. `LOAD"GAME.PRG",8` (and `OPEN 2,8,2,"GAME.PRG"`) reads the file itself: the exact name, else `NAME.PRG` when the name has no dot, and a pattern (`"GA*"`) takes the first file in the folder listing that is not a folder or an image. `"DIR/GAME.PRG"` and `"/DIR/GAME.PRG"` walk the folders first (a path through an image keeps meaning a file inside the image); the folder stays selected afterwards, as for a file loaded through an image path.
+
+- Host callbacks `plain_open` (0 / `62`; size out), `plain_read`, `plain_close` (named apart from the `hf_*` hooks of the `!CONFIG` / `!STATE` text channels); the glue keeps one `File` per unit (`VD_PlainOpen` opens with `FILE_READ`, so nothing is created, and refuses folders). Channel mode 9 (`vd_plain_t`, fits the channel union) fetches 256 bytes at a time and flags EOI from the file size. One plain file per unit at a time (a second: `70`). Reading only: `SAVE` / `,W` with nothing mounted still answer `74`.
+- A pattern is resolved through the host listing callbacks, which share the glue's directory handle with a host listing channel: a `LOAD"PAT*"` while a host directory listing is open on the same unit would end that listing. The KERNAL reads a listing to the end before anything else, so this only matters for programs that interleave the two.
+
+## 31. Folders on the card: `MD:NAME`, `RD:NAME` (0.9.0.26; host and glue tests, not on hardware)
+
+CMD syntax, with nothing mounted: `MD[n]:NAME` makes a folder in the current one (`63` if the name is taken by a file or folder), `RD[n]:NAME` removes a folder if it is empty (`62` no such folder, or a file; `63` not empty, nothing removed). Names may not hold `/ * ? : = , "` or be `.`, `..`, `_` (`33`); no name: `34`. Host callbacks `mkdir` / `rmdir`; the glue checks with `exists()` / a directory open first, since the SD and USB `mkdir`/`rmdir` only say yes or no (a refusal there answers `26`). With an image mounted both answer `31`: on a D81 they would make and remove partitions (1581 sub-directories), which are not supported.

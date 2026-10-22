@@ -293,6 +293,33 @@ int main(int argc, char **argv)
     cmd15("UI"); check("UI answers 73", status15().rfind("73,", 0) == 0);
     cmd15("CD:/"); status15();
 
+    // ---- plain files on the card with nothing mounted ----
+    { FILE *f = fopen((SD.root / "plain.prg").c_str(), "wb"); fputs("\x01\x08" "plain program", f); fclose(f); }
+    check("LOAD\"PLAIN.PRG\" reads a plain file from the card", fast_load(8, "PLAIN.PRG", &rc) == std::string("\x01\x08") + "plain program" && rc == 0 && !vdUnit[0].mounted);
+    check("... LOAD\"PLAIN\" finds it too, and the file is closed afterwards", fast_load(8, "PLAIN", &rc).size() == 15 && rc == 0 && !vdUnit[0].plain);
+    fast_load(8, "NOSUCH", &rc); check("... a missing plain file is 62", rc == 4 && status15().rfind("62,", 0) == 0);
+
+    // ---- MD: / RD: folders on the card ----
+    cmd15("MD:NEWDIR"); check("MD:NEWDIR makes a folder on the card", status15() == "00, OK,00,00\r" && fs_::is_directory(SD.root / "newdir"));
+    cmd15("MD:NEWDIR"); check("... MD on an existing name is 63", status15().rfind("63,", 0) == 0);
+    { FILE *f = fopen((SD.root / "newdir" / "x.prg").c_str(), "wb"); fputs("x", f); fclose(f); }
+    cmd15("RD:NEWDIR"); check("... RD leaves a folder that is not empty alone (63)", status15().rfind("63,", 0) == 0 && fs_::exists(SD.root / "newdir" / "x.prg"));
+    fs_::remove(SD.root / "newdir" / "x.prg");
+    cmd15("RD:NEWDIR"); check("... RD removes it once empty", status15() == "00, OK,00,00\r" && !fs_::exists(SD.root / "newdir"));
+
+    // ---- N:NAME.D64,ID with nothing mounted: a new image on the card, mounted and formatted ----
+    cmd15("N:MADE.D81,MD");
+    check("N:MADE.D81 creates, mounts and formats a new image", status15() == "00, OK,00,00\r" && vdUnit[0].mounted && vdUnit[0].d.fmt == D64_FMT_D81
+          && fs_::file_size(SD.root / "made.d81") == 819200);
+    d = fast_load(8, "$");
+    check("... its listing: disk name MADE, ID MD, 3160 blocks free", d.find("MADE") != std::string::npos && d.find(" MD 3D") != std::string::npos
+          && d.find("\x58\x0c" "BLOCKS FREE") != std::string::npos);
+    check("... the sidecar remembers it", (VD_Flush(&vdUnit[0]), fs_::exists(SD.root / ".vdrive")));
+    cmd15("CD:/"); status15();
+    cmd15("N:MADE.D81,XX"); check("... and N: never replaces an existing file", status15().rfind("63,FILE EXISTS", 0) == 0 && !vdUnit[0].mounted);
+    cmd15("N:/SUB/NEW2.D64"); check("N: with a folder path creates the image there", status15() == "00, OK,00,00\r" && fs_::file_size(SD.resolve("/sub/new2.d64")) == 174848);
+    cmd15("CD:/"); status15();
+
     // ---- bus scan: the fake KERNAL finds real drives at 8 and 9 and the glue hands out 10 / 11 on the first transaction ----
     g_real_drives = {8, 9};
     VDrive_PreStart();

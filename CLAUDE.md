@@ -67,6 +67,15 @@ Firmware integration and usage: `firmware/README.md`.
   window byte twice in a row until two reads agree, and reads back window writes. `VD_TRACE` is off by default (it prints right after the answer, but was not the cause).
   Keep new bus-handler code as short as possible and never add work before `DataPortWriteWait`.
 * 0.9.0.16: direct sector access (`OPEN n,d,n,"#"`, `U1`/`U2`/`UA`/`UB`, `B-R`/`B-W` as aliases, `B-P`, `B-A`, `B-F`; docs/DESIGN.md 21). Unit tests (`tests/test_vdrive.py`) and `BLKTEST` in VICE pass; **not on hardware yet**. No `M-R`/`M-W`/`M-E`.
+* 0.9.0.19: `C:new=old[,old2...]` copy / join on the mounted image (`d64_copy`, docs/DESIGN.md 24). Unit tests only (no VICE run in the cloud session that built it); **not on hardware yet**.
+* 0.9.0.20: REL files (`,L,`+length, `P`, one record per `PRINT#`, side sectors; D81 super side sectors; `C` and `S` handle them; docs/DESIGN.md 25, `tests/test_rel.py`). Unit tests only; **not in VICE or on hardware yet**.
+* 0.9.0.21: append (`,A`; `d64_append`, a disk full restores the file; docs/DESIGN.md 26). Unit tests only.
+* 0.9.0.22: `V`alidate rebuilds the BAM (`d64_validate`, splats deleted, REL side sectors kept; byte-identical to `c1541 -validate`; docs/DESIGN.md 27). Unit tests only.
+* 0.9.0.23: `L:name` (toggle lock) and `W-1`/`W-0` (write protect, `d64_t.ro`), CMD syntax (docs/DESIGN.md 28). Unit tests only.
+* 0.9.0.24: new images, `N:NAME.D64,ID` (or `.D71`/`.D81`) with nothing mounted (host callback `create`, glue `VD_Create`, `d64_format_blank`; docs/DESIGN.md 29). Unit and glue host tests.
+* 0.9.0.25: plain files on the card with nothing mounted (`LOAD"GAME.PRG"`, `"GAME"`, patterns, folder paths; host callbacks `plain_open`/`plain_read`/`plain_close`, channel mode 9; docs/DESIGN.md 30). Reading only. Unit and glue host tests.
+* 0.9.0.23: plain files on the card with nothing mounted (`LOAD"GAME.PRG"`, `"GAME"`, patterns, folder paths; host callbacks `hopen`/`hread`/`hclose`, channel mode 7; docs/DESIGN.md 28). Reading only. Unit and glue host tests.
+* 0.9.0.26: `MD:`/`RD:` folders on the card with nothing mounted (host `mkdir`/`rmdir`; docs/DESIGN.md 31). Unit and glue host tests.
 * Known open risks: C128 not supported (see above); tape (device 1) intentionally broken (its code space was reclaimed).
 
 ## Layout
@@ -130,13 +139,12 @@ build/          generated, git-ignored (kernal images derived from the ROM, libd
 ## Next steps
 1. **Finish bring-up**: the "Not yet checked on hardware" list under Status (bus scan with a real drive, `.d81`/`.d71`, `STATUS`, IRQ/STOP-key during loads). The core path has passed, so the items below can
    start once the owner agrees; mind that the patch changes under any build in progress.
-2. **Create new images** (agreed design, not started): with nothing mounted, `N:FILE.D64,ID` (or `.D71`/`.D81`) creates a blank image on the host file
-   system and mounts it (glue + `vdrive.c` `N` command; today `N` only formats the mounted disk, and nothing creates an image file). Remembering mounts
-   in a `/.vdrive` sidecar is done (see Status).
+2. **Create new images**: done in 0.9.0.24 (`N:FILE.D64,ID` with nothing mounted; docs/DESIGN.md 29), not on hardware yet: check the time a D81 takes
+   on a USB stick against the KERNAL's ~1.6 s mailbox wait.
 3. **BASIC utility** (~40 lines, kept as `.bas` text and converted with `petcat` in the Makefile): list the current directory, pick by number (mount an
    image, open a folder, `..`), "new image", "unmount", and show the device numbers (`PEEK(56854)`). Much of what it would do is now one `LOAD"$path"`.
 4. **TeensyROM menu integration** (last, only if the BASIC utility feels clumsy): a `Shift-D` hotkey like the existing `Shift-K`
    (KERNAL image) / `Shift-R` (REU) that sets the highlighted file as the disk for device 8/9. Needs changes to the 6502 menu
    (`Source/C64/MainMenuCRT`, ACME) and regenerated headers, and probably an EEPROM map extension that upstream must agree to.
-5. Smaller follow-ups: append mode (`,A`), `V`alidate, REL files, D81 sub-directories/partitions, plain `.prg` loading straight from the card, file names > 16
-   characters in host listings, `MD:`/`RD:`, a scan that re-runs after a device is switched on later.
+5. Smaller follow-ups: D81 sub-directories/partitions, writing plain files to the card, file names > 16
+   characters in host listings, a scan that re-runs after a device is switched on later.

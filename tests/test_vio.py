@@ -168,13 +168,20 @@ class HostStruct(ctypes.Structure):
     SAVEDEV = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_uint8, ctypes.c_uint8)
     PUSH = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_int)
     POP = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.POINTER(ctypes.c_void_p))
+    CREATE = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint32, ctypes.POINTER(ctypes.c_void_p))
+    HOPEN = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_char_p, ctypes.POINTER(ctypes.c_uint32))
+    HREAD = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_uint16)
+    HCLOSE = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_int)
+    MKDIR = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_char_p)
     HFOPEN = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int)
     HFREAD = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_int)
     HFWRITE = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_int)
     HFCLOSE = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_int, ctypes.c_int)
     _fields_ = [("ctx", ctypes.c_void_p), ("mount", MOUNT), ("unmount", UNMOUNT), ("chdir", CHDIR),
                 ("dir_open", DIROPEN), ("dir_next", DIRNEXT), ("save_devices", SAVEDEV), ("push", PUSH), ("pop", POP),
-                ("hf_open", HFOPEN), ("hf_read", HFREAD), ("hf_write", HFWRITE), ("hf_close", HFCLOSE)]
+                ("hf_open", HFOPEN), ("hf_read", HFREAD), ("hf_write", HFWRITE), ("hf_close", HFCLOSE),
+                ("create", CREATE), ("plain_open", HOPEN), ("plain_read", HREAD), ("plain_close", HCLOSE),
+                ("mkdir", MKDIR), ("rmdir", MKDIR)]
 
 
 class HostTests(unittest.TestCase):
@@ -236,12 +243,165 @@ class HostTests(unittest.TestCase):
             size[0] = 0 if p.is_dir() else p.stat().st_size
             is_dir[0] = int(p.is_dir()); return 1
 
+        def create(ctx, unit, name, size, out):
+            p = self.cwd / name.decode().lower()
+            if p.exists(): return 63
+            p.write_bytes(bytes(size))
+            self.created.append(p)
+            return mount(ctx, unit, name, out)
+
+        self.hfile = None                     # [bytes, position] of the open plain file
+        self.hopens = []
+
+        def hopen(ctx, unit, name, size):
+            p = self.cwd / name.decode().lower()
+            self.hopens.append(name)
+            if not p.is_file(): return 62
+            self.hfile = [p.read_bytes(), 0]; size[0] = len(self.hfile[0]); return 0
+
+        def hread(ctx, unit, buf, n):
+            data, pos = self.hfile
+            part = data[pos: pos + n]; self.hfile[1] += len(part)
+            ctypes.memmove(buf, part, len(part)); return len(part)
+
+        def hclose(ctx, unit): self.hfile = None
+
+        def mkdir(ctx, unit, name):
+            q = self.cwd / name.decode().lower()
+            if q.exists(): return 63
+            q.mkdir(); return 0
+
+        def rmdir(ctx, unit, name):
+            q = self.cwd / name.decode().lower()
+            if not q.is_dir(): return 62
+            if any(q.iterdir()): return 63
+            q.rmdir(); return 0
+
+        self.created = []
         self.cb = HostStruct(None, HostStruct.MOUNT(mount), HostStruct.UNMOUNT(unmount), HostStruct.CHDIR(chdir),
                              HostStruct.DIROPEN(dir_open), HostStruct.DIRNEXT(dir_next), HostStruct.SAVEDEV(lambda c, a, b: None),
-                             HostStruct.PUSH(push), HostStruct.POP(pop))
+                             HostStruct.PUSH(push), HostStruct.POP(pop), create=HostStruct.CREATE(create),
+                             plain_open=HostStruct.HOPEN(hopen), plain_read=HostStruct.HREAD(hread), plain_close=HostStruct.HCLOSE(hclose),
+                             mkdir=HostStruct.MKDIR(mkdir), rmdir=HostStruct.MKDIR(rmdir))
         LIB.vdrive_set_host(self.io.v, ctypes.byref(self.cb))
 
     def tearDown(self): shutil.rmtree(self.tmp)
+
+    def created_image(self, path):
+        """the mounted Disk's bytes as the host file (the mock keeps images in memory) and c1541's view of it"""
+        path.write_bytes(self.cur[0].dump())
+        before = path.read_bytes()
+        r = subprocess.run(["c1541", "-attach", str(path), "-list", "-validate"], capture_output=True, text=True, encoding="latin1")
+        self.assertEqual(path.read_bytes(), before, "c1541 -validate changed the new image")
+        return r.stdout.lower()
+
+    def test_new_image_with_nothing_mounted(self):
+        for name, size, free in ((b"NEW.D64", 174848, 664), (b"TWO.D71", 349696, 1328), (b"BIG.D81", 819200, 3160)):
+            self.cmd15(b"CD:/"); self.status()
+            self.cmd15(b"N:" + name + b",AB")
+            self.assertEqual(self.status(), "00, OK,00,00\r", name)
+            p = self.tmp / name.decode().lower()
+            self.assertEqual(p.stat().st_size, size)
+            self.assertEqual(self.cur[0].header(), (name[:-4], b"AB", b"3D" if size == 819200 else b"2A"))
+            self.assertEqual(self.cur[0].free(), free)
+            out = self.created_image(p)
+            self.assertRegex(out, '"%s +" ab' % name[:-4].decode().lower())
+            self.assertIn("%d blocks free" % free, out)
+            self.io.fast_save(8, b"FILE", 0x0801, b"hello")       # mounted and writable at once
+            self.assertEqual(self.io.fast_load(8, b"FILE")[2], b"hello")
+
+    def test_new_image_never_replaces_and_checks_its_name(self):
+        before = (self.tmp / "a.d64").read_bytes()
+        self.cmd15(b"N:A.D64,XX")
+        self.assertEqual(self.status(), "63,FILE EXISTS,00,00\r")
+        self.assertEqual((self.tmp / "a.d64").read_bytes(), before)
+        for bad in (b"N:NOEXT,XX", b"N:X*.D64,XX", b"N:.D64,XX", b"N:X.D64,TOOLONG", b"N:ABCDEFGHIJKLMNOPQ.D64"):
+            self.cmd15(bad)
+            self.assertTrue(self.status().startswith("33,"), bad)
+        self.cmd15(b"N:A.D64/X.D64,XX")                           # a folder path, not a path into an image
+        self.assertTrue(self.status().startswith("33,"))
+        self.assertEqual(self.created, [])
+
+    def test_new_image_in_a_folder_and_default_id(self):
+        self.cmd15(b"N0:SUB/MADE.D64")
+        self.assertEqual(self.status(), "00, OK,00,00\r")
+        self.assertTrue((self.tmp / "sub" / "made.d64").exists())
+        self.assertEqual(self.cur[0].header()[:2], (b"MADE", b"00"))
+        self.cmd15(b"CD:_"); self.status()                        # leave the image: still in SUB
+        self.cmd15(b"N:/ROOT.D64,RT")                             # a leading "/" means the card's root
+        self.assertEqual(self.status(), "00, OK,00,00\r")
+        self.assertTrue((self.tmp / "root.d64").exists())
+
+    def test_plain_files_from_the_card(self):
+        prog = b"\x01\x08" + bytes(range(256)) * 3 + b"end"                  # 773 bytes: four host reads
+        (self.tmp / "game.prg").write_bytes(prog)
+        (self.tmp / "sub" / "tool.prg").write_bytes(b"\x00\xc0tool")
+        for name in (b"GAME.PRG", b"GAME", b"GA*", b"G?ME.PRG"):
+            rc, addr, data = self.io.fast_load(8, name)
+            self.assertEqual((rc, addr, data), (0, 0x0801, prog[2:]), name)
+            self.assertIsNone(self.hfile, name)                               # closed again
+        self.assertEqual(self.cur, None)                                      # nothing got mounted
+        self.assertEqual(self.io.fast_load(8, b"SUB/TOOL.PRG")[1:], (0xC000, b"tool"))   # a folder on the way stays selected
+        self.assertEqual(self.io.fast_load(8, b"TOOL")[1:], (0xC000, b"tool"))
+        self.cmd15(b"CD:/"); self.status()
+        self.assertEqual(self.io.fast_load(8, b"/SUB/TOOL.PRG")[1:], (0xC000, b"tool"))
+
+    def test_plain_file_errors_and_byte_path(self):
+        (self.tmp / "game.prg").write_bytes(b"\x01\x08abc")
+        self.assertEqual(self.io.fast_load(8, b"NOPE")[0], 4)                # not found
+        self.assertEqual(self.status(), "62,FILE NOT FOUND,00,00\r")
+        self.assertEqual(self.io.fast_load(8, b"SUB")[0], 4)                 # a folder is not a file
+        self.hopens.clear()
+        self.assertEqual(self.io.fast_load(8, b"A*")[0], 4)                  # patterns skip images (A.D64)
+        self.assertEqual(self.hopens, [])
+        def bus(c, a=0):
+            _, d, st = self.io.call(c, a); return d, st
+        bus(LISTEN, 8); bus(SECOND, 0xF2)
+        for b in b"GAME.PRG": bus(CIOUT, b)
+        bus(UNLSN)
+        bus(LISTEN, 8); bus(SECOND, 0xF3)
+        for b in b"README.PRG": bus(CIOUT, b)
+        bus(UNLSN)
+        self.assertEqual(self.status(), "70,NO CHANNEL,00,00\r")             # one plain file at a time
+        bus(TALK, 8); bus(TKSA, 0x62)
+        got = []
+        while True:
+            b, s_ = bus(ACPTR); got.append(b)
+            if s_ & 0x40: break
+        bus(UNTLK)
+        self.assertEqual(bytes(got), b"\x01\x08abc")
+        bus(LISTEN, 8); bus(SECOND, 0xE2); bus(UNLSN)
+        self.assertIsNone(self.hfile)
+        self.io.fast_save(8, b"NEW.PRG", 0x0801, b"x")                         # writing plain files is not supported
+        self.assertTrue(self.status().startswith("74,"))
+
+    def test_md_and_rd_make_and_remove_folders(self):
+        self.cmd15(b"MD:GAMES")
+        self.assertEqual(self.status(), "00, OK,00,00\r")
+        self.assertTrue((self.tmp / "games").is_dir())
+        self.cmd15(b"MD:GAMES"); self.assertEqual(self.status(), "63,FILE EXISTS,00,00\r")
+        self.cmd15(b"CD:GAMES"); self.status()
+        self.cmd15(b"N:NEW.D64,NW"); self.status()                # something in it
+        self.cmd15(b"CD:_"); self.cmd15(b"CD:.."); self.status()
+        self.cmd15(b"RD:GAMES"); self.assertEqual(self.status(), "63,FILE EXISTS,00,00\r")   # not empty: left alone
+        (self.tmp / "games" / "new.d64").unlink()
+        self.cmd15(b"RD0:GAMES"); self.assertEqual(self.status(), "00, OK,00,00\r")
+        self.assertFalse((self.tmp / "games").exists())
+        self.cmd15(b"RD:GAMES"); self.assertEqual(self.status(), "62,FILE NOT FOUND,00,00\r")
+        self.cmd15(b"RD:README.PRG"); self.assertEqual(self.status(), "62,FILE NOT FOUND,00,00\r")   # a file is not a folder
+        for bad in (b"MD:A/B", b"MD:..", b"MD:X*"):
+            self.cmd15(bad); self.assertTrue(self.status().startswith("33,"), bad)
+        self.cmd15(b"MD:"); self.assertTrue(self.status().startswith("34,"))
+        self.cmd15(b"CD:A.D64"); self.status()
+        self.cmd15(b"MD:PART"); self.assertTrue(self.status().startswith("31,"))   # D81 partitions / sub-directories: not supported
+        self.assertFalse((self.tmp / "part").exists())
+
+    def test_n_with_an_image_mounted_still_formats_it(self):
+        self.cmd15(b"CD:A.D64"); self.status()
+        self.cmd15(b"N:FRESH.D64,ZZ")                             # a disk name, not a new file
+        self.assertEqual(self.status(), "00, OK,00,00\r")
+        self.assertEqual(self.created, [])
+        self.assertEqual(self.cur[0].header()[:2], (b"FRESH.D64", b"ZZ"))
 
     def cmd15(self, text):
         self.io.call(LISTEN, 8); self.io.call(SECOND, 0x6F)
