@@ -144,6 +144,25 @@ serves every setup. Build-time defaults of the automatic numbers are `VD_DEV0`/`
 C API. The EEPROM bytes are carved out of the reserved area (`eepAdNext` moves from 4235 to 4237, reset-to-defaults zeroes them);
 `eepMagicNum` is not bumped because 0/0xFF/garbage all mean automatic.
 
+## VDrive Config (the list editor)
+`VDrive Config.prg` (built by `make util` into `build/util/`; copy it to the card and start it from the TeensyROM menu with the VDrive handler) edits the Alt-button lists (next section) on the C64 and shows / changes what is mounted:
+```
+RETURN mount the entry   B browse the card, mount any image   U unmount
+A add (browse, colour, flashes)   E edit   D delete   +/- move down/up
+T switch SD / USB list   R refresh   Q quit        (left arrow cancels an entry field)
+```
+The top lines show the image mounted on each drive; `*` marks the list entry that is mounted. Changes to the list are saved immediately in `vdrive-config.txt`. Details: `docs/DESIGN.md` section 23.
+
+## Changing the disk with the Alt button
+Without a computer: set the TR+ Alt button action to **None** (TR settings), and list the images you want in `vdrive-config.txt` in the root of the SD card (and, for the USB stick, in the root of the stick):
+```
+# path on that drive, border colour (0-15), number of flashes
+/GAMES/ZORK.D64, 5, 1
+/GAMES/BIG DISK.D81, 3, 2
+/UTIL/TOOLS.D64
+```
+While a program runs with the VDrive handler: one tap = next image of the SD list (the first if nothing is mounted), two taps within one second = next image of the USB list. The border flashes the chosen colour that many times (250 ms on, 750 ms off) once the disk is changed; a missing card/stick, a missing, empty or unusable list flashes red for 2 s. Images that no longer exist are skipped. The change waits for a quiet moment on the drive, like `trvdrive`. Details: `docs/DESIGN.md` section 22.
+
 ## Changing the disk while a program runs (remote control)
 With the VDrive handler active, the TeensyROM's remote-control port (TCP 2112, or the USB serial port) accepts two extra commands that work while the C64 runs a program: `0x64E3` reads what a unit has mounted, `0x64E4` mounts an image (or unmounts with an empty path). The swap waits for a quiet moment on the C64's drive, closes the unit's open channels and mounts, like `CD:`. Details and framing are in `docs/DESIGN.md` section 20. Directory listings (`trls`) are also allowed while a program runs, after the same wait, so you can browse for an image; the other file commands (`trget`, `trput`, ...) still answer `Busy!`. The `trvdrive` tool in `teensyrom-rcp` wraps get and set:
 

@@ -75,6 +75,11 @@ VD_COLD static void chan_close(vd_unit_t *u, int ch)
         int r = d64_close_write(u->disk, &c->u.w);
         if (r) err_from(u, r);
     }
+    if ((c->mode == 6 || c->mode == 7) && u->owner) {
+        const vd_host_t *h = &u->owner->host;
+        if (c->mode == 7 && c->u.h.pos && h->hf_write && h->hf_write(h->ctx, u->index, c->u.h.buf, c->u.h.pos)) set_err(u, 74, 0, 0);
+        if (h->hf_close) h->hf_close(h->ctx, u->index, c->mode == 7);
+    }
     c->mode = 0;
     u->slot_of[ch] = 0;
     if (u->restore_ch == ch + 1) restore_selection(u);
@@ -300,6 +305,27 @@ VD_COLD static void open_dir(vdrive_t *v, int unit, vd_unit_t *u, int ch, const 
     }
     open_dir_pat(v, unit, u, ch, pat);
 }
+/* "!CONFIG" / "!STATE": text files kept by the host (see vd_host_t); the name is PETSCII, upper or shifted. */
+VD_COLD static void open_hostfile(vdrive_t *v, int unit, vd_unit_t *u, int ch, const char *name, char mode)
+{
+    const vd_host_t *h = &v->host;
+    int kind = -1;
+    if (!strcmp(name, "!CONFIG")) kind = VD_HF_CONFIG; else if (!strcmp(name, "!STATE")) kind = VD_HF_STATE;
+    if (kind < 0 || !h->hf_open) { set_err(u, 62, 0, 0); return; }
+    if (mode != 'R' && mode != 'W') { set_err(u, 33, 0, 0); return; }
+    if (mode == 'W' && kind == VD_HF_STATE) { set_err(u, 26, 0, 0); return; }       /* WRITE PROTECT ON */
+    for (int i = 0; i < 16; i++) {                                                  /* the host keeps one file open: this replaces it */
+        vd_chan_t *o = chan_find(u, i);
+        if (o && (o->mode == 6 || o->mode == 7)) chan_close(u, i);
+    }
+    vd_chan_t *c = chan_alloc(u, ch);
+    if (!c) return;
+    int r = h->hf_open(h->ctx, unit, kind, mode == 'W');
+    if (r) { set_err(u, (uint8_t)r, 0, 0); chan_close(u, ch); return; }
+    c->u.h.kind = (uint8_t)kind; c->u.h.pos = c->u.h.len = 0;
+    c->mode = mode == 'W' ? 7 : 6;
+}
+
 VD_COLD static void chan_open(vdrive_t *v, int unit, vd_unit_t *u, int ch, const uint8_t *raw, uint8_t len)
 {
     chan_close(u, ch);
@@ -314,6 +340,7 @@ VD_COLD static void chan_open(vdrive_t *v, int unit, vd_unit_t *u, int ch, const
     open_spec_t o = parse_open(raw, len);
     if (!o.has_name) { set_err(u, u->disk ? 33 : 74, 0, 0); return; }
     char mode = o.mode ? o.mode : (ch == 1 ? 'W' : 'R');
+    if (o.name[0] == '!') { open_hostfile(v, unit, u, ch, o.name, mode); return; }
     if (mode != 'R' && mode != 'W') { set_err(u, 33, 0, 0); return; }   /* append not supported */
     /* "DIR/IMAGE.D64/FILE" (or a bare "IMAGE.D64" read with nothing mounted): walk there first, the file name is what is left */
     if (strchr(o.name, '/') || (mode == 'R' && !u->disk && image_kind(o.name))) {
@@ -586,6 +613,21 @@ VD_COLD static int read_byte(vdrive_t *v, int unit, vd_unit_t *u, vd_chan_t *c, 
         *eoi = d64_file_eof(&c->u.r);
         return 1;
     }
+    if (c->mode == 6) {                                              /* host text file: refill a chunk when it runs out; EOI on the very last byte */
+        const vd_host_t *h = &v->host;
+        if (c->u.h.pos >= c->u.h.len) {
+            int n = h->hf_read ? h->hf_read(h->ctx, unit, c->u.h.buf, VD_HFBUF) : 0;
+            c->u.h.pos = 0; c->u.h.len = (uint8_t)(n > 0 ? n : 0);
+            if (c->u.h.len == 0) return 0;
+        }
+        *b = c->u.h.buf[c->u.h.pos++];
+        if (c->u.h.pos >= c->u.h.len) {
+            int n = h->hf_read ? h->hf_read(h->ctx, unit, c->u.h.buf, VD_HFBUF) : 0;
+            c->u.h.pos = 0; c->u.h.len = (uint8_t)(n > 0 ? n : 0);
+            *eoi = c->u.h.len == 0;
+        }
+        return 1;
+    }
     if (c->mode == 5) {
         if (c->u.b.pos >= D64_SECTOR) return 0;
         *b = c->u.b.buf[c->u.b.pos++];
@@ -634,6 +676,14 @@ VD_COLD int vdrive_mailbox(vdrive_t *v, uint8_t cmd, uint8_t arg, uint8_t *data,
             if (c && c->mode == 3) {
                 int r = d64_write(u->disk, &c->u.w, &arg, 1);
                 if (r < 0) { err_from(u, r); c->mode = 0; chan_close(u, ch); *st = ST_TIMEOUT; }   /* write already aborted: just release the slot */
+            }
+            else if (c && c->mode == 7) {
+                c->u.h.buf[c->u.h.pos++] = arg;
+                if (c->u.h.pos >= VD_HFBUF) {
+                    const vd_host_t *h = &v->host;
+                    if (h->hf_write && h->hf_write(h->ctx, v->act, c->u.h.buf, c->u.h.pos)) set_err(u, 74, 0, 0);
+                    c->u.h.pos = 0;
+                }
             }
             else if (c && c->mode == 5 && c->u.b.pos < D64_SECTOR) c->u.b.buf[c->u.b.pos++] = arg;     /* buffer: full buffer ignores the rest */
         } else if (v->wlen < VD_CMDBUF - 1) {

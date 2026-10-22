@@ -13,6 +13,7 @@
 // port. Off by default: the print runs right after the answer is published, i.e. while the C64 is still reading ST / DATA,
 // and the USB serial interrupts then make the bus handler answer late (the C64 reads $00 / the previous bus byte).
 
+#include <strings.h>               // strcasecmp
 #define VD_COLD FLASHMEM          // everything except the bus-ISR register accessors lives in flash
 #include "../vdrive/d64.c"
 #include "../vdrive/vdrive.c"
@@ -259,6 +260,83 @@ FLASHMEM static int VD_DirNext(void *ctx, int unit, char name[17], uint32_t *siz
    return 0;
 }
 
+// ---- host text files for the configuration utility (VDrive Config.prg): OPEN n,d,n,"!CONFIG[,W]" and "!STATE" ---------------------
+// !CONFIG is the unit's /vdrive-config.txt (see the Alt button section below), !STATE two lines: the mounted image's path and the
+// folder. Text crosses as PETSCII with CR line ends. One file at a time; opening another (or closing the channel) ends the first.
+#define VD_ConfigName "/vdrive-config.txt"
+static File       hfFile;
+static int        hfKind = -1;
+static bool       hfWriting = false;
+static char       hfText[2 * (VD_CwdLen + 20) + 4];
+static size_t     hfTextPos = 0, hfTextLen = 0;
+
+FLASHMEM static void VD_HfClose(void *ctx, int unit, int write)
+{
+   if (hfFile) { if (write) hfFile.flush(); hfFile.close(); }
+   hfKind = -1; hfWriting = false;
+}
+
+FLASHMEM static int VD_HfOpen(void *ctx, int unit, int kind, int write)
+{
+   VD_HfClose(NULL, unit, 0);
+   stcVDUnit *u = &vdUnit[unit];
+   if (kind == VD_HF_STATE)
+   {
+      char path[VD_CwdLen + 20];
+      path[0] = 0;
+      if (u->mounted) VD_PathFor(u, u->imgName, path, sizeof path);
+      hfTextLen = snprintf(hfText, sizeof hfText, "%s\n%s\n", path, u->cwd[0] ? u->cwd : "/");
+      if (hfTextLen >= sizeof hfText) hfTextLen = sizeof hfText - 1;
+      hfTextPos = 0; hfKind = kind;
+      return 0;
+   }
+   if (write)
+   {
+      if (u->fs->exists(VD_ConfigName)) u->fs->remove(VD_ConfigName);   // FILE_WRITE appends: start from an empty file
+      hfFile = u->fs->open(VD_ConfigName, FILE_WRITE);
+      if (!hfFile) return 74;
+   }
+   else
+   {
+      hfFile = u->fs->open(VD_ConfigName, FILE_READ);
+      if (!hfFile || hfFile.isDirectory()) { if (hfFile) hfFile.close(); return 62; }
+   }
+   hfKind = kind; hfWriting = write != 0;
+   return 0;
+}
+
+FLASHMEM static int VD_HfRead(void *ctx, int unit, uint8_t *buf, int n)
+{
+   int got = 0;
+   if (hfKind == VD_HF_STATE)
+   {
+      for (; got < n && hfTextPos < hfTextLen; got++, hfTextPos++)
+         buf[got] = hfText[hfTextPos] == '\n' ? '\r' : VD_ToPetscii(hfText[hfTextPos]);
+      return got;
+   }
+   if (hfKind != VD_HF_CONFIG || !hfFile || hfWriting) return 0;
+   while (got < n)
+   {
+      uint8_t c;
+      if (hfFile.read(&c, 1) != 1) break;
+      if (c == '\r') continue;                                          // CRLF files: the CR of the pair is dropped
+      buf[got++] = c == '\n' ? '\r' : VD_ToPetscii((char)c);
+   }
+   return got;
+}
+
+FLASHMEM static int VD_HfWrite(void *ctx, int unit, const uint8_t *buf, int n)
+{
+   if (hfKind != VD_HF_CONFIG || !hfFile || !hfWriting) return 1;
+   for (int i = 0; i < n; i++)
+   {
+      char c = buf[i] == '\r' ? '\n' : VD_ToAscii(buf[i]);
+      if (buf[i] == '\n') continue;                                      // a stray LF (PRINT# to device 10 / 13) adds nothing
+      if (hfFile.write(&c, 1) != 1) return 1;
+   }
+   return 0;
+}
+
 // ---- fixed device numbers in EEPROM (0 / out of range = automatic, see vdrive_set_devices) --------------------
 FLASHMEM static void VD_SaveDevices(void *ctx, uint8_t pin0, uint8_t pin1)
 {
@@ -351,6 +429,9 @@ FLASHMEM void VDrive_PreStart()
    host.mount = VD_Mount;  host.unmount = VD_Unmount;  host.chdir = VD_ChDir;
    host.dir_open = VD_DirOpen;  host.dir_next = VD_DirNext;  host.save_devices = VD_SaveDevices;
    host.push = VD_Push;  host.pop = VD_Pop;
+   host.hf_open = VD_HfOpen;  host.hf_read = VD_HfRead;  host.hf_write = VD_HfWrite;  host.hf_close = VD_HfClose;
+   if (hfFile) hfFile.close();        // the drive state (and with it any open channel) was just reset
+   hfKind = -1;
    vdrive_set_host(&vio->vd, &host);
    VD_LoadDevices();
 
@@ -371,14 +452,19 @@ FLASHMEM void VDrive_PreStart()
 }
 
 // Handler start (the C64 is already running): only re-stage the KERNAL bus hook. No storage access here.
+void VD_AltButtonInit();          // alt-button disk switching, below
+void VD_AltPoll();
+
 FLASHMEM void InitHndlr_VDrive()
 {
    InitHndlr_KernalReplace();
+   VD_AltButtonInit();
 }
 
 FLASHMEM void PollingHndlr_VDrive()
 {
    if (vio == NULL) return;
+   VD_AltPoll();
    if (vio_poll(vio))
    {
       lastActivityMs = millis();
@@ -567,9 +653,220 @@ FLASHMEM int VDrive_RemoteIdleSet(int unit, const char *path, char *msg, size_t 
    return 0;
 }
 
+// ---- alt button: cycle through the disk images listed in /vdrive-config.txt ----------------------------------------------------
+// One tap picks the next image of the SD card's list, two taps within VD_TapWindowMs the USB drive's list; each list is the file
+// /vdrive-config.txt in the root of its own drive. One image per line:   /path/IMAGE.D64, colour, flashes
+// (colour = C64 colour 0..15 for the border, default 1; flashes = how many times, default 1; '#' starts a comment line). After the
+// change the border flashes that way (250 ms on, 750 ms off) so the switch can be seen without a screen full of text; a card or
+// stick that is missing, an unreadable list or no usable image in it flashes red quickly for 2 s. An image that has disappeared is
+// skipped. With nothing mounted (or an image that is not in the list) the first usable image is picked.
+// Wired to the TR's Alt button only when its setting (TR menu, settings) is "None": a chosen action is never taken over.
+// The border change itself is done by the KERNAL's IRQ routine (patches/vdrive.s, irq_border), driven by the BORDER register.
+#define VD_CfgBufSize    2048
+#define VD_CfgMaxEntries 32
+#define VD_TapWindowMs   1000
+#define VD_FlashOnMs     250
+#define VD_FlashOffMs    750
+#define VD_ErrFlashMs    100    // red error flash: 100 ms on / 100 ms off for 2 s
+#define VD_ErrFlashes    10
+#define VD_SettleMs      100    // the IRQ routine must see a SAVE / RESTORE request at least once (every 16-20 ms)
+#define VD_ColorRed      2
+
+struct stcVDCfgEntry { char *path; uint8_t color, flashes; };
+
+DMAMEM static char          vdCfgBuf[VD_CfgBufSize];
+DMAMEM static stcVDCfgEntry vdCfg[VD_CfgMaxEntries];
+
+// "...,  12 " -> 12 and the line cut before the comma; false (line untouched) when the last field is not a plain number
+FLASHMEM static bool VD_TrailingNumber(char *line, int *val)
+{
+   char *comma = strrchr(line, ',');
+   if (!comma) return false;
+   const char *p = comma + 1;
+   while (*p == ' ' || *p == '\t') p++;
+   if (!*p) return false;
+   int v = 0, digits = 0;
+   for (; *p >= '0' && *p <= '9'; p++) { v = v * 10 + (*p - '0'); if (++digits > 3) return false; }
+   while (*p == ' ' || *p == '\t') p++;
+   if (digits == 0 || *p) return false;
+   *comma = 0;
+   *val = v;
+   return true;
+}
+
+// Parses the text in place; returns the number of usable entries (lines that are not a "/path" are skipped).
+FLASHMEM static int VD_ParseConfig(char *text, stcVDCfgEntry *out, int max)
+{
+   int n = 0;
+   while (*text && n < max)
+   {
+      char *line = text;
+      while (*text && *text != '\n') text++;
+      if (*text) *text++ = 0;
+      char *end = line + strlen(line);
+      while (end > line && (end[-1] == '\r' || end[-1] == ' ' || end[-1] == '\t')) *--end = 0;
+      while (*line == ' ' || *line == '\t') line++;
+      if (*line != '/') continue;                                 // comment, blank or not a path
+      int a = -1, b = -1;
+      if (VD_TrailingNumber(line, &a) && VD_TrailingNumber(line, &b)) { int t = a; a = b; b = t; }   // "path, colour, flashes"
+      else if (a >= 0) { b = -1; }                                // "path, colour"
+      end = line + strlen(line);
+      while (end > line && (end[-1] == ' ' || end[-1] == '\t')) *--end = 0;
+      if (end == line) continue;
+      out[n].path = line;
+      out[n].color = (a < 0) ? 1 : (uint8_t)(a & 0x0F);
+      out[n].flashes = (b < 0) ? 1 : (uint8_t)(b > 20 ? 20 : b);
+      n++;
+   }
+   return n;
+}
+
+// ---- border flash sequencer (main loop, driven from PollingHndlr_VDrive) ----
+enum { VDF_Idle, VDF_Save, VDF_On, VDF_Off, VDF_Restore };
+struct stcVDFlash
+{
+   uint8_t  phase, color, left;
+   uint16_t onMs, offMs;
+   uint32_t since;
+   bool     queued;            // a new sequence waits for the running one to give the colour back
+   uint8_t  qColor, qCount;
+   uint16_t qOnMs, qOffMs;
+};
+static stcVDFlash vdFlash;
+
+FLASHMEM static void VD_FlashPhase(uint8_t phase, uint8_t reg)
+{
+   vdFlash.phase = phase;
+   vdFlash.since = millis();
+   vioHot.border = reg;
+}
+
+FLASHMEM static void VD_FlashBegin(uint8_t color, uint8_t count, uint16_t onMs, uint16_t offMs)
+{
+   vdFlash.color = color; vdFlash.left = count; vdFlash.onMs = onMs; vdFlash.offMs = offMs;
+   if (count == 0) { VD_FlashPhase(VDF_Idle, VIO_BRD_IDLE); return; }
+   VD_FlashPhase(VDF_Save, VIO_BRD_SAVE);
+}
+
+FLASHMEM static void VD_Flash(uint8_t color, uint8_t count, uint16_t onMs, uint16_t offMs)
+{
+   if (vdFlash.phase == VDF_Idle) { VD_FlashBegin(color, count, onMs, offMs); return; }
+   vdFlash.queued = true;                                         // saving now would remember the flash colour: restore first
+   vdFlash.qColor = color; vdFlash.qCount = count; vdFlash.qOnMs = onMs; vdFlash.qOffMs = offMs;
+   VD_FlashPhase(VDF_Restore, VIO_BRD_RESTORE);
+}
+
+FLASHMEM static void VD_FlashPoll()
+{
+   if (vdFlash.phase == VDF_Idle) return;
+   uint32_t held = millis() - vdFlash.since;
+   switch (vdFlash.phase)
+   {
+      case VDF_Save:
+         if (held >= VD_SettleMs) VD_FlashPhase(VDF_On, VIO_BRD_SET | vdFlash.color);
+         break;
+      case VDF_On:
+         if (held >= vdFlash.onMs) { vdFlash.left--; VD_FlashPhase(VDF_Off, VIO_BRD_RESTORE); }
+         break;
+      case VDF_Off:
+         if (vdFlash.left == 0 ? held >= VD_SettleMs : held >= vdFlash.offMs)
+         {
+            if (vdFlash.left == 0) VD_FlashPhase(VDF_Idle, VIO_BRD_IDLE);     // the last flash needs no pause behind it
+            else VD_FlashPhase(VDF_On, VIO_BRD_SET | vdFlash.color);
+         }
+         break;
+      case VDF_Restore:                                            // aborted sequence: colour given back, then the queued one
+         if (held >= VD_SettleMs)
+         {
+            VD_FlashPhase(VDF_Idle, VIO_BRD_IDLE);
+            if (vdFlash.queued) { vdFlash.queued = false; VD_FlashBegin(vdFlash.qColor, vdFlash.qCount, vdFlash.qOnMs, vdFlash.qOffMs); }
+         }
+         break;
+   }
+}
+
+FLASHMEM static void VD_FlashError() { VD_Flash(VD_ColorRed, VD_ErrFlashes, VD_ErrFlashMs, VD_ErrFlashMs); }
+
+// ---- the switch itself ----
+FLASHMEM static bool VD_SameImage(const char *a, const char *b)
+{
+   char x[VD_CwdLen + 20], y[VD_CwdLen + 20];
+   strlcpy(x, a, sizeof x); strlcpy(y, b, sizeof y);
+   VD_Squeeze(x); VD_Squeeze(y);
+   return strcasecmp(x, y) == 0;
+}
+
+// Select the next usable image of the unit's list; flashes the result. Returns true when an image was mounted.
+FLASHMEM static bool VD_SwitchNext(int unit)
+{
+   char msg[64];
+   if (!VD_RemoteReady(unit)) { VD_FlashError(); return false; }           // no card / stick (or VDrive not running)
+   stcVDUnit *u = &vdUnit[unit];
+   if (VDrive_RemoteQuiet(msg, sizeof msg)) { VD_FlashError(); return false; }   // card access only at a quiet moment
+   File f = u->fs->open(VD_ConfigName, FILE_READ);
+   if (!f || f.isDirectory()) { if (f) f.close(); VD_FlashError(); return false; }
+   int len = f.read(vdCfgBuf, VD_CfgBufSize - 1);
+   f.close();
+   if (len <= 0) { VD_FlashError(); return false; }
+   vdCfgBuf[len] = 0;
+   int n = VD_ParseConfig(vdCfgBuf, vdCfg, VD_CfgMaxEntries);
+   if (n == 0) { VD_FlashError(); return false; }
+
+   int start = 0;                                                          // nothing mounted, or not in the list: the first one
+   if (u->mounted)
+   {
+      char cur[VD_CwdLen + 20];
+      VD_PathFor(u, u->imgName, cur, sizeof cur);
+      for (int i = 0; i < n; i++) if (VD_SameImage(cur, vdCfg[i].path)) { start = (i + 1) % n; break; }
+   }
+   for (int k = 0; k < n; k++)
+   {
+      stcVDCfgEntry *e = &vdCfg[(start + k) % n];
+      if (VD_CheckImage(u->fs, e->path, msg, sizeof msg)) continue;       // gone (or not an image): next one
+      uint8_t color = e->color, count = e->flashes;
+      if (VDrive_RemoteSet(unit, e->path, msg, sizeof msg) == 0) { VD_Flash(color, count, VD_FlashOnMs, VD_FlashOffMs); return true; }
+      if (strstr(msg, "busy")) break;                                      // the C64 never let go of the drive
+   }
+   VD_FlashError();
+   return false;
+}
+
+// ---- Alt button: tap counting ----
+static uint8_t  vdTaps = 0;
+static uint32_t vdTapFirstMs = 0;
+static bool     vdSwitching = false;
+
+FLASHMEM void SpecialBtn_VDrive(bool Up_nDn)
+{
+   if (Up_nDn) return;                                // act on the press
+   if (vdTaps == 0) vdTapFirstMs = millis();
+   if (vdTaps < 2) vdTaps++;
+}
+
+FLASHMEM void VD_AltPoll()
+{
+   VD_FlashPoll();
+   if (vdTaps == 0 || vdSwitching) return;
+   if (vdTaps < 2 && millis() - vdTapFirstMs < VD_TapWindowMs) return;     // a second tap may still come
+   int unit = vdTaps >= 2 ? 1 : 0;
+   vdTaps = 0;
+   vdSwitching = true;                                // VDrive_RemoteQuiet() polls: do not re-enter from there
+   VD_SwitchNext(unit);
+   vdSwitching = false;
+}
+
+extern void (*fSpecialBtnChange)(bool Up_nDn);
+FLASHMEM void VD_AltButtonInit()
+{
+   vdTaps = 0; vdFlash.phase = VDF_Idle; vdFlash.queued = false;
+#ifdef Fab04_SpecialButton
+   if ((IO1[rwRegPwrUpDefaults2] & rpud2AltBtnActionMask) == rpud2AltBtnNone) fSpecialBtnChange = &SpecialBtn_VDrive;
+#endif
+}
+
 static_assert(offsetof(vio_hot_t, cmd) == VIO_CMD && offsetof(vio_hot_t, arg) == VIO_ARG && offsetof(vio_hot_t, data) == VIO_DATA &&
               offsetof(vio_hot_t, stat) == VIO_STAT && offsetof(vio_hot_t, st) == VIO_ST && offsetof(vio_hot_t, len) == VIO_LEN &&
-              offsetof(vio_hot_t, dev0) == VIO_DEV0 && offsetof(vio_hot_t, dev1) == VIO_DEV1, "register bytes must stay in register order");
+              offsetof(vio_hot_t, dev0) == VIO_DEV0 && offsetof(vio_hot_t, dev1) == VIO_DEV1 && offsetof(vio_hot_t, border) == VIO_BORDER, "register bytes must stay in register order");
 
 FASTRUN void IO1Hndlr_VDrive(uint8_t Address, bool R_Wn)
 {

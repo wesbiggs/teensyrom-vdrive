@@ -27,7 +27,13 @@ test-devcfg:
 test-fw:
 	python3 -I tests/fw_host/run.py
 
-test: build/kernal-vd.bin build/libd64.dylib test-d64 test-devcfg test-fw
+test-vdconfig:   # VDrive Config.prg (util/vdconfig.bas) in a small BASIC interpreter against a drive model
+	python3 -I tests/test_vdconfig.py
+
+test-border:   # the border-flash routine in a 6502 simulator (skipped without py65)
+	python3 -I tests/test_irq_border.py
+
+test: build/kernal-vd.bin build/libd64.dylib test-d64 test-devcfg test-fw test-border test-vdconfig
 	python3 -I tools/vdrive_mock.py build/kernal-vd.bin
 	python3 -I tools/vdrive_mock.py build/kernal-vd.bin scan
 

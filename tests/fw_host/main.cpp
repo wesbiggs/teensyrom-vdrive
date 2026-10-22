@@ -9,6 +9,7 @@ FS SD, firstPartition;
 SerialStub Serial;
 static uint8_t io1_mem[16];
 volatile uint8_t *IO1 = io1_mem;
+void (*fSpecialBtnChange)(bool Up_nDn) = nullptr;
 char DriveDirPath[128];
 EEPROMStub EEPROM;
 uint8_t g_bus_in, g_bus_out;
@@ -135,8 +136,8 @@ int main(int argc, char **argv)
 
     // the mailbox lives at $DE10; the ACIA range below it is not ours
     g_bus_out = 0x77; IO1Hndlr_VDrive(0x00, true); IO1Hndlr_VDrive(0x03, true); IO1Hndlr_VDrive(0x07, true); IO1Hndlr_VDrive(0x08, true);
-    IO1Hndlr_VDrive(VD_MboxBase + 8, true);
-    check("mailbox is not mapped at $DE00-$DE07 or past $DE17", g_bus_out == 0x77);
+    IO1Hndlr_VDrive(VD_MboxBase + 9, true);
+    check("mailbox is not mapped at $DE00-$DE07 or past $DE18", g_bus_out == 0x77);
     g_bus_in = 0x42; IO1Hndlr_VDrive(0x00, false);
     check("a write to $DE00 does not touch the mailbox", vioHot.arg != 0x42 && !vioHot.pending);
 
@@ -422,6 +423,190 @@ int main(int argc, char **argv)
         check("a sidecar with a doubled slash mounts with cwd root, not //", vdUnit[1].mounted && vdUnit[1].cwd[0] == 0);
         check("... and the status path has a single slash", VDrive_RemoteStatus(1, js, sizeof js) > 0 && strstr(js, "\"path\":\"/usb.d64\"") && !strstr(js, "//"));
         fs_::remove(SD.root / ".vdrive"); fs_::remove(firstPartition.root / ".vdrive");
+    }
+
+    // ---- alt button: cycle through /vdrive-config.txt, flash the border ----
+    {
+        auto put = [&](FS &fs, const char *name, const std::string &text) { std::ofstream(fs.root / name, std::ios::binary) << text; };
+        auto cur = [&](int unit) { char js[300]; VDrive_RemoteStatus(unit, js, sizeof js); std::string j = js; size_t a = j.find("\"path\":\""); std::string r = j.substr(a + 8, j.find('"', a + 8) - a - 8); for (auto &c : r) c = (char)tolower((unsigned char)c); return r; };
+        typedef std::vector<std::pair<uint32_t, uint8_t>> Trace;
+        // the Alt button wiring: only when the setting is "None"
+        IO1[rwRegPwrUpDefaults2] = rpud2AltBtnPause; fSpecialBtnChange = nullptr;
+        InitHndlr_VDrive();
+        check("alt: a chosen action (Pause) is left alone", fSpecialBtnChange == nullptr);
+        IO1[rwRegPwrUpDefaults2] = rpud2AltBtnAutoLaunch;
+        InitHndlr_VDrive();
+        check("alt: AutoLaunch is left alone too", fSpecialBtnChange == nullptr);
+        IO1[rwRegPwrUpDefaults2] = rpud2AltBtnNone;
+        InitHndlr_VDrive();
+        check("alt: setting None -> VDrive takes the button", fSpecialBtnChange == &SpecialBtn_VDrive);
+
+        fs_::create_directories(SD.root / "SUB");
+        fs_::copy_file(SD.root / "GAME.D64", SD.root / "SUB" / "INNER.D64", fs_::copy_options::overwrite_existing);   // earlier tests removed it
+        // fresh state: nothing mounted, sidecars gone
+        fs_::remove(SD.root / ".vdrive"); fs_::remove(firstPartition.root / ".vdrive");
+        IO1[rWRegCurrMenuWAIT] = rmtTeensy; DriveDirPath[0] = 0;
+        VDrive_PreStart(); InitHndlr_VDrive();
+        check("border register idles at $80", vioHot.border == VIO_BRD_IDLE && r1(VIO_BORDER) == 0x80);
+        g_ms += 5000;
+
+        auto run = [&](uint32_t ms) { Trace t; uint8_t last = vioHot.border; uint32_t t0 = g_ms;
+                                      for (uint32_t i = 0; i < ms; i += 5) { g_ms += 5; PollingHndlr_VDrive(); if (vioHot.border != last) { last = vioHot.border; t.push_back({g_ms - t0, last}); } }
+                                      return t; };
+        auto near = [](uint32_t a, uint32_t b) { return a + 20 >= b && a <= b + 20; };
+        auto tap = [&](int n) { for (int i = 0; i < n; i++) { SpecialBtn_VDrive(false); g_ms += 50; SpecialBtn_VDrive(true); g_ms += 100; } };
+        // a full sequence = SAVE, then (SET c, RESTORE) per flash, then IDLE
+        auto seq_ok = [&](const Trace &t, uint8_t c, int flashes) {
+            if ((int)t.size() != 2 + 2 * flashes + 1 - 1 + 0 && (int)t.size() != 2 * flashes + 2) return false;
+            if (t[0].second != VIO_BRD_SAVE) return false;
+            for (int i = 0; i < flashes; i++) {
+                if (t[1 + 2 * i].second != (VIO_BRD_SET | c) || t[2 + 2 * i].second != VIO_BRD_RESTORE) return false;
+            }
+            return t.back().second == VIO_BRD_IDLE;
+        };
+        auto flash_trace = [&](uint32_t wait) { Trace t = run(wait); return t; };
+        (void)flash_trace;
+
+        put(SD, "vdrive-config.txt",
+            "# my disks\r\n"
+            "/GAME.D64, 3, 2\r\n"
+            "/MISSING.D64, 4, 1\r\n"
+            "not a path\r\n"
+            "/SUB/INNER.D64,5\r\n"
+            "\r\n"
+            "  /BIG.D81 , 6 , 3  \r\n"
+            "/TWO.D71\r\n");
+        check("alt: nothing mounted yet", cur(0) == "");
+
+        // single tap: waits out the 1 s double-tap window, then picks the first entry
+        tap(1);
+        Trace t = run(500);
+        check("alt: one tap does nothing before the window closes", t.empty() && cur(0) == "");
+        t = run(6000);
+        check("alt: first entry mounted (nothing was mounted)", cur(0) == "/game.d64");
+        check("alt: 2 flashes in colour 3 (save, set, restore, set, restore, idle)", seq_ok(t, 3, 2) && t.size() == 6);
+        check("alt: flash timing 100 ms settle, 250 on, 750 off, 250 on, 100 settle",
+              t.size() == 6 && near(t[1].first - t[0].first, 100) && near(t[2].first - t[1].first, 250) && near(t[3].first - t[2].first, 750) &&
+              near(t[4].first - t[3].first, 250) && near(t[5].first - t[4].first, 100));
+        check("alt: USB untouched", cur(1) == "");
+
+        tap(1); t = run(3000);
+        check("alt: next entry skips the missing image and the junk line (INNER, colour 5, default 1 flash)", cur(0) == "/sub/inner.d64" && seq_ok(t, 5, 1));
+        check("alt: the folder became the cwd", [&] { char js[300]; VDrive_RemoteStatus(0, js, sizeof js); return strstr(js, "\"cwd\":\"/SUB\"") != nullptr; }());
+        tap(1); t = run(5000);
+        check("alt: next: the padded line (BIG.D81, colour 6, 3 flashes)", cur(0) == "/big.d81" && seq_ok(t, 6, 3));
+        tap(1); t = run(3000);
+        check("alt: next: last line without numbers (TWO.D71, colour 1, 1 flash)", cur(0) == "/two.d71" && seq_ok(t, 1, 1));
+        tap(1); t = run(5000);
+        check("alt: wraps around to the first entry", cur(0) == "/game.d64" && seq_ok(t, 3, 2));
+
+        // the mounted image is not in the list: start again at the first entry
+        put(SD, "vdrive-config.txt", "/SUB/INNER.D64,7,1\n/BIG.D81,8,1\n");
+        tap(1); t = run(3000);
+        check("alt: mounted image not in the list -> first entry", cur(0) == "/sub/inner.d64" && seq_ok(t, 7, 1));
+        // a vanished image is skipped, also when it is the one after the current
+        fs_::rename(SD.root / "BIG.D81", SD.root / "BIG.OFF");
+        tap(1); t = run(3000);
+        check("alt: only the current image is left: it is selected again", cur(0) == "/sub/inner.d64" && seq_ok(t, 7, 1));
+        fs_::rename(SD.root / "BIG.OFF", SD.root / "BIG.D81");
+
+
+        // errors flash red, quickly, for 2 s
+        auto red_ok = [&](const Trace &t) {
+            if (t.size() != 2 * VD_ErrFlashes + 2 - 1 + 0 && t.size() != 2 * VD_ErrFlashes + 2) return false;
+            if (t[0].second != VIO_BRD_SAVE || t.back().second != VIO_BRD_IDLE) return false;
+            for (int i = 0; i < VD_ErrFlashes; i++) if (t[1 + 2 * i].second != (VIO_BRD_SET | VD_ColorRed) || t[2 + 2 * i].second != VIO_BRD_RESTORE) return false;
+            return t.back().first - t[0].first >= 1800 && t.back().first - t[0].first <= 2300;
+        };
+        put(SD, "vdrive-config.txt", "/MISSING.D64,4,1\n/ALSO/GONE.D64\n");
+        tap(1); t = run(5000);
+        check("alt: every image missing -> red flash for 2 s, current disk stays", red_ok(t) && cur(0) == "/sub/inner.d64");
+        put(SD, "vdrive-config.txt", "nothing useful\n# here\n");
+        tap(1); t = run(5000);
+        check("alt: no usable line -> red", red_ok(t));
+        put(SD, "vdrive-config.txt", "");
+        tap(1); t = run(5000);
+        check("alt: empty config -> red", red_ok(t));
+        fs_::remove(SD.root / "vdrive-config.txt");
+        tap(1); t = run(5000);
+        check("alt: no config file -> red", red_ok(t));
+        // USB: double tap, own list
+        put(firstPartition, "vdrive-config.txt", "/USB.D64, 9, 1\n");
+        put(SD, "vdrive-config.txt", "/GAME.D64,3,1\n");
+        tap(2); t = run(3000);
+        check("alt: two taps within 1 s act at once on the USB list", cur(1) == "/usb.d64" && seq_ok(t, 9, 1) && cur(0) == "/sub/inner.d64");
+        // a tap while a long flash is still running: the colour is given back first (saving mid-flash would remember the flash colour)
+        put(SD, "vdrive-config.txt", "/SUB/INNER.D64,7,1\n/GAME.D64,3,3\n");
+        tap(1); run(1000);
+        check("alt: the long sequence (GAME, 3 flashes) is under way", cur(0) == "/game.d64" && vioHot.border != VIO_BRD_IDLE);
+        tap(1); t = run(8000);
+        int lastSave = -1; for (int i = 0; i < (int)t.size(); i++) if (t[i].second == VIO_BRD_SAVE) lastSave = i;
+        bool restoredBeforeSave = lastSave >= 1 && t[lastSave - 1].second == VIO_BRD_RESTORE && t[lastSave].first - t[lastSave - 1].first >= 100;
+        Trace tail(t.begin() + (lastSave < 0 ? 0 : lastSave), t.end());
+        check("alt: new tap during a flash: restore (held 100 ms), then the new sequence (INNER, 7)", restoredBeforeSave && seq_ok(tail, 7, 1) && cur(0) == "/sub/inner.d64");
+        // missing stick: red
+        vdrive_attach(&vio->vd, 1, NULL, 0);
+        tap(2); t = run(5000);
+        check("alt: no USB stick -> red", red_ok(t));
+        vdrive_attach(&vio->vd, 1, NULL, 1);
+        // C64 busy with the drive for good: red, nothing changes
+        put(firstPartition, "vdrive-config.txt", "/USB.D64,9,1\n");
+
+        // ---- host text files for VDrive Config: !CONFIG / !STATE ----
+        {
+            auto open_ch = [&](int ch, const std::string &name) { call(VD_LISTEN, 8); call(VD_SECOND, (uint8_t)(0xF0 | ch)); for (char c : name) call(VD_CIOUT, (uint8_t)c); call(VD_UNLSN); };
+            auto close_ch = [&](int ch) { call(VD_LISTEN, 8); call(VD_SECOND, (uint8_t)(0xE0 | ch)); call(VD_UNLSN); };
+            auto write_ch = [&](int ch, const std::string &text) { call(VD_LISTEN, 8); call(VD_SECOND, (uint8_t)(0x60 | ch)); for (char c : text) call(VD_CIOUT, (uint8_t)c); call(VD_UNLSN); };
+            auto read_ch = [&](int ch, bool *eoi_at_end = nullptr) {
+                std::string out; uint8_t st = 0; int guard = 0;
+                call(VD_TALK, 8); call(VD_TKSA, (uint8_t)(0x60 | ch));
+                for (; guard < 5000; guard++) { int d = call(VD_ACPTR, 0, 0, &st) & 0xFF; if (st & 0x02) break; out.push_back((char)d); if (st & 0x40) { if (eoi_at_end) *eoi_at_end = true; break; } }
+                call(VD_UNTLK);
+                return out;
+            };
+            auto slurp = [&](const fs_::path &q) { std::ifstream f(q, std::ios::binary); return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>()); };
+
+            fs_::remove(SD.root / "vdrive-config.txt");
+            open_ch(2, "!CONFIG"); check("host file: reading a missing list gives 62", status15().rfind("62,", 0) == 0);
+            open_ch(2, "!CONFIG,W");
+            write_ch(2, "# MY DISKS\r/GAME.D64, 3, 2\r/SUB/INNER.D64,5\r");
+            close_ch(2);
+            check("host file: written list lands as ASCII with LF line ends, paths lower case", slurp(SD.root / "vdrive-config.txt") == "# my disks\n/game.d64, 3, 2\n/sub/inner.d64,5\n");
+            check("host file: write ended with an OK status", status15().rfind("00,", 0) == 0);
+            open_ch(2, "!CONFIG");
+            bool eoi = false;
+            std::string back = read_ch(2, &eoi);
+            check("host file: read back as PETSCII with CR line ends, EOI on the last byte", back == "# MY DISKS\r/GAME.D64, 3, 2\r/SUB/INNER.D64,5\r" && eoi);
+            close_ch(2);
+            std::string big; for (int i = 0; i < 12; i++) big += "/GAMES/NUMBER" + std::to_string(i) + ".D64, " + std::to_string(i) + ", 2\r";   // > 64 bytes: several chunks
+            open_ch(3, "!CONFIG,W"); write_ch(3, big); close_ch(3);
+            open_ch(3, "!CONFIG"); eoi = false; back = read_ch(3, &eoi); close_ch(3);
+            std::string expect = big; for (auto &c : expect) if (c >= 'a' && c <= 'z') c = (char)(c - 32);
+            check("host file: a list of several chunks survives the round trip", back == expect && eoi && big.size() > 64 * 3);
+            put(SD, "vdrive-config.txt", "/A.D64,1,1\r\n/B.D64\r\n");
+            open_ch(2, "!CONFIG"); back = read_ch(2); close_ch(2);
+            check("host file: a CRLF file reads with single CRs", back == "/A.D64,1,1\r/B.D64\r");
+            put(SD, "vdrive-config.txt", "");
+            open_ch(2, "!CONFIG"); back = read_ch(2); close_ch(2);
+            check("host file: an empty list reads as nothing", back.empty());
+
+            cmd15("CD:/"); status15();
+            open_ch(2, "!STATE"); back = read_ch(2); close_ch(2);
+            check("host file: !STATE with nothing mounted = empty path line + folder", back == "\r/\r");
+            cmd15("CD:/SUB/INNER.D64"); status15();
+            open_ch(2, "!STATE"); back = read_ch(2); close_ch(2);
+            check("host file: !STATE shows the mounted image and its folder", back == "/SUB/INNER.D64\r/SUB\r");
+            open_ch(2, "!STATE,W"); check("host file: !STATE is write protected (26)", status15().rfind("26,", 0) == 0);
+            open_ch(2, "!NOPE"); check("host file: unknown name gives 62", status15().rfind("62,", 0) == 0);
+            // a second host file replaces the first one
+            put(SD, "vdrive-config.txt", "/A.D64\n");
+            open_ch(2, "!CONFIG"); open_ch(3, "!STATE");
+            check("host file: opening the second closes the first (one at a time)", vdrive_chan_mode(&vio->vd, 0, 2) == 0 && vdrive_chan_mode(&vio->vd, 0, 3) == 6);
+            close_ch(3);
+            check("host file: closing releases the channel", vdrive_chan_mode(&vio->vd, 0, 3) == 0);
+            cmd15("CD:/"); status15();
+        }
+
     }
 
     printf("%s\n", fails ? "FAILED" : "ALL OK");
