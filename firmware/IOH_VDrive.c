@@ -226,6 +226,31 @@ FLASHMEM static int VD_PlainRead(void *ctx, int unit, uint8_t *buf, uint16_t n)
    return u->plain ? u->plain.read(buf, n) : -1;
 }
 
+// MD:NAME / RD:NAME with nothing mounted: folders on the card
+FLASHMEM static int VD_MkDir(void *ctx, int unit, const char *name)
+{
+   stcVDUnit *u = &vdUnit[unit];
+   char path[VD_CwdLen + 20];
+   VD_PathFor(u, name, path, sizeof path);
+   if (u->fs->exists(path)) return 63;                                            // FILE EXISTS (a file or a folder)
+   return u->fs->mkdir(path) ? 0 : 26;
+}
+
+FLASHMEM static int VD_RmDir(void *ctx, int unit, const char *name)
+{
+   stcVDUnit *u = &vdUnit[unit];
+   char path[VD_CwdLen + 20];
+   VD_PathFor(u, name, path, sizeof path);
+   File d = u->fs->open(path, FILE_READ);
+   if (!d || !d.isDirectory()) { if (d) d.close(); return 62; }
+   File first = d.openNextFile();
+   bool empty = !first;
+   if (first) first.close();
+   d.close();
+   if (!empty) return 63;                                                         // not empty: nothing is removed
+   return u->fs->rmdir(path) ? 0 : 26;
+}
+
 // A listing by path (LOAD"$/GAMES/G.D64") must not change what is selected: remember folder and image, put them back afterwards.
 FLASHMEM static void VD_Push(void *ctx, int unit)
 {
@@ -482,6 +507,7 @@ FLASHMEM void VDrive_PreStart()
    host.push = VD_Push;  host.pop = VD_Pop;  host.create = VD_Create;
    host.hf_open = VD_HfOpen;  host.hf_read = VD_HfRead;  host.hf_write = VD_HfWrite;  host.hf_close = VD_HfClose;
    host.plain_open = VD_PlainOpen;  host.plain_read = VD_PlainRead;  host.plain_close = VD_PlainClose;
+   host.mkdir = VD_MkDir;  host.rmdir = VD_RmDir;
    if (hfFile) hfFile.close();        // the drive state (and with it any open channel) was just reset
    hfKind = -1;
    vdrive_set_host(&vio->vd, &host);

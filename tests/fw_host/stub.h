@@ -68,6 +68,11 @@ struct FS {
     }
     bool exists(const char *path) { return fs_::exists(resolve(path)); }
     bool remove(const char *path) { return fs_::remove(resolve(path)); }
+    bool mkdir(const char *path) { std::error_code e; return fs_::create_directory(resolve(path), e); }
+    bool rmdir(const char *path) {                        // like SdFat: only an empty folder
+        fs_::path p = resolve(path); std::error_code e;
+        return fs_::is_directory(p) && fs_::is_empty(p) && fs_::remove(p, e);
+    }
     File open(const char *path, int mode = FILE_READ) {
         File r; fs_::path p = resolve(path);
         if (!fs_::exists(p)) {

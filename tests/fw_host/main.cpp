@@ -299,6 +299,14 @@ int main(int argc, char **argv)
     check("... LOAD\"PLAIN\" finds it too, and the file is closed afterwards", fast_load(8, "PLAIN", &rc).size() == 15 && rc == 0 && !vdUnit[0].plain);
     fast_load(8, "NOSUCH", &rc); check("... a missing plain file is 62", rc == 4 && status15().rfind("62,", 0) == 0);
 
+    // ---- MD: / RD: folders on the card ----
+    cmd15("MD:NEWDIR"); check("MD:NEWDIR makes a folder on the card", status15() == "00, OK,00,00\r" && fs_::is_directory(SD.root / "newdir"));
+    cmd15("MD:NEWDIR"); check("... MD on an existing name is 63", status15().rfind("63,", 0) == 0);
+    { FILE *f = fopen((SD.root / "newdir" / "x.prg").c_str(), "wb"); fputs("x", f); fclose(f); }
+    cmd15("RD:NEWDIR"); check("... RD leaves a folder that is not empty alone (63)", status15().rfind("63,", 0) == 0 && fs_::exists(SD.root / "newdir" / "x.prg"));
+    fs_::remove(SD.root / "newdir" / "x.prg");
+    cmd15("RD:NEWDIR"); check("... RD removes it once empty", status15() == "00, OK,00,00\r" && !fs_::exists(SD.root / "newdir"));
+
     // ---- N:NAME.D64,ID with nothing mounted: a new image on the card, mounted and formatted ----
     cmd15("N:MADE.D81,MD");
     check("N:MADE.D81 creates, mounts and formats a new image", status15() == "00, OK,00,00\r" && vdUnit[0].mounted && vdUnit[0].d.fmt == D64_FMT_D81

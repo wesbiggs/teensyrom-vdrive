@@ -172,6 +172,7 @@ class HostStruct(ctypes.Structure):
     HOPEN = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_char_p, ctypes.POINTER(ctypes.c_uint32))
     HREAD = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_uint16)
     HCLOSE = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_int)
+    MKDIR = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_char_p)
     HFOPEN = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int)
     HFREAD = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_int)
     HFWRITE = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_int)
@@ -179,7 +180,8 @@ class HostStruct(ctypes.Structure):
     _fields_ = [("ctx", ctypes.c_void_p), ("mount", MOUNT), ("unmount", UNMOUNT), ("chdir", CHDIR),
                 ("dir_open", DIROPEN), ("dir_next", DIRNEXT), ("save_devices", SAVEDEV), ("push", PUSH), ("pop", POP),
                 ("hf_open", HFOPEN), ("hf_read", HFREAD), ("hf_write", HFWRITE), ("hf_close", HFCLOSE),
-                ("create", CREATE), ("plain_open", HOPEN), ("plain_read", HREAD), ("plain_close", HCLOSE)]
+                ("create", CREATE), ("plain_open", HOPEN), ("plain_read", HREAD), ("plain_close", HCLOSE),
+                ("mkdir", MKDIR), ("rmdir", MKDIR)]
 
 
 class HostTests(unittest.TestCase):
@@ -264,11 +266,23 @@ class HostTests(unittest.TestCase):
 
         def hclose(ctx, unit): self.hfile = None
 
+        def mkdir(ctx, unit, name):
+            q = self.cwd / name.decode().lower()
+            if q.exists(): return 63
+            q.mkdir(); return 0
+
+        def rmdir(ctx, unit, name):
+            q = self.cwd / name.decode().lower()
+            if not q.is_dir(): return 62
+            if any(q.iterdir()): return 63
+            q.rmdir(); return 0
+
         self.created = []
         self.cb = HostStruct(None, HostStruct.MOUNT(mount), HostStruct.UNMOUNT(unmount), HostStruct.CHDIR(chdir),
                              HostStruct.DIROPEN(dir_open), HostStruct.DIRNEXT(dir_next), HostStruct.SAVEDEV(lambda c, a, b: None),
                              HostStruct.PUSH(push), HostStruct.POP(pop), create=HostStruct.CREATE(create),
-                             plain_open=HostStruct.HOPEN(hopen), plain_read=HostStruct.HREAD(hread), plain_close=HostStruct.HCLOSE(hclose))
+                             plain_open=HostStruct.HOPEN(hopen), plain_read=HostStruct.HREAD(hread), plain_close=HostStruct.HCLOSE(hclose),
+                             mkdir=HostStruct.MKDIR(mkdir), rmdir=HostStruct.MKDIR(rmdir))
         LIB.vdrive_set_host(self.io.v, ctypes.byref(self.cb))
 
     def tearDown(self): shutil.rmtree(self.tmp)
@@ -360,6 +374,27 @@ class HostTests(unittest.TestCase):
         self.assertIsNone(self.hfile)
         self.io.fast_save(8, b"NEW.PRG", 0x0801, b"x")                         # writing plain files is not supported
         self.assertTrue(self.status().startswith("74,"))
+
+    def test_md_and_rd_make_and_remove_folders(self):
+        self.cmd15(b"MD:GAMES")
+        self.assertEqual(self.status(), "00, OK,00,00\r")
+        self.assertTrue((self.tmp / "games").is_dir())
+        self.cmd15(b"MD:GAMES"); self.assertEqual(self.status(), "63,FILE EXISTS,00,00\r")
+        self.cmd15(b"CD:GAMES"); self.status()
+        self.cmd15(b"N:NEW.D64,NW"); self.status()                # something in it
+        self.cmd15(b"CD:_"); self.cmd15(b"CD:.."); self.status()
+        self.cmd15(b"RD:GAMES"); self.assertEqual(self.status(), "63,FILE EXISTS,00,00\r")   # not empty: left alone
+        (self.tmp / "games" / "new.d64").unlink()
+        self.cmd15(b"RD0:GAMES"); self.assertEqual(self.status(), "00, OK,00,00\r")
+        self.assertFalse((self.tmp / "games").exists())
+        self.cmd15(b"RD:GAMES"); self.assertEqual(self.status(), "62,FILE NOT FOUND,00,00\r")
+        self.cmd15(b"RD:README.PRG"); self.assertEqual(self.status(), "62,FILE NOT FOUND,00,00\r")   # a file is not a folder
+        for bad in (b"MD:A/B", b"MD:..", b"MD:X*"):
+            self.cmd15(bad); self.assertTrue(self.status().startswith("33,"), bad)
+        self.cmd15(b"MD:"); self.assertTrue(self.status().startswith("34,"))
+        self.cmd15(b"CD:A.D64"); self.status()
+        self.cmd15(b"MD:PART"); self.assertTrue(self.status().startswith("31,"))   # D81 partitions / sub-directories: not supported
+        self.assertFalse((self.tmp / "part").exists())
 
     def test_n_with_an_image_mounted_still_formats_it(self):
         self.cmd15(b"CD:A.D64"); self.status()

@@ -572,6 +572,23 @@ VD_COLD static void cmd_new_image(vdrive_t *v, int unit, vd_unit_t *u, const cha
     if ((r = d64_format_blank(d, name, id))) err_from(u, r);
 }
 
+/* CMD "MD[n]:NAME" / "RD[n]:NAME": a folder on the card, with nothing mounted. With an image mounted they would be D81 partition /
+ * sub-directory commands, which are not supported (31). */
+VD_COLD static void cmd_folder(vdrive_t *v, int unit, vd_unit_t *u, int make, const char *p, const char *end)
+{
+    const vd_host_t *h = &v->host;
+    char name[17];
+    if (u->disk || !(make ? h->mkdir : h->rmdir)) { set_err(u, 31, 0, 0); return; }
+    while (p < end && *p >= '0' && *p <= '9') p++;
+    if (p < end && *p == ':') p++;
+    size_t n = (size_t)(end - p);
+    if (n < 1 || n > 16) { set_err(u, 34, 0, 0); return; }
+    memcpy(name, p, n); name[n] = 0;
+    if (strpbrk(name, "/*?:=,\"") || !strcmp(name, "..") || !strcmp(name, ".") || !strcmp(name, "_")) { set_err(u, 33, 0, 0); return; }
+    int r = make ? h->mkdir(h->ctx, unit, name) : h->rmdir(h->ctx, unit, name);
+    if (r) set_err(u, (uint8_t)r, 0, 0);
+}
+
 /* UI / UJ / U9: reset the drive. Closes every channel, keeps the mounted image, answers the "73" power-on message. */
 VD_COLD static void cmd_reset(vd_unit_t *u)
 {
@@ -694,6 +711,7 @@ VD_COLD static void exec_command(vdrive_t *v, int unit, vd_unit_t *u, uint8_t *c
     if (!len) return;
     cmd[len] = 0;
     if (len >= 2 && cmd[0] == 'C' && cmd[1] == 'D') { cmd_cd(v, unit, u, (const char *)cmd + 2, (const char *)cmd + len); return; }
+    if (len >= 2 && (cmd[0] == 'M' || cmd[0] == 'R') && cmd[1] == 'D') { cmd_folder(v, unit, u, cmd[0] == 'M', (const char *)cmd + 2, (const char *)cmd + len); return; }
     if (cmd[0] == 'U' && len == 2 && (cmd[1] == 'I' || cmd[1] == 'J' || cmd[1] == '9')) { cmd_reset(u); return; }
     if (cmd[0] == 'U' && len == 3 && cmd[1] == 'I' && (cmd[2] == '+' || cmd[2] == '-')) return;   /* VIC-20 / C64 bus speed: nothing to do */
     if (!u->disk && cmd[0] == 'N' && v->host.create) {

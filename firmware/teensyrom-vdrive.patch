@@ -15,7 +15,7 @@ index 6024ccd..2f5cbbf 100644
     else IOHandlerNextInit();
  }
 diff --git a/Source/Teensy/MinimalBoot/Common/Common_Defs.h b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
-index 358ffff..a09cc56 100644
+index 358ffff..eef5bdb 100644
 --- a/Source/Teensy/MinimalBoot/Common/Common_Defs.h
 +++ b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
 @@ -14,6 +14,7 @@
@@ -31,7 +31,7 @@ index 358ffff..a09cc56 100644
  
  
 -#define TRVersion              "0.9"    //*VERSION*
-+#define TRVersion              "0.9.0.25"    //*VERSION*  (stock 0.9 + VDrive rev 25)
++#define TRVersion              "0.9.0.26"    //*VERSION*  (stock 0.9 + VDrive rev 26)
  #ifdef Fab04_Features
     char strVersionNumber[] = "TeensyROM+ v" TRVersion; 
  #else
@@ -174,10 +174,10 @@ index d7213cf..c2557a1 100644
  
 diff --git a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c
 new file mode 100644
-index 0000000..f10594d
+index 0000000..083d4f0
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c
-@@ -0,0 +1,949 @@
+@@ -0,0 +1,975 @@
 +// "VDrive" Special IO for TeensyROM+: replacement KERNAL + virtual IEC drive.
 +//   unit 0 = SD card, unit 1 = USB drive. Device numbers are automatic by default: the first free numbers from 8 up
 +//   (the KERNAL probes the real serial bus on the first disk access of a run, see vdrive_io.h), so 8 (SD) and 9 (USB) when
@@ -404,6 +404,31 @@ index 0000000..f10594d
 +{
 +   stcVDUnit *u = &vdUnit[unit];
 +   return u->plain ? u->plain.read(buf, n) : -1;
++}
++
++// MD:NAME / RD:NAME with nothing mounted: folders on the card
++FLASHMEM static int VD_MkDir(void *ctx, int unit, const char *name)
++{
++   stcVDUnit *u = &vdUnit[unit];
++   char path[VD_CwdLen + 20];
++   VD_PathFor(u, name, path, sizeof path);
++   if (u->fs->exists(path)) return 63;                                            // FILE EXISTS (a file or a folder)
++   return u->fs->mkdir(path) ? 0 : 26;
++}
++
++FLASHMEM static int VD_RmDir(void *ctx, int unit, const char *name)
++{
++   stcVDUnit *u = &vdUnit[unit];
++   char path[VD_CwdLen + 20];
++   VD_PathFor(u, name, path, sizeof path);
++   File d = u->fs->open(path, FILE_READ);
++   if (!d || !d.isDirectory()) { if (d) d.close(); return 62; }
++   File first = d.openNextFile();
++   bool empty = !first;
++   if (first) first.close();
++   d.close();
++   if (!empty) return 63;                                                         // not empty: nothing is removed
++   return u->fs->rmdir(path) ? 0 : 26;
 +}
 +
 +// A listing by path (LOAD"$/GAMES/G.D64") must not change what is selected: remember folder and image, put them back afterwards.
@@ -662,6 +687,7 @@ index 0000000..f10594d
 +   host.push = VD_Push;  host.pop = VD_Pop;  host.create = VD_Create;
 +   host.hf_open = VD_HfOpen;  host.hf_read = VD_HfRead;  host.hf_write = VD_HfWrite;  host.hf_close = VD_HfClose;
 +   host.plain_open = VD_PlainOpen;  host.plain_read = VD_PlainRead;  host.plain_close = VD_PlainClose;
++   host.mkdir = VD_MkDir;  host.rmdir = VD_RmDir;
 +   if (hfFile) hfFile.close();        // the drive state (and with it any open channel) was just reset
 +   hfKind = -1;
 +   vdrive_set_host(&vio->vd, &host);
@@ -2661,10 +2687,10 @@ index 0000000..20f3ecc
 +#endif
 diff --git a/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.c b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.c
 new file mode 100644
-index 0000000..1e1c9d9
+index 0000000..78caa65
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.c
-@@ -0,0 +1,979 @@
+@@ -0,0 +1,997 @@
 +#include "vdrive.h"
 +#include "vd_cfg.h"
 +#include <string.h>
@@ -3239,6 +3265,23 @@ index 0000000..1e1c9d9
 +    if ((r = d64_format_blank(d, name, id))) err_from(u, r);
 +}
 +
++/* CMD "MD[n]:NAME" / "RD[n]:NAME": a folder on the card, with nothing mounted. With an image mounted they would be D81 partition /
++ * sub-directory commands, which are not supported (31). */
++VD_COLD static void cmd_folder(vdrive_t *v, int unit, vd_unit_t *u, int make, const char *p, const char *end)
++{
++    const vd_host_t *h = &v->host;
++    char name[17];
++    if (u->disk || !(make ? h->mkdir : h->rmdir)) { set_err(u, 31, 0, 0); return; }
++    while (p < end && *p >= '0' && *p <= '9') p++;
++    if (p < end && *p == ':') p++;
++    size_t n = (size_t)(end - p);
++    if (n < 1 || n > 16) { set_err(u, 34, 0, 0); return; }
++    memcpy(name, p, n); name[n] = 0;
++    if (strpbrk(name, "/*?:=,\"") || !strcmp(name, "..") || !strcmp(name, ".") || !strcmp(name, "_")) { set_err(u, 33, 0, 0); return; }
++    int r = make ? h->mkdir(h->ctx, unit, name) : h->rmdir(h->ctx, unit, name);
++    if (r) set_err(u, (uint8_t)r, 0, 0);
++}
++
 +/* UI / UJ / U9: reset the drive. Closes every channel, keeps the mounted image, answers the "73" power-on message. */
 +VD_COLD static void cmd_reset(vd_unit_t *u)
 +{
@@ -3361,6 +3404,7 @@ index 0000000..1e1c9d9
 +    if (!len) return;
 +    cmd[len] = 0;
 +    if (len >= 2 && cmd[0] == 'C' && cmd[1] == 'D') { cmd_cd(v, unit, u, (const char *)cmd + 2, (const char *)cmd + len); return; }
++    if (len >= 2 && (cmd[0] == 'M' || cmd[0] == 'R') && cmd[1] == 'D') { cmd_folder(v, unit, u, cmd[0] == 'M', (const char *)cmd + 2, (const char *)cmd + len); return; }
 +    if (cmd[0] == 'U' && len == 2 && (cmd[1] == 'I' || cmd[1] == 'J' || cmd[1] == '9')) { cmd_reset(u); return; }
 +    if (cmd[0] == 'U' && len == 3 && cmd[1] == 'I' && (cmd[2] == '+' || cmd[2] == '-')) return;   /* VIC-20 / C64 bus speed: nothing to do */
 +    if (!u->disk && cmd[0] == 'N' && v->host.create) {
@@ -3646,10 +3690,10 @@ index 0000000..1e1c9d9
 +}
 diff --git a/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.h b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.h
 new file mode 100644
-index 0000000..3b9b2d5
+index 0000000..5ac7e2d
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.h
-@@ -0,0 +1,144 @@
+@@ -0,0 +1,148 @@
 +/* Virtual IEC drive: the Teensy-side state machine behind the KERNAL mailbox.
 + * Units 0/1 = devices 8/9, each backed by an optional mounted d64_t.
 + * One mailbox command in, one result out; no I/O other than the d64 and host callbacks. */
@@ -3737,6 +3781,10 @@ index 0000000..3b9b2d5
 +    int  (*plain_open)(void *ctx, int unit, const char *name, uint32_t *size);
 +    int  (*plain_read)(void *ctx, int unit, uint8_t *buf, uint16_t n);
 +    void (*plain_close)(void *ctx, int unit);
++    /* MD:NAME / RD:NAME with nothing mounted: make / remove (only if empty) a folder in the current folder. 0 ok, else a DOS error:
++     * mkdir 63 if the name is taken; rmdir 62 if there is no such folder, 63 if it is not empty. */
++    int  (*mkdir)(void *ctx, int unit, const char *name);
++    int  (*rmdir)(void *ctx, int unit, const char *name);
 +} vd_host_t;
 +enum { VD_HF_CONFIG = 0, VD_HF_STATE = 1 };
 +

@@ -74,6 +74,8 @@ Firmware integration and usage: `firmware/README.md`.
 * 0.9.0.23: `L:name` (toggle lock) and `W-1`/`W-0` (write protect, `d64_t.ro`), CMD syntax (docs/DESIGN.md 28). Unit tests only.
 * 0.9.0.24: new images, `N:NAME.D64,ID` (or `.D71`/`.D81`) with nothing mounted (host callback `create`, glue `VD_Create`, `d64_format_blank`; docs/DESIGN.md 29). Unit and glue host tests.
 * 0.9.0.25: plain files on the card with nothing mounted (`LOAD"GAME.PRG"`, `"GAME"`, patterns, folder paths; host callbacks `plain_open`/`plain_read`/`plain_close`, channel mode 9; docs/DESIGN.md 30). Reading only. Unit and glue host tests.
+* 0.9.0.23: plain files on the card with nothing mounted (`LOAD"GAME.PRG"`, `"GAME"`, patterns, folder paths; host callbacks `hopen`/`hread`/`hclose`, channel mode 7; docs/DESIGN.md 28). Reading only. Unit and glue host tests.
+* 0.9.0.26: `MD:`/`RD:` folders on the card with nothing mounted (host `mkdir`/`rmdir`; docs/DESIGN.md 31). Unit and glue host tests.
 * Known open risks: C128 not supported (see above); tape (device 1) intentionally broken (its code space was reclaimed).
 
 ## Layout
@@ -145,4 +147,4 @@ build/          generated, git-ignored (kernal images derived from the ROM, libd
    (KERNAL image) / `Shift-R` (REU) that sets the highlighted file as the disk for device 8/9. Needs changes to the 6502 menu
    (`Source/C64/MainMenuCRT`, ACME) and regenerated headers, and probably an EEPROM map extension that upstream must agree to.
 5. Smaller follow-ups: D81 sub-directories/partitions, writing plain files to the card, file names > 16
-   characters in host listings, `MD:`/`RD:`, a scan that re-runs after a device is switched on later.
+   characters in host listings, a scan that re-runs after a device is switched on later.

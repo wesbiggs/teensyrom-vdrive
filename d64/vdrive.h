@@ -85,6 +85,10 @@ typedef struct {
     int  (*plain_open)(void *ctx, int unit, const char *name, uint32_t *size);
     int  (*plain_read)(void *ctx, int unit, uint8_t *buf, uint16_t n);
     void (*plain_close)(void *ctx, int unit);
+    /* MD:NAME / RD:NAME with nothing mounted: make / remove (only if empty) a folder in the current folder. 0 ok, else a DOS error:
+     * mkdir 63 if the name is taken; rmdir 62 if there is no such folder, 63 if it is not empty. */
+    int  (*mkdir)(void *ctx, int unit, const char *name);
+    int  (*rmdir)(void *ctx, int unit, const char *name);
 } vd_host_t;
 enum { VD_HF_CONFIG = 0, VD_HF_STATE = 1 };
 
