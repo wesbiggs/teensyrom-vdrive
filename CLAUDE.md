@@ -67,11 +67,11 @@ Firmware integration and usage: `firmware/README.md`.
   window byte twice in a row until two reads agree, and reads back window writes. `VD_TRACE` is off by default (it prints right after the answer, but was not the cause).
   Keep new bus-handler code as short as possible and never add work before `DataPortWriteWait`.
 * 0.9.0.16: direct sector access (`OPEN n,d,n,"#"`, `U1`/`U2`/`UA`/`UB`, `B-R`/`B-W` as aliases, `B-P`, `B-A`, `B-F`; docs/DESIGN.md 21). Unit tests (`tests/test_vdrive.py`) and `BLKTEST` in VICE pass; **not on hardware yet**. No `M-R`/`M-W`/`M-E`.
-* 0.9.0.19: `C:new=old[,old2...]` copy / join on the mounted image (`d64_copy`, docs/DESIGN.md 24). Unit tests only (no VICE run in the cloud session that built it); **not on hardware yet**.
-* 0.9.0.20: REL files (`,L,`+length, `P`, one record per `PRINT#`, side sectors; D81 super side sectors; `C` and `S` handle them; docs/DESIGN.md 25, `tests/test_rel.py`). Unit tests only; **not in VICE or on hardware yet**.
-* 0.9.0.21: append (`,A`; `d64_append`, a disk full restores the file; docs/DESIGN.md 26). Unit tests only.
-* 0.9.0.22: `V`alidate rebuilds the BAM (`d64_validate`, splats deleted, REL side sectors kept; byte-identical to `c1541 -validate`; docs/DESIGN.md 27). Unit tests only.
-* 0.9.0.23: `L:name` (toggle lock) and `W-1`/`W-0` (write protect, `d64_t.ro`), CMD syntax (docs/DESIGN.md 28). Unit tests only.
+* 0.9.0.19: `C:new=old[,old2...]` copy / join on the mounted image (`d64_copy`, docs/DESIGN.md 24). Unit tests and `DOS2TEST` in VICE pass; **not on hardware yet**.
+* 0.9.0.20: REL files (`,L,`+length, `P`, one record per `PRINT#`, side sectors; D81 super side sectors; `C` and `S` handle them; docs/DESIGN.md 25, `tests/test_rel.py`). Unit tests and `RELTEST` in VICE pass; **not on hardware yet**.
+* 0.9.0.21: append (`,A`; `d64_append`, a disk full restores the file; docs/DESIGN.md 26). Unit tests and `DOS2TEST` in VICE; not on hardware.
+* 0.9.0.22: `V`alidate rebuilds the BAM (`d64_validate`, splats deleted, REL side sectors kept; byte-identical to `c1541 -validate`; docs/DESIGN.md 27). Unit tests and `DOS2TEST` in VICE; not on hardware.
+* 0.9.0.23: `L:name` (toggle lock) and `W-1`/`W-0` (write protect, `d64_t.ro`), CMD syntax (docs/DESIGN.md 28). Unit tests and `DOS2TEST` in VICE; not on hardware.
 * 0.9.0.24: new images, `N:NAME.D64,ID` (or `.D71`/`.D81`) with nothing mounted (host callback `create`, glue `VD_Create`, `d64_format_blank`; docs/DESIGN.md 29). Unit and glue host tests.
 * 0.9.0.25: plain files on the card with nothing mounted (`LOAD"GAME.PRG"`, `"GAME"`, patterns, folder paths; host callbacks `plain_open`/`plain_read`/`plain_close`, channel mode 9; docs/DESIGN.md 30). Reading only. Unit and glue host tests.
 * 0.9.0.26: `MD:`/`RD:` folders on the card with nothing mounted (host `mkdir`/`rmdir`; docs/DESIGN.md 31). Unit and glue host tests.

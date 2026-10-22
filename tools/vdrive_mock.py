@@ -350,6 +350,8 @@ def main(kernal, scenario="basic"):
         ok = prog("seqtest", [""], ["SEQ TEST PASS", "CHECKED 100 LINES, 0 ERRORS"]) and ok
         ok = prog("dostest", [""], ["10 PASSED, 0 FAILED"]) and ok
         ok = prog("blktest", [""], ["12 PASSED, 0 FAILED"]) and ok
+        ok = prog("reltest", [""], ["14 PASSED, 0 FAILED"], wait=8.0) and ok
+        ok = prog("dos2test", [""], ["12 PASSED, 0 FAILED"], wait=6.0) and ok
         run('NEW\r')
         run('LOAD"SOAK",8\r', "READY.")
         m.keys('RUN\r')
