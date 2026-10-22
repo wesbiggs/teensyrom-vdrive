@@ -329,3 +329,10 @@ The agreed design from CLAUDE.md "next steps": with no image mounted, `N:` names
 - Errors: `33` no image suffix, a wildcard, an empty or over-long disk name, an ID that is not 2 characters, a path through an image; folder errors as in `CD:`.
 
 Tested in `tests/test_vio.py` (all three formats, `c1541 -validate` leaves each new image unchanged, writable at once, folders, default ID, never replacing) and in the glue host test (`N:MADE.D81` on the stub SD card, read back by `c1541`; a folder path).
+
+## 30. Plain files on the card (0.9.0.25; host and glue tests, not on hardware)
+
+With nothing mounted, the host listing already showed every file of the folder as `PRG`; now a read opens it. `LOAD"GAME.PRG",8` (and `OPEN 2,8,2,"GAME.PRG"`) reads the file itself: the exact name, else `NAME.PRG` when the name has no dot, and a pattern (`"GA*"`) takes the first file in the folder listing that is not a folder or an image. `"DIR/GAME.PRG"` and `"/DIR/GAME.PRG"` walk the folders first (a path through an image keeps meaning a file inside the image); the folder stays selected afterwards, as for a file loaded through an image path.
+
+- Host callbacks `plain_open` (0 / `62`; size out), `plain_read`, `plain_close` (named apart from the `hf_*` hooks of the `!CONFIG` / `!STATE` text channels); the glue keeps one `File` per unit (`VD_PlainOpen` opens with `FILE_READ`, so nothing is created, and refuses folders). Channel mode 9 (`vd_plain_t`, fits the channel union) fetches 256 bytes at a time and flags EOI from the file size. One plain file per unit at a time (a second: `70`). Reading only: `SAVE` / `,W` with nothing mounted still answer `74`.
+- A pattern is resolved through the host listing callbacks, which share the glue's directory handle with a host listing channel: a `LOAD"PAT*"` while a host directory listing is open on the same unit would end that listing. The KERNAL reads a listing to the end before anything else, so this only matters for programs that interleave the two.

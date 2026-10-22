@@ -47,6 +47,7 @@ struct stcVDUnit
    FS      *fs;              // SD or USB file system
    File     img;             // mounted .d64
    File     dir;             // host directory being listed
+   File     plain;           // plain file being read with nothing mounted (LOAD"GAME.PRG")
    d64_t    d;
    bool     mounted;
    bool     dirty;
@@ -197,6 +198,32 @@ FLASHMEM static int VD_Create(void *ctx, int unit, const char *name, uint32_t si
    if (!ok) { u->fs->remove(path); return 72; }                                   // DISK FULL (the card)
    Printf_dbg("VDrive %d: created %s (%lu bytes)\n", unit + 8, path, (unsigned long)size);
    return VD_Mount(ctx, unit, name, out);
+}
+
+// Plain files in the current folder, read with nothing mounted: LOAD"GAME.PRG" (vdrive.c tries NAME.PRG and patterns itself).
+FLASHMEM static void VD_PlainClose(void *ctx, int unit)
+{
+   stcVDUnit *u = &vdUnit[unit];
+   if (u->plain) u->plain.close();
+}
+
+FLASHMEM static int VD_PlainOpen(void *ctx, int unit, const char *name, uint32_t *size)
+{
+   stcVDUnit *u = &vdUnit[unit];
+   char path[VD_CwdLen + 20];
+   VD_PathFor(u, name, path, sizeof path);
+   VD_PlainClose(ctx, unit);
+   u->plain = u->fs->open(path, FILE_READ);                                       // FILE_READ: a missing file is not created
+   if (!u->plain) return 62;
+   if (u->plain.isDirectory()) { u->plain.close(); return 62; }
+   *size = u->plain.size();
+   return 0;
+}
+
+FLASHMEM static int VD_PlainRead(void *ctx, int unit, uint8_t *buf, uint16_t n)
+{
+   stcVDUnit *u = &vdUnit[unit];
+   return u->plain ? u->plain.read(buf, n) : -1;
 }
 
 // A listing by path (LOAD"$/GAMES/G.D64") must not change what is selected: remember folder and image, put them back afterwards.
@@ -454,6 +481,7 @@ FLASHMEM void VDrive_PreStart()
    host.dir_open = VD_DirOpen;  host.dir_next = VD_DirNext;  host.save_devices = VD_SaveDevices;
    host.push = VD_Push;  host.pop = VD_Pop;  host.create = VD_Create;
    host.hf_open = VD_HfOpen;  host.hf_read = VD_HfRead;  host.hf_write = VD_HfWrite;  host.hf_close = VD_HfClose;
+   host.plain_open = VD_PlainOpen;  host.plain_read = VD_PlainRead;  host.plain_close = VD_PlainClose;
    if (hfFile) hfFile.close();        // the drive state (and with it any open channel) was just reset
    hfKind = -1;
    vdrive_set_host(&vio->vd, &host);

@@ -15,7 +15,7 @@ index 6024ccd..2f5cbbf 100644
     else IOHandlerNextInit();
  }
 diff --git a/Source/Teensy/MinimalBoot/Common/Common_Defs.h b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
-index 358ffff..d7bbbc1 100644
+index 358ffff..a09cc56 100644
 --- a/Source/Teensy/MinimalBoot/Common/Common_Defs.h
 +++ b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
 @@ -14,6 +14,7 @@
@@ -31,7 +31,7 @@ index 358ffff..d7bbbc1 100644
  
  
 -#define TRVersion              "0.9"    //*VERSION*
-+#define TRVersion              "0.9.0.24"    //*VERSION*  (stock 0.9 + VDrive rev 24)
++#define TRVersion              "0.9.0.25"    //*VERSION*  (stock 0.9 + VDrive rev 25)
  #ifdef Fab04_Features
     char strVersionNumber[] = "TeensyROM+ v" TRVersion; 
  #else
@@ -174,10 +174,10 @@ index d7213cf..c2557a1 100644
  
 diff --git a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c
 new file mode 100644
-index 0000000..5159893
+index 0000000..f10594d
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c
-@@ -0,0 +1,921 @@
+@@ -0,0 +1,949 @@
 +// "VDrive" Special IO for TeensyROM+: replacement KERNAL + virtual IEC drive.
 +//   unit 0 = SD card, unit 1 = USB drive. Device numbers are automatic by default: the first free numbers from 8 up
 +//   (the KERNAL probes the real serial bus on the first disk access of a run, see vdrive_io.h), so 8 (SD) and 9 (USB) when
@@ -227,6 +227,7 @@ index 0000000..5159893
 +   FS      *fs;              // SD or USB file system
 +   File     img;             // mounted .d64
 +   File     dir;             // host directory being listed
++   File     plain;           // plain file being read with nothing mounted (LOAD"GAME.PRG")
 +   d64_t    d;
 +   bool     mounted;
 +   bool     dirty;
@@ -377,6 +378,32 @@ index 0000000..5159893
 +   if (!ok) { u->fs->remove(path); return 72; }                                   // DISK FULL (the card)
 +   Printf_dbg("VDrive %d: created %s (%lu bytes)\n", unit + 8, path, (unsigned long)size);
 +   return VD_Mount(ctx, unit, name, out);
++}
++
++// Plain files in the current folder, read with nothing mounted: LOAD"GAME.PRG" (vdrive.c tries NAME.PRG and patterns itself).
++FLASHMEM static void VD_PlainClose(void *ctx, int unit)
++{
++   stcVDUnit *u = &vdUnit[unit];
++   if (u->plain) u->plain.close();
++}
++
++FLASHMEM static int VD_PlainOpen(void *ctx, int unit, const char *name, uint32_t *size)
++{
++   stcVDUnit *u = &vdUnit[unit];
++   char path[VD_CwdLen + 20];
++   VD_PathFor(u, name, path, sizeof path);
++   VD_PlainClose(ctx, unit);
++   u->plain = u->fs->open(path, FILE_READ);                                       // FILE_READ: a missing file is not created
++   if (!u->plain) return 62;
++   if (u->plain.isDirectory()) { u->plain.close(); return 62; }
++   *size = u->plain.size();
++   return 0;
++}
++
++FLASHMEM static int VD_PlainRead(void *ctx, int unit, uint8_t *buf, uint16_t n)
++{
++   stcVDUnit *u = &vdUnit[unit];
++   return u->plain ? u->plain.read(buf, n) : -1;
 +}
 +
 +// A listing by path (LOAD"$/GAMES/G.D64") must not change what is selected: remember folder and image, put them back afterwards.
@@ -634,6 +661,7 @@ index 0000000..5159893
 +   host.dir_open = VD_DirOpen;  host.dir_next = VD_DirNext;  host.save_devices = VD_SaveDevices;
 +   host.push = VD_Push;  host.pop = VD_Pop;  host.create = VD_Create;
 +   host.hf_open = VD_HfOpen;  host.hf_read = VD_HfRead;  host.hf_write = VD_HfWrite;  host.hf_close = VD_HfClose;
++   host.plain_open = VD_PlainOpen;  host.plain_read = VD_PlainRead;  host.plain_close = VD_PlainClose;
 +   if (hfFile) hfFile.close();        // the drive state (and with it any open channel) was just reset
 +   hfKind = -1;
 +   vdrive_set_host(&vio->vd, &host);
@@ -2633,10 +2661,10 @@ index 0000000..20f3ecc
 +#endif
 diff --git a/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.c b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.c
 new file mode 100644
-index 0000000..0b3738d
+index 0000000..1e1c9d9
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.c
-@@ -0,0 +1,926 @@
+@@ -0,0 +1,979 @@
 +#include "vdrive.h"
 +#include "vd_cfg.h"
 +#include <string.h>
@@ -2725,6 +2753,7 @@ index 0000000..0b3738d
 +        int r = d64_rel_flush(u->disk, &c->u.l.f);
 +        if (r) err_from(u, r);
 +    }
++    if (c->mode == 9 && u->owner && u->owner->host.plain_close) u->owner->host.plain_close(u->owner->host.ctx, u->index);
 +    c->mode = 0;
 +    u->slot_of[ch] = 0;
 +    if (u->restore_ch == ch + 1) restore_selection(u);
@@ -3054,6 +3083,33 @@ index 0000000..0b3738d
 +    if (rec >= d64_rel_records(&l->f)) set_err(u, 50, 0, 0);    /* not there yet: a write makes it */
 +}
 +
++/* Nothing mounted: a plain file on the card. The exact name, else NAME.PRG; a pattern matches the first file in the folder
++ * listing that is not a folder or an image. */
++VD_COLD static void host_open(vdrive_t *v, int unit, vd_unit_t *u, int ch, const char *name)
++{
++    const vd_host_t *h = &v->host;
++    char nm[22];
++    uint32_t size = 0;
++    int r = 62;
++    for (int i = 0; i < VD_NSLOT; i++) if (u->slot[i].mode == 9) { set_err(u, 70, 0, 0); return; }   /* one at a time */
++    if (strpbrk(name, "*?")) {
++        char e[17]; uint32_t sz; int dir;
++        nm[0] = 0;
++        if (h->dir_open && h->dir_next && !h->dir_open(h->ctx, unit, e))
++            while (h->dir_next(h->ctx, unit, e, &sz, &dir) > 0)
++                if (!dir && !image_kind(e) && d64_match(e, name)) { strcpy(nm, e); break; }
++        if (nm[0]) r = h->plain_open(h->ctx, unit, nm, &size);
++    } else {
++        strcpy(nm, name);
++        r = h->plain_open(h->ctx, unit, nm, &size);
++        if (r == 62 && !strchr(nm, '.')) { strcat(nm, ".PRG"); r = h->plain_open(h->ctx, unit, nm, &size); }
++    }
++    if (r) { set_err(u, (uint8_t)r, 0, 0); return; }
++    vd_chan_t *c = chan_alloc(u, ch);
++    if (!c) { h->plain_close(h->ctx, unit); return; }
++    c->mode = 9; c->u.p.left = size; c->u.p.pos = c->u.p.len = 0;
++}
++
 +VD_COLD static void chan_open(vdrive_t *v, int unit, vd_unit_t *u, int ch, const uint8_t *raw, uint8_t len)
 +{
 +    chan_close(u, ch);
@@ -3070,12 +3126,24 @@ index 0000000..0b3738d
 +    char mode = o.mode ? o.mode : (ch == 1 ? 'W' : 'R');
 +    if (o.name[0] == '!') { open_hostfile(v, unit, u, ch, o.name, mode); return; }
 +    if (mode != 'R' && mode != 'W' && mode != 'A') { set_err(u, 33, 0, 0); return; }
-+    /* "DIR/IMAGE.D64/FILE" (or a bare "IMAGE.D64" read with nothing mounted): walk there first, the file name is what is left */
++    /* "DIR/IMAGE.D64/FILE" (or a bare "IMAGE.D64" read with nothing mounted): walk there first, the file name is what is left.
++     * "DIR/FILE.PRG", no image on the way: the folders are walked and FILE.PRG is a plain file on the card. */
 +    if (strchr(o.name, '/') || (mode == 'R' && !u->disk && image_kind(o.name))) {
-+        char *rest;
-+        int temp = mode == 'R' && v->host.push && v->host.pop;
++        char *rest, *leaf = strrchr(o.name, '/'), save = 0;
++        int temp = mode == 'R' && v->host.push && v->host.pop, plain = 0;
++        if (mode == 'R' && leaf && leaf[1] && !image_kind(leaf + 1) && v->host.plain_open) {
++            plain = 1;
++            for (char *q = o.name; q < leaf; ) {                                  /* an image on the way: the leaf is a file in it */
++                char *sl = strchr(q, '/');
++                save = *sl; *sl = 0;
++                if (image_kind(q)) plain = 0;
++                *sl = save; q = sl + 1;
++            }
++        }
 +        if (temp) begin_temp(v, unit, u);
++        if (plain) { save = leaf[1]; leaf[1] = 0; }                               /* walk "DIR/" only */
 +        int r = path_walk(v, unit, u, o.name, &rest);
++        if (plain) { leaf[1] = save; rest = leaf + 1; }
 +        if (r) { set_err(u, (uint8_t)r, 0, 0); if (temp) restore_selection(u); return; }
 +        if (!*rest) {                                                         /* it named a folder / image: show what is in it, nothing stays selected */
 +            open_dir_pat(v, unit, u, ch, "");
@@ -3086,6 +3154,7 @@ index 0000000..0b3738d
 +        if (temp) v->host.pop(v->host.ctx, unit, NULL);                       /* (out == NULL: keep the selection, drop the snapshot) */
 +    }
 +    if (strlen(o.name) > 16) { set_err(u, 33, 0, 0); return; }
++    if (!u->disk && mode == 'R' && v->host.plain_open && v->host.plain_read) { host_open(v, unit, u, ch, o.name); return; }
 +    if (!u->disk) { set_err(u, 74, 0, 0); return; }
 +    if (o.type == 4 || mode == 'R') {                                         /* a REL file opens for reading and writing alike */
 +        d64_entry_t e;
@@ -3465,6 +3534,18 @@ index 0000000..0b3738d
 +        return 1;
 +    }
 +    if (c->mode == 8) return rel_read(u, &c->u.l, b, eoi);
++    if (c->mode == 9) {
++        vd_plain_t *f = &c->u.p;
++        if (f->pos >= f->len) {
++            if (!f->left) return 0;
++            int n = v->host.plain_read(v->host.ctx, unit, f->buf, (uint16_t)(f->left < D64_SECTOR ? f->left : D64_SECTOR));
++            if (n <= 0) { set_err(u, 21, 0, 0); f->left = 0; return 0; }
++            f->len = (uint16_t)n; f->pos = 0; f->left -= (uint32_t)n;
++        }
++        *b = f->buf[f->pos++];
++        *eoi = f->pos >= f->len && !f->left;
++        return 1;
++    }
 +    if (c->mode == 5) {
 +        if (c->u.b.pos >= D64_SECTOR) return 0;
 +        *b = c->u.b.buf[c->u.b.pos++];
@@ -3565,10 +3646,10 @@ index 0000000..0b3738d
 +}
 diff --git a/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.h b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.h
 new file mode 100644
-index 0000000..bc7058f
+index 0000000..3b9b2d5
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.h
-@@ -0,0 +1,132 @@
+@@ -0,0 +1,144 @@
 +/* Virtual IEC drive: the Teensy-side state machine behind the KERNAL mailbox.
 + * Units 0/1 = devices 8/9, each backed by an optional mounted d64_t.
 + * One mailbox command in, one result out; no I/O other than the d64 and host callbacks. */
@@ -3609,11 +3690,18 @@ index 0000000..bc7058f
 +    uint8_t   over;             /* 1: this record overflowed (51 reported), 2: it could not be made (52 / 72) */
 +} vd_rel_t;
 +
++/* A plain file on the card (nothing mounted): read through the host in 256-byte pieces. */
++typedef struct {
++    uint32_t left;              /* bytes not yet fetched from the host */
++    uint16_t pos, len;          /* cursor / fill of buf */
++    uint8_t  buf[D64_SECTOR];
++} vd_plain_t;
++
 +typedef struct {
 +    uint8_t  mode;              /* 0 free, 1 file read, 3 file write, 4 directory stream, 5 direct-access buffer (OPEN n,d,n,"#"),
-+                                   6 / 7 host text file read / write (OPEN n,d,n,"!CONFIG[,W]" / "!STATE"), 8 REL */
++                                   6 / 7 host text file read / write (OPEN n,d,n,"!CONFIG[,W]" / "!STATE"), 8 REL, 9 plain file on the card */
 +    union { d64_file_t r; d64_wfile_t w; vd_dirstream_t d; struct { uint16_t pos; uint8_t buf[D64_SECTOR]; } b;
-+            struct { uint8_t kind, pos, len; uint8_t buf[VD_HFBUF]; } h; vd_rel_t l; } u;
++            struct { uint8_t kind, pos, len; uint8_t buf[VD_HFBUF]; } h; vd_rel_t l; vd_plain_t p; } u;
 +} vd_chan_t;
 +
 +/* Services the host (Teensy glue / test harness) provides for image selection.
@@ -3644,6 +3732,11 @@ index 0000000..bc7058f
 +    /* "N:NAME.D64,ID" with nothing mounted: make a new all-zero image file of `size` bytes in the current folder (never over an
 +     * existing file: 63) and mount it like mount(); vdrive.c then writes the header and BAM. 0 ok, else a DOS error code. */
 +    int  (*create)(void *ctx, int unit, const char *name, uint32_t size, d64_t **out);
++    /* A plain file in the current folder, read with nothing mounted (LOAD"GAME.PRG"): one open at a time per unit.
++     * plain_open: 0 ok (*size = its length) or a DOS error (62); plain_read: bytes read (<0 error); plain_close: done with it. */
++    int  (*plain_open)(void *ctx, int unit, const char *name, uint32_t *size);
++    int  (*plain_read)(void *ctx, int unit, uint8_t *buf, uint16_t n);
++    void (*plain_close)(void *ctx, int unit);
 +} vd_host_t;
 +enum { VD_HF_CONFIG = 0, VD_HF_STATE = 1 };
 +
@@ -3687,7 +3780,7 @@ index 0000000..bc7058f
 +int  vdrive_scan_free(vdrive_t *v, uint8_t dev);
 +int  vdrive_unit_for(const vdrive_t *v, uint8_t dev);                /* unit 0/1 serving this device number, or -1 */
 +void vdrive_set_host(vdrive_t *v, const vd_host_t *host);
-+int  vdrive_chan_mode(const vdrive_t *v, int unit, int ch);   /* 0 closed, 1 file-read, 3 file-write, 4 directory, 5 buffer, 6/7 host text, 8 REL */
++int  vdrive_chan_mode(const vdrive_t *v, int unit, int ch);   /* 0 closed, 1 file-read, 3 file-write, 4 directory, 5 buffer, 6/7 host text, 8 REL, 9 plain file */
 +int  vdrive_active(const vdrive_t *v);                        /* unit of the open bus transaction: 0/1, 2 absent device, -1 none */
 +int  vdrive_pending_err(const vdrive_t *v, int unit);         /* DOS error code waiting on the status channel (0 = none) */
 +

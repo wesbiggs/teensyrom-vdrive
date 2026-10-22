@@ -38,11 +38,18 @@ typedef struct {
     uint8_t   over;             /* 1: this record overflowed (51 reported), 2: it could not be made (52 / 72) */
 } vd_rel_t;
 
+/* A plain file on the card (nothing mounted): read through the host in 256-byte pieces. */
+typedef struct {
+    uint32_t left;              /* bytes not yet fetched from the host */
+    uint16_t pos, len;          /* cursor / fill of buf */
+    uint8_t  buf[D64_SECTOR];
+} vd_plain_t;
+
 typedef struct {
     uint8_t  mode;              /* 0 free, 1 file read, 3 file write, 4 directory stream, 5 direct-access buffer (OPEN n,d,n,"#"),
-                                   6 / 7 host text file read / write (OPEN n,d,n,"!CONFIG[,W]" / "!STATE"), 8 REL */
+                                   6 / 7 host text file read / write (OPEN n,d,n,"!CONFIG[,W]" / "!STATE"), 8 REL, 9 plain file on the card */
     union { d64_file_t r; d64_wfile_t w; vd_dirstream_t d; struct { uint16_t pos; uint8_t buf[D64_SECTOR]; } b;
-            struct { uint8_t kind, pos, len; uint8_t buf[VD_HFBUF]; } h; vd_rel_t l; } u;
+            struct { uint8_t kind, pos, len; uint8_t buf[VD_HFBUF]; } h; vd_rel_t l; vd_plain_t p; } u;
 } vd_chan_t;
 
 /* Services the host (Teensy glue / test harness) provides for image selection.
@@ -73,6 +80,11 @@ typedef struct {
     /* "N:NAME.D64,ID" with nothing mounted: make a new all-zero image file of `size` bytes in the current folder (never over an
      * existing file: 63) and mount it like mount(); vdrive.c then writes the header and BAM. 0 ok, else a DOS error code. */
     int  (*create)(void *ctx, int unit, const char *name, uint32_t size, d64_t **out);
+    /* A plain file in the current folder, read with nothing mounted (LOAD"GAME.PRG"): one open at a time per unit.
+     * plain_open: 0 ok (*size = its length) or a DOS error (62); plain_read: bytes read (<0 error); plain_close: done with it. */
+    int  (*plain_open)(void *ctx, int unit, const char *name, uint32_t *size);
+    int  (*plain_read)(void *ctx, int unit, uint8_t *buf, uint16_t n);
+    void (*plain_close)(void *ctx, int unit);
 } vd_host_t;
 enum { VD_HF_CONFIG = 0, VD_HF_STATE = 1 };
 
@@ -116,7 +128,7 @@ int  vdrive_scan_begin(vdrive_t *v);
 int  vdrive_scan_free(vdrive_t *v, uint8_t dev);
 int  vdrive_unit_for(const vdrive_t *v, uint8_t dev);                /* unit 0/1 serving this device number, or -1 */
 void vdrive_set_host(vdrive_t *v, const vd_host_t *host);
-int  vdrive_chan_mode(const vdrive_t *v, int unit, int ch);   /* 0 closed, 1 file-read, 3 file-write, 4 directory, 5 buffer, 6/7 host text, 8 REL */
+int  vdrive_chan_mode(const vdrive_t *v, int unit, int ch);   /* 0 closed, 1 file-read, 3 file-write, 4 directory, 5 buffer, 6/7 host text, 8 REL, 9 plain file */
 int  vdrive_active(const vdrive_t *v);                        /* unit of the open bus transaction: 0/1, 2 absent device, -1 none */
 int  vdrive_pending_err(const vdrive_t *v, int unit);         /* DOS error code waiting on the status channel (0 = none) */
 

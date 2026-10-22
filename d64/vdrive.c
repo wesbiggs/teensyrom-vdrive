@@ -86,6 +86,7 @@ VD_COLD static void chan_close(vd_unit_t *u, int ch)
         int r = d64_rel_flush(u->disk, &c->u.l.f);
         if (r) err_from(u, r);
     }
+    if (c->mode == 9 && u->owner && u->owner->host.plain_close) u->owner->host.plain_close(u->owner->host.ctx, u->index);
     c->mode = 0;
     u->slot_of[ch] = 0;
     if (u->restore_ch == ch + 1) restore_selection(u);
@@ -415,6 +416,33 @@ VD_COLD static void cmd_position(vd_unit_t *u, const uint8_t *cmd, uint8_t len)
     if (rec >= d64_rel_records(&l->f)) set_err(u, 50, 0, 0);    /* not there yet: a write makes it */
 }
 
+/* Nothing mounted: a plain file on the card. The exact name, else NAME.PRG; a pattern matches the first file in the folder
+ * listing that is not a folder or an image. */
+VD_COLD static void host_open(vdrive_t *v, int unit, vd_unit_t *u, int ch, const char *name)
+{
+    const vd_host_t *h = &v->host;
+    char nm[22];
+    uint32_t size = 0;
+    int r = 62;
+    for (int i = 0; i < VD_NSLOT; i++) if (u->slot[i].mode == 9) { set_err(u, 70, 0, 0); return; }   /* one at a time */
+    if (strpbrk(name, "*?")) {
+        char e[17]; uint32_t sz; int dir;
+        nm[0] = 0;
+        if (h->dir_open && h->dir_next && !h->dir_open(h->ctx, unit, e))
+            while (h->dir_next(h->ctx, unit, e, &sz, &dir) > 0)
+                if (!dir && !image_kind(e) && d64_match(e, name)) { strcpy(nm, e); break; }
+        if (nm[0]) r = h->plain_open(h->ctx, unit, nm, &size);
+    } else {
+        strcpy(nm, name);
+        r = h->plain_open(h->ctx, unit, nm, &size);
+        if (r == 62 && !strchr(nm, '.')) { strcat(nm, ".PRG"); r = h->plain_open(h->ctx, unit, nm, &size); }
+    }
+    if (r) { set_err(u, (uint8_t)r, 0, 0); return; }
+    vd_chan_t *c = chan_alloc(u, ch);
+    if (!c) { h->plain_close(h->ctx, unit); return; }
+    c->mode = 9; c->u.p.left = size; c->u.p.pos = c->u.p.len = 0;
+}
+
 VD_COLD static void chan_open(vdrive_t *v, int unit, vd_unit_t *u, int ch, const uint8_t *raw, uint8_t len)
 {
     chan_close(u, ch);
@@ -431,12 +459,24 @@ VD_COLD static void chan_open(vdrive_t *v, int unit, vd_unit_t *u, int ch, const
     char mode = o.mode ? o.mode : (ch == 1 ? 'W' : 'R');
     if (o.name[0] == '!') { open_hostfile(v, unit, u, ch, o.name, mode); return; }
     if (mode != 'R' && mode != 'W' && mode != 'A') { set_err(u, 33, 0, 0); return; }
-    /* "DIR/IMAGE.D64/FILE" (or a bare "IMAGE.D64" read with nothing mounted): walk there first, the file name is what is left */
+    /* "DIR/IMAGE.D64/FILE" (or a bare "IMAGE.D64" read with nothing mounted): walk there first, the file name is what is left.
+     * "DIR/FILE.PRG", no image on the way: the folders are walked and FILE.PRG is a plain file on the card. */
     if (strchr(o.name, '/') || (mode == 'R' && !u->disk && image_kind(o.name))) {
-        char *rest;
-        int temp = mode == 'R' && v->host.push && v->host.pop;
+        char *rest, *leaf = strrchr(o.name, '/'), save = 0;
+        int temp = mode == 'R' && v->host.push && v->host.pop, plain = 0;
+        if (mode == 'R' && leaf && leaf[1] && !image_kind(leaf + 1) && v->host.plain_open) {
+            plain = 1;
+            for (char *q = o.name; q < leaf; ) {                                  /* an image on the way: the leaf is a file in it */
+                char *sl = strchr(q, '/');
+                save = *sl; *sl = 0;
+                if (image_kind(q)) plain = 0;
+                *sl = save; q = sl + 1;
+            }
+        }
         if (temp) begin_temp(v, unit, u);
+        if (plain) { save = leaf[1]; leaf[1] = 0; }                               /* walk "DIR/" only */
         int r = path_walk(v, unit, u, o.name, &rest);
+        if (plain) { leaf[1] = save; rest = leaf + 1; }
         if (r) { set_err(u, (uint8_t)r, 0, 0); if (temp) restore_selection(u); return; }
         if (!*rest) {                                                         /* it named a folder / image: show what is in it, nothing stays selected */
             open_dir_pat(v, unit, u, ch, "");
@@ -447,6 +487,7 @@ VD_COLD static void chan_open(vdrive_t *v, int unit, vd_unit_t *u, int ch, const
         if (temp) v->host.pop(v->host.ctx, unit, NULL);                       /* (out == NULL: keep the selection, drop the snapshot) */
     }
     if (strlen(o.name) > 16) { set_err(u, 33, 0, 0); return; }
+    if (!u->disk && mode == 'R' && v->host.plain_open && v->host.plain_read) { host_open(v, unit, u, ch, o.name); return; }
     if (!u->disk) { set_err(u, 74, 0, 0); return; }
     if (o.type == 4 || mode == 'R') {                                         /* a REL file opens for reading and writing alike */
         d64_entry_t e;
@@ -826,6 +867,18 @@ VD_COLD static int read_byte(vdrive_t *v, int unit, vd_unit_t *u, vd_chan_t *c, 
         return 1;
     }
     if (c->mode == 8) return rel_read(u, &c->u.l, b, eoi);
+    if (c->mode == 9) {
+        vd_plain_t *f = &c->u.p;
+        if (f->pos >= f->len) {
+            if (!f->left) return 0;
+            int n = v->host.plain_read(v->host.ctx, unit, f->buf, (uint16_t)(f->left < D64_SECTOR ? f->left : D64_SECTOR));
+            if (n <= 0) { set_err(u, 21, 0, 0); f->left = 0; return 0; }
+            f->len = (uint16_t)n; f->pos = 0; f->left -= (uint32_t)n;
+        }
+        *b = f->buf[f->pos++];
+        *eoi = f->pos >= f->len && !f->left;
+        return 1;
+    }
     if (c->mode == 5) {
         if (c->u.b.pos >= D64_SECTOR) return 0;
         *b = c->u.b.buf[c->u.b.pos++];

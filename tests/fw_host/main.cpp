@@ -293,6 +293,12 @@ int main(int argc, char **argv)
     cmd15("UI"); check("UI answers 73", status15().rfind("73,", 0) == 0);
     cmd15("CD:/"); status15();
 
+    // ---- plain files on the card with nothing mounted ----
+    { FILE *f = fopen((SD.root / "plain.prg").c_str(), "wb"); fputs("\x01\x08" "plain program", f); fclose(f); }
+    check("LOAD\"PLAIN.PRG\" reads a plain file from the card", fast_load(8, "PLAIN.PRG", &rc) == std::string("\x01\x08") + "plain program" && rc == 0 && !vdUnit[0].mounted);
+    check("... LOAD\"PLAIN\" finds it too, and the file is closed afterwards", fast_load(8, "PLAIN", &rc).size() == 15 && rc == 0 && !vdUnit[0].plain);
+    fast_load(8, "NOSUCH", &rc); check("... a missing plain file is 62", rc == 4 && status15().rfind("62,", 0) == 0);
+
     // ---- N:NAME.D64,ID with nothing mounted: a new image on the card, mounted and formatted ----
     cmd15("N:MADE.D81,MD");
     check("N:MADE.D81 creates, mounts and formats a new image", status15() == "00, OK,00,00\r" && vdUnit[0].mounted && vdUnit[0].d.fmt == D64_FMT_D81

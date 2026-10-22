@@ -169,6 +169,9 @@ class HostStruct(ctypes.Structure):
     PUSH = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_int)
     POP = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.POINTER(ctypes.c_void_p))
     CREATE = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint32, ctypes.POINTER(ctypes.c_void_p))
+    HOPEN = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_char_p, ctypes.POINTER(ctypes.c_uint32))
+    HREAD = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_uint16)
+    HCLOSE = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_int)
     HFOPEN = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int)
     HFREAD = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_int)
     HFWRITE = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_int)
@@ -176,7 +179,7 @@ class HostStruct(ctypes.Structure):
     _fields_ = [("ctx", ctypes.c_void_p), ("mount", MOUNT), ("unmount", UNMOUNT), ("chdir", CHDIR),
                 ("dir_open", DIROPEN), ("dir_next", DIRNEXT), ("save_devices", SAVEDEV), ("push", PUSH), ("pop", POP),
                 ("hf_open", HFOPEN), ("hf_read", HFREAD), ("hf_write", HFWRITE), ("hf_close", HFCLOSE),
-                ("create", CREATE)]
+                ("create", CREATE), ("plain_open", HOPEN), ("plain_read", HREAD), ("plain_close", HCLOSE)]
 
 
 class HostTests(unittest.TestCase):
@@ -245,10 +248,27 @@ class HostTests(unittest.TestCase):
             self.created.append(p)
             return mount(ctx, unit, name, out)
 
+        self.hfile = None                     # [bytes, position] of the open plain file
+        self.hopens = []
+
+        def hopen(ctx, unit, name, size):
+            p = self.cwd / name.decode().lower()
+            self.hopens.append(name)
+            if not p.is_file(): return 62
+            self.hfile = [p.read_bytes(), 0]; size[0] = len(self.hfile[0]); return 0
+
+        def hread(ctx, unit, buf, n):
+            data, pos = self.hfile
+            part = data[pos: pos + n]; self.hfile[1] += len(part)
+            ctypes.memmove(buf, part, len(part)); return len(part)
+
+        def hclose(ctx, unit): self.hfile = None
+
         self.created = []
         self.cb = HostStruct(None, HostStruct.MOUNT(mount), HostStruct.UNMOUNT(unmount), HostStruct.CHDIR(chdir),
                              HostStruct.DIROPEN(dir_open), HostStruct.DIRNEXT(dir_next), HostStruct.SAVEDEV(lambda c, a, b: None),
-                             HostStruct.PUSH(push), HostStruct.POP(pop), create=HostStruct.CREATE(create))
+                             HostStruct.PUSH(push), HostStruct.POP(pop), create=HostStruct.CREATE(create),
+                             plain_open=HostStruct.HOPEN(hopen), plain_read=HostStruct.HREAD(hread), plain_close=HostStruct.HCLOSE(hclose))
         LIB.vdrive_set_host(self.io.v, ctypes.byref(self.cb))
 
     def tearDown(self): shutil.rmtree(self.tmp)
@@ -297,6 +317,49 @@ class HostTests(unittest.TestCase):
         self.cmd15(b"N:/ROOT.D64,RT")                             # a leading "/" means the card's root
         self.assertEqual(self.status(), "00, OK,00,00\r")
         self.assertTrue((self.tmp / "root.d64").exists())
+
+    def test_plain_files_from_the_card(self):
+        prog = b"\x01\x08" + bytes(range(256)) * 3 + b"end"                  # 773 bytes: four host reads
+        (self.tmp / "game.prg").write_bytes(prog)
+        (self.tmp / "sub" / "tool.prg").write_bytes(b"\x00\xc0tool")
+        for name in (b"GAME.PRG", b"GAME", b"GA*", b"G?ME.PRG"):
+            rc, addr, data = self.io.fast_load(8, name)
+            self.assertEqual((rc, addr, data), (0, 0x0801, prog[2:]), name)
+            self.assertIsNone(self.hfile, name)                               # closed again
+        self.assertEqual(self.cur, None)                                      # nothing got mounted
+        self.assertEqual(self.io.fast_load(8, b"SUB/TOOL.PRG")[1:], (0xC000, b"tool"))   # a folder on the way stays selected
+        self.assertEqual(self.io.fast_load(8, b"TOOL")[1:], (0xC000, b"tool"))
+        self.cmd15(b"CD:/"); self.status()
+        self.assertEqual(self.io.fast_load(8, b"/SUB/TOOL.PRG")[1:], (0xC000, b"tool"))
+
+    def test_plain_file_errors_and_byte_path(self):
+        (self.tmp / "game.prg").write_bytes(b"\x01\x08abc")
+        self.assertEqual(self.io.fast_load(8, b"NOPE")[0], 4)                # not found
+        self.assertEqual(self.status(), "62,FILE NOT FOUND,00,00\r")
+        self.assertEqual(self.io.fast_load(8, b"SUB")[0], 4)                 # a folder is not a file
+        self.hopens.clear()
+        self.assertEqual(self.io.fast_load(8, b"A*")[0], 4)                  # patterns skip images (A.D64)
+        self.assertEqual(self.hopens, [])
+        def bus(c, a=0):
+            _, d, st = self.io.call(c, a); return d, st
+        bus(LISTEN, 8); bus(SECOND, 0xF2)
+        for b in b"GAME.PRG": bus(CIOUT, b)
+        bus(UNLSN)
+        bus(LISTEN, 8); bus(SECOND, 0xF3)
+        for b in b"README.PRG": bus(CIOUT, b)
+        bus(UNLSN)
+        self.assertEqual(self.status(), "70,NO CHANNEL,00,00\r")             # one plain file at a time
+        bus(TALK, 8); bus(TKSA, 0x62)
+        got = []
+        while True:
+            b, s_ = bus(ACPTR); got.append(b)
+            if s_ & 0x40: break
+        bus(UNTLK)
+        self.assertEqual(bytes(got), b"\x01\x08abc")
+        bus(LISTEN, 8); bus(SECOND, 0xE2); bus(UNLSN)
+        self.assertIsNone(self.hfile)
+        self.io.fast_save(8, b"NEW.PRG", 0x0801, b"x")                         # writing plain files is not supported
+        self.assertTrue(self.status().startswith("74,"))
 
     def test_n_with_an_image_mounted_still_formats_it(self):
         self.cmd15(b"CD:A.D64"); self.status()
