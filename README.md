@@ -98,13 +98,13 @@ The USB drive works the same. Any other device number uses the real IEC bus unto
 | `@0:` replace | |
 | Error channel | |
 | Directory with `$:pattern` | |
+| `C:new=old` copy | Also joins files: `C:new=a,b,c` (up to 8); the new file has the first source's type |
 
 ### Not yet supported
 | Feature | Notes |
 |---|---|
 | REL files | |
 | Append (`,A`) | |
-| `C` copy | |
 | `V` validate | Accepted, does nothing |
 | Plain `.prg` files loaded straight from the card | Mount an image instead |
 | File names longer than 16 characters | Hidden in host listings |

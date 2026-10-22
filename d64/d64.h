@@ -27,7 +27,8 @@ enum {
     D64_E_NAME = -5,     /* bad file name              -> DOS 33 */
     D64_E_RO = -6,       /* read-only disk             -> DOS 26 */
     D64_E_LOCKED = -7,   /* file is locked             -> DOS 26 */
-    D64_E_NOTFOUND = -8  /* file not found             -> DOS 62 */
+    D64_E_NOTFOUND = -8, /* file not found             -> DOS 62 */
+    D64_E_TYPE = -9      /* file type mismatch         -> DOS 64 */
 };
 
 enum { D64_FMT_D64 = 0, D64_FMT_D71 = 1, D64_FMT_D81 = 2 };
@@ -114,6 +115,10 @@ int  d64_scratch_entry(d64_t *d, const d64_entry_t *e);          /* frees chain,
 int  d64_scratch(d64_t *d, const char *pattern);                 /* returns files scratched or <0 */
 int  d64_rename(d64_t *d, const char *oldname, const char *newname);
 int  d64_format(d64_t *d, const char *name, const char *id);     /* id==NULL: quick (BAM + directory only) */
+/* DOS "C:new=old1,old2,...": new file, type of the first source, holding the sources one after the other. Sources are
+ * patterns (first match); D64_E_NOTFOUND if one is missing, D64_E_EXISTS if newname is taken, D64_E_TYPE for a REL source
+ * among several. On failure nothing is left behind (D64_E_FULL included). */
+int  d64_copy(d64_t *d, const char *newname, const char *const *src, int nsrc);
 
 /* ---- raw blocks (direct access: U1/U2, B-A, B-F) ----
  * Sector numbers are checked against the geometry: D64_E_IO for an illegal track/sector or a failed transfer. */

@@ -547,6 +547,44 @@ VD_COLD int d64_close_write(d64_t *d, d64_wfile_t *w)
     return dir_update(d, w->dir_t, w->dir_s, w->dir_slot, NULL, 0x80 | w->type, w->blocks);
 }
 
+/* d64_find, but never the entry being written (a pattern could match the new file's own splat entry) */
+VD_COLD static int find_except(d64_t *d, const char *pat, const d64_wfile_t *w, d64_entry_t *e)
+{
+    d64_dir_t it;
+    int r = d64_dir_first(d, &it);
+    if (r) return r;
+    while ((r = d64_dir_next(d, &it, e)) > 0)
+        if (((e->type & 7) != 0 || (e->type & 0x80)) && d64_match(e->name, pat)
+            && !(w && e->dir_t == w->dir_t && e->dir_s == w->dir_s && e->dir_slot == w->dir_slot)) return 1;
+    return r;
+}
+
+VD_COLD int d64_copy(d64_t *d, const char *newname, const char *const *src, int nsrc)
+{
+    d64_entry_t e;
+    d64_file_t f;
+    d64_wfile_t w;
+    uint8_t type = 0, chunk[64];
+    int r;
+    if (!d->write) return D64_E_RO;
+    if (nsrc < 1 || !valid_name(newname)) return D64_E_NAME;
+    for (int i = 0; i < nsrc; i++) {                           /* every source must exist before anything is written */
+        if ((r = find_except(d, src[i], NULL, &e)) < 0) return r;
+        if (r == 0) return D64_E_NOTFOUND;
+        if ((e.type & 7) == 4) return D64_E_TYPE;              /* REL: records + side sectors, not a byte stream */
+        if (i == 0) type = e.type & 7;
+    }
+    if ((r = d64_create(d, newname, type, 0, &w))) return r;
+    for (int i = 0; i < nsrc; i++) {
+        if ((r = find_except(d, src[i], &w, &e)) <= 0) { abort_write(d, &w); return r ? r : D64_E_NOTFOUND; }
+        d64_file_open(d, &e, &f);
+        while ((r = d64_file_read(d, &f, chunk, sizeof chunk)) > 0)
+            if ((r = d64_write(d, &w, chunk, (size_t)r)) < 0) return r;     /* d64_write already removed the new file */
+        if (r < 0) { abort_write(d, &w); return D64_E_IO; }
+    }
+    return d64_close_write(d, &w);
+}
+
 VD_COLD int d64_format(d64_t *d, const char *name, const char *id)
 {
     uint8_t b[D64_SECTOR];

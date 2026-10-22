@@ -15,7 +15,7 @@ index 6024ccd..2f5cbbf 100644
     else IOHandlerNextInit();
  }
 diff --git a/Source/Teensy/MinimalBoot/Common/Common_Defs.h b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
-index 358ffff..da88182 100644
+index 358ffff..3e2eb64 100644
 --- a/Source/Teensy/MinimalBoot/Common/Common_Defs.h
 +++ b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
 @@ -14,6 +14,7 @@
@@ -31,7 +31,7 @@ index 358ffff..da88182 100644
  
  
 -#define TRVersion              "0.9"    //*VERSION*
-+#define TRVersion              "0.9.0.18"    //*VERSION*  (stock 0.9 + VDrive rev 18)
++#define TRVersion              "0.9.0.19"    //*VERSION*  (stock 0.9 + VDrive rev 19)
  #ifdef Fab04_Features
     char strVersionNumber[] = "TeensyROM+ v" TRVersion; 
  #else
@@ -1229,10 +1229,10 @@ index 166ecfe..ebb9a28 100644
  
 diff --git a/Source/Teensy/MinimalBoot/Common/vdrive/d64.c b/Source/Teensy/MinimalBoot/Common/vdrive/d64.c
 new file mode 100644
-index 0000000..596f91f
+index 0000000..7eb6e36
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/vdrive/d64.c
-@@ -0,0 +1,719 @@
+@@ -0,0 +1,757 @@
 +#include "d64.h"
 +#include "vd_cfg.h"
 +#include <string.h>
@@ -1782,6 +1782,44 @@ index 0000000..596f91f
 +    return dir_update(d, w->dir_t, w->dir_s, w->dir_slot, NULL, 0x80 | w->type, w->blocks);
 +}
 +
++/* d64_find, but never the entry being written (a pattern could match the new file's own splat entry) */
++VD_COLD static int find_except(d64_t *d, const char *pat, const d64_wfile_t *w, d64_entry_t *e)
++{
++    d64_dir_t it;
++    int r = d64_dir_first(d, &it);
++    if (r) return r;
++    while ((r = d64_dir_next(d, &it, e)) > 0)
++        if (((e->type & 7) != 0 || (e->type & 0x80)) && d64_match(e->name, pat)
++            && !(w && e->dir_t == w->dir_t && e->dir_s == w->dir_s && e->dir_slot == w->dir_slot)) return 1;
++    return r;
++}
++
++VD_COLD int d64_copy(d64_t *d, const char *newname, const char *const *src, int nsrc)
++{
++    d64_entry_t e;
++    d64_file_t f;
++    d64_wfile_t w;
++    uint8_t type = 0, chunk[64];
++    int r;
++    if (!d->write) return D64_E_RO;
++    if (nsrc < 1 || !valid_name(newname)) return D64_E_NAME;
++    for (int i = 0; i < nsrc; i++) {                           /* every source must exist before anything is written */
++        if ((r = find_except(d, src[i], NULL, &e)) < 0) return r;
++        if (r == 0) return D64_E_NOTFOUND;
++        if ((e.type & 7) == 4) return D64_E_TYPE;              /* REL: records + side sectors, not a byte stream */
++        if (i == 0) type = e.type & 7;
++    }
++    if ((r = d64_create(d, newname, type, 0, &w))) return r;
++    for (int i = 0; i < nsrc; i++) {
++        if ((r = find_except(d, src[i], &w, &e)) <= 0) { abort_write(d, &w); return r ? r : D64_E_NOTFOUND; }
++        d64_file_open(d, &e, &f);
++        while ((r = d64_file_read(d, &f, chunk, sizeof chunk)) > 0)
++            if ((r = d64_write(d, &w, chunk, (size_t)r)) < 0) return r;     /* d64_write already removed the new file */
++        if (r < 0) { abort_write(d, &w); return D64_E_IO; }
++    }
++    return d64_close_write(d, &w);
++}
++
 +VD_COLD int d64_format(d64_t *d, const char *name, const char *id)
 +{
 +    uint8_t b[D64_SECTOR];
@@ -1954,10 +1992,10 @@ index 0000000..596f91f
 +VD_COLD size_t d64_sizeof_entry(void) { return sizeof(d64_entry_t); }
 diff --git a/Source/Teensy/MinimalBoot/Common/vdrive/d64.h b/Source/Teensy/MinimalBoot/Common/vdrive/d64.h
 new file mode 100644
-index 0000000..0ceac78
+index 0000000..352ff2c
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/vdrive/d64.h
-@@ -0,0 +1,144 @@
+@@ -0,0 +1,149 @@
 +/* Disk image engine (read + write) for .d64 (1541, 35/40 tracks), .d71 (1571, 70 tracks) and .d81 (1581, 80 tracks).
 + * Portable C99, no malloc: all state lives in caller structs and sectors are fetched through a callback, so the same
 + * code runs on the Teensy (SD/USB file backend) and on the host (tests, VICE mock). Names keep the d64_ prefix. */
@@ -1987,7 +2025,8 @@ index 0000000..0ceac78
 +    D64_E_NAME = -5,     /* bad file name              -> DOS 33 */
 +    D64_E_RO = -6,       /* read-only disk             -> DOS 26 */
 +    D64_E_LOCKED = -7,   /* file is locked             -> DOS 26 */
-+    D64_E_NOTFOUND = -8  /* file not found             -> DOS 62 */
++    D64_E_NOTFOUND = -8, /* file not found             -> DOS 62 */
++    D64_E_TYPE = -9      /* file type mismatch         -> DOS 64 */
 +};
 +
 +enum { D64_FMT_D64 = 0, D64_FMT_D71 = 1, D64_FMT_D81 = 2 };
@@ -2074,6 +2113,10 @@ index 0000000..0ceac78
 +int  d64_scratch(d64_t *d, const char *pattern);                 /* returns files scratched or <0 */
 +int  d64_rename(d64_t *d, const char *oldname, const char *newname);
 +int  d64_format(d64_t *d, const char *name, const char *id);     /* id==NULL: quick (BAM + directory only) */
++/* DOS "C:new=old1,old2,...": new file, type of the first source, holding the sources one after the other. Sources are
++ * patterns (first match); D64_E_NOTFOUND if one is missing, D64_E_EXISTS if newname is taken, D64_E_TYPE for a REL source
++ * among several. On failure nothing is left behind (D64_E_FULL included). */
++int  d64_copy(d64_t *d, const char *newname, const char *const *src, int nsrc);
 +
 +/* ---- raw blocks (direct access: U1/U2, B-A, B-F) ----
 + * Sector numbers are checked against the geometry: D64_E_IO for an illegal track/sector or a failed transfer. */
@@ -2135,10 +2178,10 @@ index 0000000..20f3ecc
 +#endif
 diff --git a/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.c b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.c
 new file mode 100644
-index 0000000..2602910
+index 0000000..1f968bd
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.c
-@@ -0,0 +1,724 @@
+@@ -0,0 +1,757 @@
 +#include "vdrive.h"
 +#include "vd_cfg.h"
 +#include <string.h>
@@ -2150,7 +2193,7 @@ index 0000000..2602910
 +/* ---- status channel ---------------------------------------------------- */
 +static const struct { uint8_t code; const char *msg; } MSGS[] = {
 +    {0, " OK"}, {1, "FILES SCRATCHED"}, {26, "WRITE PROTECT ON"}, {30, "SYNTAX ERROR"},
-+    {31, "SYNTAX ERROR"}, {33, "SYNTAX ERROR"}, {62, "FILE NOT FOUND"}, {63, "FILE EXISTS"},
++    {31, "SYNTAX ERROR"}, {33, "SYNTAX ERROR"}, {34, "SYNTAX ERROR"}, {62, "FILE NOT FOUND"}, {63, "FILE EXISTS"}, {64, "FILE TYPE MISMATCH"},
 +    {21, "READ ERROR"}, {25, "WRITE ERROR"}, {65, "NO BLOCK"}, {66, "ILLEGAL TRACK OR SECTOR"}, {70, "NO CHANNEL"}, {72, "DISK FULL"}, {73, "TRVDRIVE V1.0"}, {74, "DRIVE NOT READY"},
 +};
 +
@@ -2183,6 +2226,7 @@ index 0000000..2602910
 +    case D64_E_RO:
 +    case D64_E_LOCKED:  set_err(u, 26, 0, 0); break;
 +    case D64_E_NOTFOUND:set_err(u, 62, 0, 0); break;
++    case D64_E_TYPE:    set_err(u, 64, 0, 0); break;
 +    default:            set_err(u, 74, 0, 0); break;
 +    }
 +}
@@ -2618,6 +2662,35 @@ index 0000000..2602910
 +    else if (r) err_from(u, r);
 +}
 +
++/* C[d]:new=[d:]old[,[d:]old...]: copy one file, or join several into a new one (types after a comma are not part of a name).
++ * Duplicating a whole disk ("C1=0", dual drives only) is not a thing here: 31. */
++#define VD_COPYMAX 8
++VD_COLD static void cmd_copy(vd_unit_t *u, const char *p, const char *end)
++{
++    if (p >= end || *p != ':') { set_err(u, 31, 0, 0); return; }
++    p++;
++    const char *eq = p;
++    while (eq < end && *eq != '=') eq++;
++    char names[VD_COPYMAX + 1][17];
++    const char *src[VD_COPYMAX];
++    size_t n = (size_t)(eq - p);
++    if (eq == end || n < 1 || n > 16) { set_err(u, 34, 0, 0); return; }
++    memcpy(names[0], p, n); names[0][n] = 0;
++    int ns = 0;
++    for (p = eq + 1; p <= end; ns++) {
++        const char *q = p;
++        while (q < end && *q != ',') q++;
++        p = strip_prefix(p, q);
++        n = (size_t)(q - p);
++        if (ns == VD_COPYMAX || n < 1 || n > 16) { set_err(u, ns == VD_COPYMAX ? 33 : 34, 0, 0); return; }
++        memcpy(names[ns + 1], p, n); names[ns + 1][n] = 0;
++        src[ns] = names[ns + 1];
++        p = q + 1;
++    }
++    int r = d64_copy(u->disk, names[0], src, ns);
++    if (r) err_from(u, r);
++}
++
 +VD_COLD static void exec_command(vdrive_t *v, int unit, vd_unit_t *u, uint8_t *cmd, uint8_t len)
 +{
 +    /* OPEN 15,d,15,"U0>"+CHR$(n) sends 4 bytes; PRINT#15 adds a CR, making 5 */
@@ -2685,6 +2758,9 @@ index 0000000..2602910
 +        int r = d64_rename(u->disk, on, nn);
 +        if (r) err_from(u, r);
 +        break; }
++    case 'C':
++        cmd_copy(u, p, end);
++        break;
 +    case 'I': case 'V':                                /* initialize / validate: nothing to do */
 +        break;
 +    default:

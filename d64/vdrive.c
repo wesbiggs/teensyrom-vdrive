@@ -9,7 +9,7 @@
 /* ---- status channel ---------------------------------------------------- */
 static const struct { uint8_t code; const char *msg; } MSGS[] = {
     {0, " OK"}, {1, "FILES SCRATCHED"}, {26, "WRITE PROTECT ON"}, {30, "SYNTAX ERROR"},
-    {31, "SYNTAX ERROR"}, {33, "SYNTAX ERROR"}, {62, "FILE NOT FOUND"}, {63, "FILE EXISTS"},
+    {31, "SYNTAX ERROR"}, {33, "SYNTAX ERROR"}, {34, "SYNTAX ERROR"}, {62, "FILE NOT FOUND"}, {63, "FILE EXISTS"}, {64, "FILE TYPE MISMATCH"},
     {21, "READ ERROR"}, {25, "WRITE ERROR"}, {65, "NO BLOCK"}, {66, "ILLEGAL TRACK OR SECTOR"}, {70, "NO CHANNEL"}, {72, "DISK FULL"}, {73, "TRVDRIVE V1.0"}, {74, "DRIVE NOT READY"},
 };
 
@@ -42,6 +42,7 @@ VD_COLD static void err_from(vd_unit_t *u, int r)
     case D64_E_RO:
     case D64_E_LOCKED:  set_err(u, 26, 0, 0); break;
     case D64_E_NOTFOUND:set_err(u, 62, 0, 0); break;
+    case D64_E_TYPE:    set_err(u, 64, 0, 0); break;
     default:            set_err(u, 74, 0, 0); break;
     }
 }
@@ -477,6 +478,35 @@ VD_COLD static void cmd_buffer(vd_unit_t *u, char op, const char *p, const char 
     else if (r) err_from(u, r);
 }
 
+/* C[d]:new=[d:]old[,[d:]old...]: copy one file, or join several into a new one (types after a comma are not part of a name).
+ * Duplicating a whole disk ("C1=0", dual drives only) is not a thing here: 31. */
+#define VD_COPYMAX 8
+VD_COLD static void cmd_copy(vd_unit_t *u, const char *p, const char *end)
+{
+    if (p >= end || *p != ':') { set_err(u, 31, 0, 0); return; }
+    p++;
+    const char *eq = p;
+    while (eq < end && *eq != '=') eq++;
+    char names[VD_COPYMAX + 1][17];
+    const char *src[VD_COPYMAX];
+    size_t n = (size_t)(eq - p);
+    if (eq == end || n < 1 || n > 16) { set_err(u, 34, 0, 0); return; }
+    memcpy(names[0], p, n); names[0][n] = 0;
+    int ns = 0;
+    for (p = eq + 1; p <= end; ns++) {
+        const char *q = p;
+        while (q < end && *q != ',') q++;
+        p = strip_prefix(p, q);
+        n = (size_t)(q - p);
+        if (ns == VD_COPYMAX || n < 1 || n > 16) { set_err(u, ns == VD_COPYMAX ? 33 : 34, 0, 0); return; }
+        memcpy(names[ns + 1], p, n); names[ns + 1][n] = 0;
+        src[ns] = names[ns + 1];
+        p = q + 1;
+    }
+    int r = d64_copy(u->disk, names[0], src, ns);
+    if (r) err_from(u, r);
+}
+
 VD_COLD static void exec_command(vdrive_t *v, int unit, vd_unit_t *u, uint8_t *cmd, uint8_t len)
 {
     /* OPEN 15,d,15,"U0>"+CHR$(n) sends 4 bytes; PRINT#15 adds a CR, making 5 */
@@ -544,6 +574,9 @@ VD_COLD static void exec_command(vdrive_t *v, int unit, vd_unit_t *u, uint8_t *c
         int r = d64_rename(u->disk, on, nn);
         if (r) err_from(u, r);
         break; }
+    case 'C':
+        cmd_copy(u, p, end);
+        break;
     case 'I': case 'V':                                /* initialize / validate: nothing to do */
         break;
     default:

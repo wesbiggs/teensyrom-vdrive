@@ -146,6 +146,61 @@ class VDriveTests(unittest.TestCase):
         self.assertEqual(self.disk.entries(), [])
         self.valid()
 
+    def test_copy_command(self):
+        self.vd.listen(8, 0x6F, b"C:DUP=SEED")
+        self.assertEqual(self.vd.status(), "00, OK,00,00\r")
+        self.assertEqual(self.vd.load(8, b"DUP"), self.seed[b"SEED"])
+        self.vd.listen(8, 0x6F, b"C0:BOTH=0:SEED,OTH*\r")                 # join two files; drive prefixes, a pattern, PRINT#'s CR
+        self.assertEqual(self.vd.status(), "00, OK,00,00\r")
+        self.assertEqual(self.vd.load(8, b"BOTH"), self.seed[b"SEED"] + self.seed[b"OTHER"])
+        t = {e["name"]: e for e in self.disk.entries()}
+        self.assertEqual(t[b"BOTH"]["type"], t[b"SEED"]["type"])
+        self.assertEqual(t[b"BOTH"]["blocks"], (740 + 253) // 254)
+        out = self.tmp / "both.bin"
+        c1541(self.img(), "-read", "both", str(out))
+        self.assertEqual(out.read_bytes(), self.seed[b"SEED"] + self.seed[b"OTHER"])
+        self.valid()
+
+    def test_copy_of_a_seq_file_keeps_its_type(self):
+        self.vd.open(8, 2, b"DATA,S,W"); self.vd.listen(8, 0x62, b"HELLO\r"); self.vd.close(8, 2)
+        self.vd.listen(8, 0x6F, b"C:DATA2=DATA")
+        self.assertEqual(self.vd.status(), "00, OK,00,00\r")
+        t = {e["name"]: e["type"] for e in self.disk.entries()}
+        self.assertEqual(t[b"DATA2"], 0x81)
+        self.vd.open(8, 3, b"DATA2,S,R")
+        self.assertEqual(self.vd.talk(8, 0x63)[0], b"HELLO\r")
+
+    def test_copy_errors_leave_nothing_behind(self):
+        free = self.disk.free()
+        names = lambda: sorted(e["name"] for e in self.disk.entries())
+        before = names()
+        for cmd, want in ((b"C:NEW=NOPE", "62,FILE NOT FOUND"), (b"C:NEW=SEED,NOPE", "62,FILE NOT FOUND"),
+                          (b"C:OTHER=SEED", "63,FILE EXISTS"), (b"C:NEW", "34,SYNTAX ERROR"), (b"C:=SEED", "34,SYNTAX ERROR"),
+                          (b"C:NEW=SEED,", "34,SYNTAX ERROR"), (b"C:N*W=SEED", "33,SYNTAX ERROR"), (b"C1=0", "31,SYNTAX ERROR")):
+            self.vd.listen(8, 0x6F, cmd)
+            self.assertTrue(self.vd.status().startswith(want + ","), cmd)
+        self.assertEqual(names(), before); self.assertEqual(self.disk.free(), free)
+        self.valid()
+
+    def test_copy_disk_full_removes_the_new_file(self):
+        big = self.data((self.disk.free() - 2) * 254)                    # the copy needs more than is left
+        self.assertEqual(self.vd.save(8, b"BIG", big), 0)
+        free = self.disk.free()
+        self.vd.listen(8, 0x6F, b"C:BIG2=BIG")
+        self.assertEqual(self.vd.status(), "72,DISK FULL,00,00\r")
+        self.assertEqual(self.disk.free(), free)
+        self.assertIsNone(self.disk.read_file(b"BIG2"))
+        self.valid()
+
+    def test_copy_source_pattern_does_not_pick_the_new_file(self):
+        # S:SEED frees directory slot 0, so the new file OX takes it, ahead of OTHER: "O*" must still mean OTHER
+        self.vd.listen(8, 0x6F, b"S:SEED"); self.vd.status()
+        self.vd.listen(8, 0x6F, b"C:OX=O*")
+        self.assertEqual(self.vd.status(), "00, OK,00,00\r")
+        self.assertEqual(self.disk.entries()[0]["name"], b"OX")
+        self.assertEqual(self.vd.load(8, b"OX"), self.seed[b"OTHER"])
+        self.valid()
+
     def test_unknown_command_is_syntax_error(self):
         self.vd.listen(8, 0x6F, b"X:FOO")
         self.assertTrue(self.vd.status().startswith("31,SYNTAX ERROR"))
