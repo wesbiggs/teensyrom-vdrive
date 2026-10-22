@@ -27,11 +27,22 @@ typedef struct {
     uint8_t   line[48];
 } vd_dirstream_t;
 
+/* REL channel: the record cursor over a d64_rel_t. One LISTEN session writes one record (the rest is zero-filled at UNLSN);
+ * a read sends a record up to its last non-zero byte, with EOI, then moves to the next. */
+typedef struct {
+    d64_rel_t f;
+    uint16_t  rec;              /* current record, 0-based */
+    uint8_t   pos;              /* byte within it */
+    uint8_t   rlen;             /* bytes a read of the current record sends (0 = not worked out yet) */
+    uint8_t   wrote;            /* bytes came in during this LISTEN session */
+    uint8_t   over;             /* 1: this record overflowed (51 reported), 2: it could not be made (52 / 72) */
+} vd_rel_t;
+
 typedef struct {
     uint8_t  mode;              /* 0 free, 1 file read, 3 file write, 4 directory stream, 5 direct-access buffer (OPEN n,d,n,"#"),
-                                   6 / 7 host text file read / write (OPEN n,d,n,"!CONFIG[,W]" / "!STATE") */
+                                   6 / 7 host text file read / write (OPEN n,d,n,"!CONFIG[,W]" / "!STATE"), 8 REL */
     union { d64_file_t r; d64_wfile_t w; vd_dirstream_t d; struct { uint16_t pos; uint8_t buf[D64_SECTOR]; } b;
-            struct { uint8_t kind, pos, len; uint8_t buf[VD_HFBUF]; } h; } u;
+            struct { uint8_t kind, pos, len; uint8_t buf[VD_HFBUF]; } h; vd_rel_t l; } u;
 } vd_chan_t;
 
 /* Services the host (Teensy glue / test harness) provides for image selection.
@@ -102,7 +113,7 @@ int  vdrive_scan_begin(vdrive_t *v);
 int  vdrive_scan_free(vdrive_t *v, uint8_t dev);
 int  vdrive_unit_for(const vdrive_t *v, uint8_t dev);                /* unit 0/1 serving this device number, or -1 */
 void vdrive_set_host(vdrive_t *v, const vd_host_t *host);
-int  vdrive_chan_mode(const vdrive_t *v, int unit, int ch);   /* 0 closed, 1 file-read, 3 file-write, 4 directory, 5 buffer */
+int  vdrive_chan_mode(const vdrive_t *v, int unit, int ch);   /* 0 closed, 1 file-read, 3 file-write, 4 directory, 5 buffer, 6/7 host text, 8 REL */
 int  vdrive_active(const vdrive_t *v);                        /* unit of the open bus transaction: 0/1, 2 absent device, -1 none */
 int  vdrive_pending_err(const vdrive_t *v, int unit);         /* DOS error code waiting on the status channel (0 = none) */
 

@@ -10,7 +10,7 @@
 static const struct { uint8_t code; const char *msg; } MSGS[] = {
     {0, " OK"}, {1, "FILES SCRATCHED"}, {26, "WRITE PROTECT ON"}, {30, "SYNTAX ERROR"},
     {31, "SYNTAX ERROR"}, {33, "SYNTAX ERROR"}, {34, "SYNTAX ERROR"}, {62, "FILE NOT FOUND"}, {63, "FILE EXISTS"}, {64, "FILE TYPE MISMATCH"},
-    {21, "READ ERROR"}, {25, "WRITE ERROR"}, {65, "NO BLOCK"}, {66, "ILLEGAL TRACK OR SECTOR"}, {70, "NO CHANNEL"}, {72, "DISK FULL"}, {73, "TRVDRIVE V1.0"}, {74, "DRIVE NOT READY"},
+    {21, "READ ERROR"}, {25, "WRITE ERROR"}, {50, "RECORD NOT PRESENT"}, {51, "OVERFLOW IN RECORD"}, {52, "FILE TOO LARGE"}, {65, "NO BLOCK"}, {66, "ILLEGAL TRACK OR SECTOR"}, {70, "NO CHANNEL"}, {72, "DISK FULL"}, {73, "TRVDRIVE V1.0"}, {74, "DRIVE NOT READY"},
 };
 
 VD_COLD static void set_err(vd_unit_t *u, uint8_t code, uint8_t t, uint8_t s)
@@ -43,6 +43,7 @@ VD_COLD static void err_from(vd_unit_t *u, int r)
     case D64_E_LOCKED:  set_err(u, 26, 0, 0); break;
     case D64_E_NOTFOUND:set_err(u, 62, 0, 0); break;
     case D64_E_TYPE:    set_err(u, 64, 0, 0); break;
+    case D64_E_TOOBIG:  set_err(u, 52, 0, 0); break;
     default:            set_err(u, 74, 0, 0); break;
     }
 }
@@ -81,6 +82,10 @@ VD_COLD static void chan_close(vd_unit_t *u, int ch)
         if (c->mode == 7 && c->u.h.pos && h->hf_write && h->hf_write(h->ctx, u->index, c->u.h.buf, c->u.h.pos)) set_err(u, 74, 0, 0);
         if (h->hf_close) h->hf_close(h->ctx, u->index, c->mode == 7);
     }
+    if (c->mode == 8 && u->disk) {
+        int r = d64_rel_flush(u->disk, &c->u.l.f);
+        if (r) err_from(u, r);
+    }
     c->mode = 0;
     u->slot_of[ch] = 0;
     if (u->restore_ch == ch + 1) restore_selection(u);
@@ -107,7 +112,7 @@ VD_COLD static const char *strip_prefix(const char *p, const char *end)
     return p;
 }
 
-typedef struct { char name[VD_CMDBUF]; int has_name; uint8_t type; char mode; int replace; int ok; } open_spec_t;
+typedef struct { char name[VD_CMDBUF]; int has_name; uint8_t type; char mode; int replace; int ok; uint8_t reclen; } open_spec_t;
 
 VD_COLD static open_spec_t parse_open(const uint8_t *raw, uint8_t len)
 {
@@ -128,7 +133,10 @@ VD_COLD static open_spec_t parse_open(const uint8_t *raw, uint8_t len)
         case 'P': o.type = 2; break;
         case 'S': o.type = 1; break;
         case 'U': o.type = 3; break;
-        case 'L': o.type = 4; break;
+        case 'L':                                      /* ",L,"+CHR$(record length): the length is a raw byte, maybe "," or "R" */
+            o.type = 4;
+            if (f + 2 < end && f[1] == ',') { o.reclen = (uint8_t)f[2]; f += 2; }
+            break;
         case 'R': case 'W': case 'A': o.mode = *f; break;
         default: break;
         }
@@ -327,6 +335,86 @@ VD_COLD static void open_hostfile(vdrive_t *v, int unit, vd_unit_t *u, int ch, c
     c->mode = mode == 'W' ? 7 : 6;
 }
 
+/* OPEN of a REL file: an existing one (e; a record length given must match), or a new one ("NAME,L,"+CHR$(len)). */
+VD_COLD static void rel_open(vd_unit_t *u, int ch, const d64_entry_t *e, const open_spec_t *o)
+{
+    if (e && o->reclen && o->reclen != e->reclen) { set_err(u, 50, 0, 0); return; }
+    if (!e && !o->reclen) { set_err(u, 62, 0, 0); return; }
+    if (!e && o->reclen == 255) { set_err(u, 33, 0, 0); return; }
+    vd_chan_t *c = chan_alloc(u, ch);
+    if (!c) return;
+    vd_rel_t *l = &c->u.l;
+    int r = e ? d64_rel_open(u->disk, e, &l->f) : d64_rel_create(u->disk, o->name, o->reclen, &l->f);
+    if (r) { err_from(u, r); chan_close(u, ch); return; }
+    l->rec = 0; l->pos = 0; l->rlen = 0; l->wrote = 0; l->over = 0;
+    c->mode = 8;
+}
+
+/* a byte written to a REL channel: the first of a LISTEN session makes the record exist (the file grows to it) */
+VD_COLD static int rel_write(vd_unit_t *u, vd_rel_t *l, uint8_t b)
+{
+    int r = 0;
+    if (l->over == 2) return 0;                           /* the record could not be made: drop the rest of the session */
+    if (!l->wrote) {
+        l->wrote = 1;
+        if (l->rec >= d64_rel_records(&l->f)) r = d64_rel_extend(u->disk, &l->f, (uint32_t)l->rec + 1);
+        if (r) { err_from(u, r); l->over = 2; return r; }
+    }
+    if (l->pos >= l->f.reclen) { if (!l->over) set_err(u, 51, 0, 0); l->over = 1; return 0; }   /* the rest is dropped */
+    r = d64_rel_put(u->disk, &l->f, (uint32_t)l->rec * l->f.reclen + l->pos, b);
+    if (r) { err_from(u, r); return r; }
+    l->pos++;
+    return 0;
+}
+
+/* UNLSN after bytes to a REL channel: the record ends here, zero-filled, and the next one is current */
+VD_COLD static void rel_end_record(vd_unit_t *u, vd_rel_t *l)
+{
+    if (l->rec < d64_rel_records(&l->f)) {
+        for (uint32_t base = (uint32_t)l->rec * l->f.reclen; l->pos < l->f.reclen; l->pos++)
+            if (d64_rel_put(u->disk, &l->f, base + l->pos, 0)) break;
+        int r = d64_rel_flush(u->disk, &l->f);
+        if (r) err_from(u, r);
+        l->rec++;
+    }
+    l->pos = 0; l->rlen = 0; l->wrote = 0; l->over = 0;
+}
+
+VD_COLD static int rel_read(vd_unit_t *u, vd_rel_t *l, uint8_t *b, int *eoi)
+{
+    uint32_t base = (uint32_t)l->rec * l->f.reclen;
+    if (l->rec >= d64_rel_records(&l->f)) { set_err(u, 50, 0, 0); return 0; }
+    if (!l->rlen) {                                       /* a record is sent up to its last non-zero byte (at least one byte) */
+        l->rlen = 1;
+        for (uint8_t i = 0; i < l->f.reclen; i++) {
+            uint8_t x;
+            if (d64_rel_get(u->disk, &l->f, base + i, &x)) { set_err(u, 21, 0, 0); return 0; }
+            if (x) l->rlen = (uint8_t)(i + 1);
+        }
+    }
+    if (d64_rel_get(u->disk, &l->f, base + l->pos, b)) { set_err(u, 21, 0, 0); return 0; }
+    l->pos++;
+    if (l->pos >= l->rlen) { *eoi = 1; l->rec++; l->pos = 0; l->rlen = 0; }
+    return 1;
+}
+
+/* "P"+CHR$(96+ch)+CHR$(lo)+CHR$(hi)+CHR$(pos): position a REL channel at record lo+256*hi, byte pos (both counted from 1; 0 = 1).
+ * Binary bytes, so this runs before the CR strip; bytes after the fifth (PRINT#'s CR) are ignored. */
+VD_COLD static void cmd_position(vd_unit_t *u, const uint8_t *cmd, uint8_t len)
+{
+    vd_chan_t *c = len >= 2 ? chan_find(u, cmd[1] & 0x0F) : NULL;
+    if (len < 2) { set_err(u, 30, 0, 0); return; }
+    if (!c || c->mode != 8) { set_err(u, 70, 0, 0); return; }
+    vd_rel_t *l = &c->u.l;
+    unsigned rec = (len > 2 ? cmd[2] : 0) | (len > 3 ? cmd[3] << 8 : 0), pos = len > 4 ? cmd[4] : 1;
+    if (rec) rec--;
+    if (pos) pos--;
+    l->rec = (uint16_t)rec; l->rlen = 0; l->wrote = 0; l->over = 0;
+    if (pos >= l->f.reclen) { l->pos = 0; set_err(u, 51, 0, 0); return; }
+    l->pos = (uint8_t)pos;
+    if (rec >= d64_rel_records(&l->f)) set_err(u, 50, 0, 0);    /* not there yet: a write makes it */
+}
+
 VD_COLD static void chan_open(vdrive_t *v, int unit, vd_unit_t *u, int ch, const uint8_t *raw, uint8_t len)
 {
     chan_close(u, ch);
@@ -360,6 +448,13 @@ VD_COLD static void chan_open(vdrive_t *v, int unit, vd_unit_t *u, int ch, const
     }
     if (strlen(o.name) > 16) { set_err(u, 33, 0, 0); return; }
     if (!u->disk) { set_err(u, 74, 0, 0); return; }
+    if (o.type == 4 || mode == 'R') {                                         /* a REL file opens for reading and writing alike */
+        d64_entry_t e;
+        int r = d64_find(u->disk, o.name, &e);
+        if (r < 0) { err_from(u, r); return; }
+        if (r ? (e.type & 7) == 4 : o.type == 4) { rel_open(u, ch, r ? &e : NULL, &o); return; }
+        if (r && o.type == 4) { set_err(u, 64, 0, 0); return; }
+    }
     vd_chan_t *c = chan_alloc(u, ch);
     if (!c) return;
     if (mode == 'R') {
@@ -511,6 +606,7 @@ VD_COLD static void exec_command(vdrive_t *v, int unit, vd_unit_t *u, uint8_t *c
 {
     /* OPEN 15,d,15,"U0>"+CHR$(n) sends 4 bytes; PRINT#15 adds a CR, making 5 */
     if ((len == 4 || (len == 5 && cmd[4] == '\r')) && cmd[0] == 'U' && cmd[1] == '0' && cmd[2] == '>') { cmd_renumber(v, unit, u, cmd[3]); return; }
+    if (len && cmd[0] == 'P') { if (u->disk) cmd_position(u, cmd, len); else set_err(u, 74, 0, 0); return; }
     while (len && (cmd[len - 1] == '\r' || cmd[len - 1] == '\n')) len--;
     if (!len) return;
     cmd[len] = 0;
@@ -661,6 +757,7 @@ VD_COLD static int read_byte(vdrive_t *v, int unit, vd_unit_t *u, vd_chan_t *c, 
         }
         return 1;
     }
+    if (c->mode == 8) return rel_read(u, &c->u.l, b, eoi);
     if (c->mode == 5) {
         if (c->u.b.pos >= D64_SECTOR) return 0;
         *b = c->u.b.buf[c->u.b.pos++];
@@ -719,6 +816,7 @@ VD_COLD int vdrive_mailbox(vdrive_t *v, uint8_t cmd, uint8_t arg, uint8_t *data,
                 }
             }
             else if (c && c->mode == 5 && c->u.b.pos < D64_SECTOR) c->u.b.buf[c->u.b.pos++] = arg;     /* buffer: full buffer ignores the rest */
+            else if (c && c->mode == 8 && rel_write(u, &c->u.l, arg)) *st = ST_TIMEOUT;
         } else if (v->wlen < VD_CMDBUF - 1) {
             v->wbuf[v->wlen++] = arg;
         }
@@ -735,6 +833,9 @@ VD_COLD int vdrive_mailbox(vdrive_t *v, uint8_t cmd, uint8_t arg, uint8_t *data,
             exec_command(v, v->act, u, v->wbuf, v->wlen);
         } else if (op == 0xE0) {
             if (ch == 15) close_all(u); else chan_close(u, ch);
+        } else if (op == 0x60) {
+            vd_chan_t *c = chan_find(u, ch);
+            if (c && c->mode == 8 && c->u.l.wrote) rel_end_record(u, &c->u.l);
         }
         v->wlen = 0; v->act = -1;
         return 0;

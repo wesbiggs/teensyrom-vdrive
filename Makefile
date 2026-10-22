@@ -19,6 +19,7 @@ test-d64: build/libd64.dylib
 	python3 -I tests/test_d64_write.py
 	python3 -I tests/test_d71_d81.py
 	python3 -I tests/test_vdrive.py
+	python3 -I tests/test_rel.py
 	python3 -I tests/test_vio.py
 
 test-devcfg:

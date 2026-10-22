@@ -93,17 +93,17 @@ The USB drive works the same. Any other device number uses the real IEC bus unto
 |---|---|
 | `LOAD` / `SAVE` | Fast path, ~255 B per mailbox transaction |
 | `VERIFY`, `OPEN` / `PRINT#` / `INPUT#` | Byte path |
-| File types | PRG, SEQ, USR |
+| File types | PRG, SEQ, USR, REL |
 | Wildcards | |
 | `@0:` replace | |
 | Error channel | |
 | Directory with `$:pattern` | |
+| REL files | `OPEN 2,8,2,"NAME,L,"+CHR$(len)`, `P` positioning, `PRINT#` one record, `INPUT#`/`GET#`; D64/D71 up to 720 blocks, D81 with super side sectors |
 | `C:new=old` copy | Also joins files: `C:new=a,b,c` (up to 8); the new file has the first source's type |
 
 ### Not yet supported
 | Feature | Notes |
 |---|---|
-| REL files | |
 | Append (`,A`) | |
 | `V` validate | Accepted, does nothing |
 | Plain `.prg` files loaded straight from the card | Mount an image instead |
