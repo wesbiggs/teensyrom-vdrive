@@ -15,7 +15,7 @@ index 6024ccd..2f5cbbf 100644
     else IOHandlerNextInit();
  }
 diff --git a/Source/Teensy/MinimalBoot/Common/Common_Defs.h b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
-index 358ffff..f2462c5 100644
+index 358ffff..da88182 100644
 --- a/Source/Teensy/MinimalBoot/Common/Common_Defs.h
 +++ b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
 @@ -14,6 +14,7 @@
@@ -31,7 +31,7 @@ index 358ffff..f2462c5 100644
  
  
 -#define TRVersion              "0.9"    //*VERSION*
-+#define TRVersion              "0.9.0.17"    //*VERSION*  (stock 0.9 + VDrive rev 17)
++#define TRVersion              "0.9.0.18"    //*VERSION*  (stock 0.9 + VDrive rev 18)
  #ifdef Fab04_Features
     char strVersionNumber[] = "TeensyROM+ v" TRVersion; 
  #else
@@ -174,10 +174,10 @@ index d7213cf..c2557a1 100644
  
 diff --git a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c
 new file mode 100644
-index 0000000..b1cc50e
+index 0000000..9969654
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c
-@@ -0,0 +1,818 @@
+@@ -0,0 +1,897 @@
 +// "VDrive" Special IO for TeensyROM+: replacement KERNAL + virtual IEC drive.
 +//   unit 0 = SD card, unit 1 = USB drive. Device numbers are automatic by default: the first free numbers from 8 up
 +//   (the KERNAL probes the real serial bus on the first disk access of a run, see vdrive_io.h), so 8 (SD) and 9 (USB) when
@@ -440,6 +440,83 @@ index 0000000..b1cc50e
 +   return 0;
 +}
 +
++// ---- host text files for the configuration utility (VDrive Config.prg): OPEN n,d,n,"!CONFIG[,W]" and "!STATE" ---------------------
++// !CONFIG is the unit's /vdrive-config.txt (see the Alt button section below), !STATE two lines: the mounted image's path and the
++// folder. Text crosses as PETSCII with CR line ends. One file at a time; opening another (or closing the channel) ends the first.
++#define VD_ConfigName "/vdrive-config.txt"
++static File       hfFile;
++static int        hfKind = -1;
++static bool       hfWriting = false;
++static char       hfText[2 * (VD_CwdLen + 20) + 4];
++static size_t     hfTextPos = 0, hfTextLen = 0;
++
++FLASHMEM static void VD_HfClose(void *ctx, int unit, int write)
++{
++   if (hfFile) { if (write) hfFile.flush(); hfFile.close(); }
++   hfKind = -1; hfWriting = false;
++}
++
++FLASHMEM static int VD_HfOpen(void *ctx, int unit, int kind, int write)
++{
++   VD_HfClose(NULL, unit, 0);
++   stcVDUnit *u = &vdUnit[unit];
++   if (kind == VD_HF_STATE)
++   {
++      char path[VD_CwdLen + 20];
++      path[0] = 0;
++      if (u->mounted) VD_PathFor(u, u->imgName, path, sizeof path);
++      hfTextLen = snprintf(hfText, sizeof hfText, "%s\n%s\n", path, u->cwd[0] ? u->cwd : "/");
++      if (hfTextLen >= sizeof hfText) hfTextLen = sizeof hfText - 1;
++      hfTextPos = 0; hfKind = kind;
++      return 0;
++   }
++   if (write)
++   {
++      if (u->fs->exists(VD_ConfigName)) u->fs->remove(VD_ConfigName);   // FILE_WRITE appends: start from an empty file
++      hfFile = u->fs->open(VD_ConfigName, FILE_WRITE);
++      if (!hfFile) return 74;
++   }
++   else
++   {
++      hfFile = u->fs->open(VD_ConfigName, FILE_READ);
++      if (!hfFile || hfFile.isDirectory()) { if (hfFile) hfFile.close(); return 62; }
++   }
++   hfKind = kind; hfWriting = write != 0;
++   return 0;
++}
++
++FLASHMEM static int VD_HfRead(void *ctx, int unit, uint8_t *buf, int n)
++{
++   int got = 0;
++   if (hfKind == VD_HF_STATE)
++   {
++      for (; got < n && hfTextPos < hfTextLen; got++, hfTextPos++)
++         buf[got] = hfText[hfTextPos] == '\n' ? '\r' : VD_ToPetscii(hfText[hfTextPos]);
++      return got;
++   }
++   if (hfKind != VD_HF_CONFIG || !hfFile || hfWriting) return 0;
++   while (got < n)
++   {
++      uint8_t c;
++      if (hfFile.read(&c, 1) != 1) break;
++      if (c == '\r') continue;                                          // CRLF files: the CR of the pair is dropped
++      buf[got++] = c == '\n' ? '\r' : VD_ToPetscii((char)c);
++   }
++   return got;
++}
++
++FLASHMEM static int VD_HfWrite(void *ctx, int unit, const uint8_t *buf, int n)
++{
++   if (hfKind != VD_HF_CONFIG || !hfFile || !hfWriting) return 1;
++   for (int i = 0; i < n; i++)
++   {
++      char c = buf[i] == '\r' ? '\n' : VD_ToAscii(buf[i]);
++      if (buf[i] == '\n') continue;                                      // a stray LF (PRINT# to device 10 / 13) adds nothing
++      if (hfFile.write(&c, 1) != 1) return 1;
++   }
++   return 0;
++}
++
 +// ---- fixed device numbers in EEPROM (0 / out of range = automatic, see vdrive_set_devices) --------------------
 +FLASHMEM static void VD_SaveDevices(void *ctx, uint8_t pin0, uint8_t pin1)
 +{
@@ -532,6 +609,9 @@ index 0000000..b1cc50e
 +   host.mount = VD_Mount;  host.unmount = VD_Unmount;  host.chdir = VD_ChDir;
 +   host.dir_open = VD_DirOpen;  host.dir_next = VD_DirNext;  host.save_devices = VD_SaveDevices;
 +   host.push = VD_Push;  host.pop = VD_Pop;
++   host.hf_open = VD_HfOpen;  host.hf_read = VD_HfRead;  host.hf_write = VD_HfWrite;  host.hf_close = VD_HfClose;
++   if (hfFile) hfFile.close();        // the drive state (and with it any open channel) was just reset
++   hfKind = -1;
 +   vdrive_set_host(&vio->vd, &host);
 +   VD_LoadDevices();
 +
@@ -762,7 +842,6 @@ index 0000000..b1cc50e
 +// skipped. With nothing mounted (or an image that is not in the list) the first usable image is picked.
 +// Wired to the TR's Alt button only when its setting (TR menu, settings) is "None": a chosen action is never taken over.
 +// The border change itself is done by the KERNAL's IRQ routine (patches/vdrive.s, irq_border), driven by the BORDER register.
-+#define VD_CfgName       "/vdrive-config.txt"
 +#define VD_CfgBufSize    2048
 +#define VD_CfgMaxEntries 32
 +#define VD_TapWindowMs   1000
@@ -904,7 +983,7 @@ index 0000000..b1cc50e
 +   if (!VD_RemoteReady(unit)) { VD_FlashError(); return false; }           // no card / stick (or VDrive not running)
 +   stcVDUnit *u = &vdUnit[unit];
 +   if (VDrive_RemoteQuiet(msg, sizeof msg)) { VD_FlashError(); return false; }   // card access only at a quiet moment
-+   File f = u->fs->open(VD_CfgName, FILE_READ);
++   File f = u->fs->open(VD_ConfigName, FILE_READ);
 +   if (!f || f.isDirectory()) { if (f) f.close(); VD_FlashError(); return false; }
 +   int len = f.read(vdCfgBuf, VD_CfgBufSize - 1);
 +   f.close();
@@ -2056,10 +2135,10 @@ index 0000000..20f3ecc
 +#endif
 diff --git a/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.c b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.c
 new file mode 100644
-index 0000000..6d77b54
+index 0000000..2602910
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.c
-@@ -0,0 +1,674 @@
+@@ -0,0 +1,724 @@
 +#include "vdrive.h"
 +#include "vd_cfg.h"
 +#include <string.h>
@@ -2136,6 +2215,11 @@ index 0000000..6d77b54
 +    if (c->mode == 3 && u->disk) {
 +        int r = d64_close_write(u->disk, &c->u.w);
 +        if (r) err_from(u, r);
++    }
++    if ((c->mode == 6 || c->mode == 7) && u->owner) {
++        const vd_host_t *h = &u->owner->host;
++        if (c->mode == 7 && c->u.h.pos && h->hf_write && h->hf_write(h->ctx, u->index, c->u.h.buf, c->u.h.pos)) set_err(u, 74, 0, 0);
++        if (h->hf_close) h->hf_close(h->ctx, u->index, c->mode == 7);
 +    }
 +    c->mode = 0;
 +    u->slot_of[ch] = 0;
@@ -2362,6 +2446,27 @@ index 0000000..6d77b54
 +    }
 +    open_dir_pat(v, unit, u, ch, pat);
 +}
++/* "!CONFIG" / "!STATE": text files kept by the host (see vd_host_t); the name is PETSCII, upper or shifted. */
++VD_COLD static void open_hostfile(vdrive_t *v, int unit, vd_unit_t *u, int ch, const char *name, char mode)
++{
++    const vd_host_t *h = &v->host;
++    int kind = -1;
++    if (!strcmp(name, "!CONFIG")) kind = VD_HF_CONFIG; else if (!strcmp(name, "!STATE")) kind = VD_HF_STATE;
++    if (kind < 0 || !h->hf_open) { set_err(u, 62, 0, 0); return; }
++    if (mode != 'R' && mode != 'W') { set_err(u, 33, 0, 0); return; }
++    if (mode == 'W' && kind == VD_HF_STATE) { set_err(u, 26, 0, 0); return; }       /* WRITE PROTECT ON */
++    for (int i = 0; i < 16; i++) {                                                  /* the host keeps one file open: this replaces it */
++        vd_chan_t *o = chan_find(u, i);
++        if (o && (o->mode == 6 || o->mode == 7)) chan_close(u, i);
++    }
++    vd_chan_t *c = chan_alloc(u, ch);
++    if (!c) return;
++    int r = h->hf_open(h->ctx, unit, kind, mode == 'W');
++    if (r) { set_err(u, (uint8_t)r, 0, 0); chan_close(u, ch); return; }
++    c->u.h.kind = (uint8_t)kind; c->u.h.pos = c->u.h.len = 0;
++    c->mode = mode == 'W' ? 7 : 6;
++}
++
 +VD_COLD static void chan_open(vdrive_t *v, int unit, vd_unit_t *u, int ch, const uint8_t *raw, uint8_t len)
 +{
 +    chan_close(u, ch);
@@ -2376,6 +2481,7 @@ index 0000000..6d77b54
 +    open_spec_t o = parse_open(raw, len);
 +    if (!o.has_name) { set_err(u, u->disk ? 33 : 74, 0, 0); return; }
 +    char mode = o.mode ? o.mode : (ch == 1 ? 'W' : 'R');
++    if (o.name[0] == '!') { open_hostfile(v, unit, u, ch, o.name, mode); return; }
 +    if (mode != 'R' && mode != 'W') { set_err(u, 33, 0, 0); return; }   /* append not supported */
 +    /* "DIR/IMAGE.D64/FILE" (or a bare "IMAGE.D64" read with nothing mounted): walk there first, the file name is what is left */
 +    if (strchr(o.name, '/') || (mode == 'R' && !u->disk && image_kind(o.name))) {
@@ -2648,6 +2754,21 @@ index 0000000..6d77b54
 +        *eoi = d64_file_eof(&c->u.r);
 +        return 1;
 +    }
++    if (c->mode == 6) {                                              /* host text file: refill a chunk when it runs out; EOI on the very last byte */
++        const vd_host_t *h = &v->host;
++        if (c->u.h.pos >= c->u.h.len) {
++            int n = h->hf_read ? h->hf_read(h->ctx, unit, c->u.h.buf, VD_HFBUF) : 0;
++            c->u.h.pos = 0; c->u.h.len = (uint8_t)(n > 0 ? n : 0);
++            if (c->u.h.len == 0) return 0;
++        }
++        *b = c->u.h.buf[c->u.h.pos++];
++        if (c->u.h.pos >= c->u.h.len) {
++            int n = h->hf_read ? h->hf_read(h->ctx, unit, c->u.h.buf, VD_HFBUF) : 0;
++            c->u.h.pos = 0; c->u.h.len = (uint8_t)(n > 0 ? n : 0);
++            *eoi = c->u.h.len == 0;
++        }
++        return 1;
++    }
 +    if (c->mode == 5) {
 +        if (c->u.b.pos >= D64_SECTOR) return 0;
 +        *b = c->u.b.buf[c->u.b.pos++];
@@ -2697,6 +2818,14 @@ index 0000000..6d77b54
 +                int r = d64_write(u->disk, &c->u.w, &arg, 1);
 +                if (r < 0) { err_from(u, r); c->mode = 0; chan_close(u, ch); *st = ST_TIMEOUT; }   /* write already aborted: just release the slot */
 +            }
++            else if (c && c->mode == 7) {
++                c->u.h.buf[c->u.h.pos++] = arg;
++                if (c->u.h.pos >= VD_HFBUF) {
++                    const vd_host_t *h = &v->host;
++                    if (h->hf_write && h->hf_write(h->ctx, v->act, c->u.h.buf, c->u.h.pos)) set_err(u, 74, 0, 0);
++                    c->u.h.pos = 0;
++                }
++            }
 +            else if (c && c->mode == 5 && c->u.b.pos < D64_SECTOR) c->u.b.buf[c->u.b.pos++] = arg;     /* buffer: full buffer ignores the rest */
 +        } else if (v->wlen < VD_CMDBUF - 1) {
 +            v->wbuf[v->wlen++] = arg;
@@ -2736,10 +2865,10 @@ index 0000000..6d77b54
 +}
 diff --git a/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.h b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.h
 new file mode 100644
-index 0000000..6ac6168
+index 0000000..66feef5
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.h
-@@ -0,0 +1,105 @@
+@@ -0,0 +1,118 @@
 +/* Virtual IEC drive: the Teensy-side state machine behind the KERNAL mailbox.
 + * Units 0/1 = devices 8/9, each backed by an optional mounted d64_t.
 + * One mailbox command in, one result out; no I/O other than the d64 and host callbacks. */
@@ -2755,6 +2884,7 @@ index 0000000..6ac6168
 +enum { VD_LISTEN = 1, VD_TALK, VD_SECOND, VD_TKSA, VD_CIOUT, VD_ACPTR, VD_UNLSN, VD_UNTLK };
 +
 +#define VD_CMDBUF 64
++#define VD_HFBUF  64      /* chunk size of the host text file channels */
 +
 +/* Directory listings are generated a line at a time: no listing buffer. */
 +typedef struct {
@@ -2769,8 +2899,10 @@ index 0000000..6ac6168
 +} vd_dirstream_t;
 +
 +typedef struct {
-+    uint8_t  mode;              /* 0 free, 1 file read, 3 file write, 4 directory stream, 5 direct-access buffer (OPEN n,d,n,"#") */
-+    union { d64_file_t r; d64_wfile_t w; vd_dirstream_t d; struct { uint16_t pos; uint8_t buf[D64_SECTOR]; } b; } u;
++    uint8_t  mode;              /* 0 free, 1 file read, 3 file write, 4 directory stream, 5 direct-access buffer (OPEN n,d,n,"#"),
++                                   6 / 7 host text file read / write (OPEN n,d,n,"!CONFIG[,W]" / "!STATE") */
++    union { d64_file_t r; d64_wfile_t w; vd_dirstream_t d; struct { uint16_t pos; uint8_t buf[D64_SECTOR]; } b;
++            struct { uint8_t kind, pos, len; uint8_t buf[VD_HFBUF]; } h; } u;
 +} vd_chan_t;
 +
 +/* Services the host (Teensy glue / test harness) provides for image selection.
@@ -2789,7 +2921,17 @@ index 0000000..6ac6168
 +     * Both optional; without them a listing by path leaves the new folder / image selected. $==path never pops. */
 +    void (*push)(void *ctx, int unit);
 +    int  (*pop)(void *ctx, int unit, d64_t **out);
++    /* Host text files for the configuration utility (OPEN n,d,n,"!CONFIG" read, "!CONFIG,W" write, "!STATE" read only): the unit's disk
++     * switching list (/vdrive-config.txt) and a two-line description of what the unit has mounted ("path", "folder"). The host
++     * converts the text to / from PETSCII (a line ends with CR on the C64 side). Only one such file is open at a time on the host side.
++     * hf_open: kind VD_HF_CONFIG / VD_HF_STATE; 0 ok, else a DOS error code (62 when there is no such file to read). hf_read: up to n bytes,
++     * 0 = end of file. hf_write: 0 ok. hf_close: after the last write the host should flush. All optional (a missing hf_open = 62). */
++    int  (*hf_open)(void *ctx, int unit, int kind, int write);
++    int  (*hf_read)(void *ctx, int unit, uint8_t *buf, int n);
++    int  (*hf_write)(void *ctx, int unit, const uint8_t *buf, int n);
++    void (*hf_close)(void *ctx, int unit, int write);
 +} vd_host_t;
++enum { VD_HF_CONFIG = 0, VD_HF_STATE = 1 };
 +
 +struct vdrive_s;
 +typedef struct {

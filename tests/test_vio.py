@@ -168,8 +168,13 @@ class HostStruct(ctypes.Structure):
     SAVEDEV = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_uint8, ctypes.c_uint8)
     PUSH = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_int)
     POP = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.POINTER(ctypes.c_void_p))
+    HFOPEN = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int)
+    HFREAD = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_int)
+    HFWRITE = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_int)
+    HFCLOSE = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_int, ctypes.c_int)
     _fields_ = [("ctx", ctypes.c_void_p), ("mount", MOUNT), ("unmount", UNMOUNT), ("chdir", CHDIR),
-                ("dir_open", DIROPEN), ("dir_next", DIRNEXT), ("save_devices", SAVEDEV), ("push", PUSH), ("pop", POP)]
+                ("dir_open", DIROPEN), ("dir_next", DIRNEXT), ("save_devices", SAVEDEV), ("push", PUSH), ("pop", POP),
+                ("hf_open", HFOPEN), ("hf_read", HFREAD), ("hf_write", HFWRITE), ("hf_close", HFCLOSE)]
 
 
 class HostTests(unittest.TestCase):
@@ -250,6 +255,84 @@ class HostTests(unittest.TestCase):
             _, d, st = self.io.call(ACPTR); out += bytes([d])
             if st & 0x40: break
         return out.decode("latin1")
+
+    def hostfile_hooks(self, text=None):
+        """host text files: !CONFIG is a bytes buffer (None = no such file), !STATE a fixed text; records the calls"""
+        self.hf = {"cfg": text, "log": [], "pos": 0, "written": b"", "kind": None, "chunks": []}
+        hf = self.hf
+
+        def op(ctx, unit, kind, write):
+            hf["log"].append(("open", kind, write)); hf["kind"] = kind; hf["pos"] = 0
+            if kind == 1: hf["src"] = b"/GAMES/A.D64\r/GAMES\r"
+            elif write: hf["written"] = b""; hf["chunks"] = []
+            elif hf["cfg"] is None: return 62
+            else: hf["src"] = hf["cfg"]
+            return 0
+
+        def rd(ctx, unit, buf, n):
+            chunk = hf["src"][hf["pos"]:hf["pos"] + n]; hf["pos"] += len(chunk)
+            ctypes.memmove(buf, chunk, len(chunk)); return len(chunk)
+
+        def wr(ctx, unit, buf, n):
+            hf["written"] += buf[:n]; hf["chunks"].append(n); return 0
+
+        def cl(ctx, unit, write): hf["log"].append(("close", write))
+
+        self.cb.hf_open, self.cb.hf_read = HostStruct.HFOPEN(op), HostStruct.HFREAD(rd)
+        self.cb.hf_write, self.cb.hf_close = HostStruct.HFWRITE(wr), HostStruct.HFCLOSE(cl)
+        self.keep_hf = (op, rd, wr, cl)
+        LIB.vdrive_set_host(self.io.v, ctypes.byref(self.cb))
+
+    def open_ch(self, ch, name):
+        self.io.call(LISTEN, 8); self.io.call(SECOND, 0xF0 | ch)
+        for b in name: self.io.call(CIOUT, b)
+        self.io.call(UNLSN)
+
+    def read_ch(self, ch):
+        self.io.call(TALK, 8); self.io.call(TKSA, 0x60 | ch)
+        out, eoi = b"", False
+        for _ in range(2000):
+            _, d, st = self.io.call(ACPTR)
+            if st & 0x02: break
+            out += bytes([d])
+            if st & 0x40: eoi = True; break
+        self.io.call(UNTLK)
+        return out, eoi
+
+    def test_host_text_files(self):
+        self.hostfile_hooks(b"/A.D64, 1, 2\r" * 20)                         # 280 bytes: five chunks
+        self.open_ch(2, b"!CONFIG")
+        self.assertTrue(self.status().startswith("00,"))
+        data, eoi = self.read_ch(2)
+        self.assertEqual(data, b"/A.D64, 1, 2\r" * 20); self.assertTrue(eoi, "EOI only on the very last byte")
+        self.assertEqual(self.io.call(LISTEN, 8)[0], False); self.io.call(SECOND, 0xE2); self.io.call(UNLSN)    # close
+        self.assertEqual(self.hf["log"][-1], ("close", 0))
+        self.open_ch(3, b"!CONFIG,W")
+        text = b"/GAMES/X.D64, 3, 1\r" * 10                                  # 190 bytes: written in chunks of 64, rest at close
+        self.io.call(LISTEN, 8); self.io.call(SECOND, 0x63)
+        for b in text: self.io.call(CIOUT, b)
+        self.io.call(UNLSN)
+        self.assertEqual(self.hf["chunks"], [64, 64])                        # the tail is still in the channel
+        self.io.call(LISTEN, 8); self.io.call(SECOND, 0xE3); self.io.call(UNLSN)
+        self.assertEqual(self.hf["written"], text); self.assertEqual(self.hf["chunks"], [64, 64, 62])
+        self.assertEqual(self.hf["log"][-1], ("close", 1))
+        self.open_ch(2, b"!STATE")
+        data, eoi = self.read_ch(2)
+        self.assertEqual(data, b"/GAMES/A.D64\r/GAMES\r"); self.assertTrue(eoi)
+        self.io.call(LISTEN, 8); self.io.call(SECOND, 0xE2); self.io.call(UNLSN)
+        self.open_ch(2, b"!STATE,W"); self.assertTrue(self.status().startswith("26,"))
+        self.open_ch(2, b"!BOGUS"); self.assertTrue(self.status().startswith("62,"))
+        self.hf["cfg"] = None
+        self.open_ch(2, b"!CONFIG"); self.assertTrue(self.status().startswith("62,"))
+
+    def test_host_text_file_without_host_support(self):
+        self.open_ch(2, b"!CONFIG"); self.assertTrue(self.status().startswith("62,"))
+
+    def test_second_host_file_replaces_the_first(self):
+        self.hostfile_hooks(b"x\r")
+        self.open_ch(2, b"!CONFIG"); self.open_ch(3, b"!STATE")
+        self.assertEqual((LIB.vdrive_chan_mode(self.io.v, 0, 2), LIB.vdrive_chan_mode(self.io.v, 0, 3)), (0, 6))
+        self.assertEqual([e for e in self.hf["log"] if e[0] == "close"], [("close", 0)])
 
     def test_host_directory_when_nothing_mounted(self):
         rc, addr, d = self.io.fast_load(8, b"$")

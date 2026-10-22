@@ -510,6 +510,7 @@ int main(int argc, char **argv)
         check("alt: only the current image is left: it is selected again", cur(0) == "/sub/inner.d64" && seq_ok(t, 7, 1));
         fs_::rename(SD.root / "BIG.OFF", SD.root / "BIG.D81");
 
+
         // errors flash red, quickly, for 2 s
         auto red_ok = [&](const Trace &t) {
             if (t.size() != 2 * VD_ErrFlashes + 2 - 1 + 0 && t.size() != 2 * VD_ErrFlashes + 2) return false;
@@ -550,6 +551,62 @@ int main(int argc, char **argv)
         vdrive_attach(&vio->vd, 1, NULL, 1);
         // C64 busy with the drive for good: red, nothing changes
         put(firstPartition, "vdrive-config.txt", "/USB.D64,9,1\n");
+
+        // ---- host text files for VDrive Config: !CONFIG / !STATE ----
+        {
+            auto open_ch = [&](int ch, const std::string &name) { call(VD_LISTEN, 8); call(VD_SECOND, (uint8_t)(0xF0 | ch)); for (char c : name) call(VD_CIOUT, (uint8_t)c); call(VD_UNLSN); };
+            auto close_ch = [&](int ch) { call(VD_LISTEN, 8); call(VD_SECOND, (uint8_t)(0xE0 | ch)); call(VD_UNLSN); };
+            auto write_ch = [&](int ch, const std::string &text) { call(VD_LISTEN, 8); call(VD_SECOND, (uint8_t)(0x60 | ch)); for (char c : text) call(VD_CIOUT, (uint8_t)c); call(VD_UNLSN); };
+            auto read_ch = [&](int ch, bool *eoi_at_end = nullptr) {
+                std::string out; uint8_t st = 0; int guard = 0;
+                call(VD_TALK, 8); call(VD_TKSA, (uint8_t)(0x60 | ch));
+                for (; guard < 5000; guard++) { int d = call(VD_ACPTR, 0, 0, &st) & 0xFF; if (st & 0x02) break; out.push_back((char)d); if (st & 0x40) { if (eoi_at_end) *eoi_at_end = true; break; } }
+                call(VD_UNTLK);
+                return out;
+            };
+            auto slurp = [&](const fs_::path &q) { std::ifstream f(q, std::ios::binary); return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>()); };
+
+            fs_::remove(SD.root / "vdrive-config.txt");
+            open_ch(2, "!CONFIG"); check("host file: reading a missing list gives 62", status15().rfind("62,", 0) == 0);
+            open_ch(2, "!CONFIG,W");
+            write_ch(2, "# MY DISKS\r/GAME.D64, 3, 2\r/SUB/INNER.D64,5\r");
+            close_ch(2);
+            check("host file: written list lands as ASCII with LF line ends, paths lower case", slurp(SD.root / "vdrive-config.txt") == "# my disks\n/game.d64, 3, 2\n/sub/inner.d64,5\n");
+            check("host file: write ended with an OK status", status15().rfind("00,", 0) == 0);
+            open_ch(2, "!CONFIG");
+            bool eoi = false;
+            std::string back = read_ch(2, &eoi);
+            check("host file: read back as PETSCII with CR line ends, EOI on the last byte", back == "# MY DISKS\r/GAME.D64, 3, 2\r/SUB/INNER.D64,5\r" && eoi);
+            close_ch(2);
+            std::string big; for (int i = 0; i < 12; i++) big += "/GAMES/NUMBER" + std::to_string(i) + ".D64, " + std::to_string(i) + ", 2\r";   // > 64 bytes: several chunks
+            open_ch(3, "!CONFIG,W"); write_ch(3, big); close_ch(3);
+            open_ch(3, "!CONFIG"); eoi = false; back = read_ch(3, &eoi); close_ch(3);
+            std::string expect = big; for (auto &c : expect) if (c >= 'a' && c <= 'z') c = (char)(c - 32);
+            check("host file: a list of several chunks survives the round trip", back == expect && eoi && big.size() > 64 * 3);
+            put(SD, "vdrive-config.txt", "/A.D64,1,1\r\n/B.D64\r\n");
+            open_ch(2, "!CONFIG"); back = read_ch(2); close_ch(2);
+            check("host file: a CRLF file reads with single CRs", back == "/A.D64,1,1\r/B.D64\r");
+            put(SD, "vdrive-config.txt", "");
+            open_ch(2, "!CONFIG"); back = read_ch(2); close_ch(2);
+            check("host file: an empty list reads as nothing", back.empty());
+
+            cmd15("CD:/"); status15();
+            open_ch(2, "!STATE"); back = read_ch(2); close_ch(2);
+            check("host file: !STATE with nothing mounted = empty path line + folder", back == "\r/\r");
+            cmd15("CD:/SUB/INNER.D64"); status15();
+            open_ch(2, "!STATE"); back = read_ch(2); close_ch(2);
+            check("host file: !STATE shows the mounted image and its folder", back == "/SUB/INNER.D64\r/SUB\r");
+            open_ch(2, "!STATE,W"); check("host file: !STATE is write protected (26)", status15().rfind("26,", 0) == 0);
+            open_ch(2, "!NOPE"); check("host file: unknown name gives 62", status15().rfind("62,", 0) == 0);
+            // a second host file replaces the first one
+            put(SD, "vdrive-config.txt", "/A.D64\n");
+            open_ch(2, "!CONFIG"); open_ch(3, "!STATE");
+            check("host file: opening the second closes the first (one at a time)", vdrive_chan_mode(&vio->vd, 0, 2) == 0 && vdrive_chan_mode(&vio->vd, 0, 3) == 6);
+            close_ch(3);
+            check("host file: closing releases the channel", vdrive_chan_mode(&vio->vd, 0, 3) == 0);
+            cmd15("CD:/"); status15();
+        }
+
     }
 
     printf("%s\n", fails ? "FAILED" : "ALL OK");

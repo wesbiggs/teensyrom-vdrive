@@ -13,6 +13,7 @@ extern "C" {
 enum { VD_LISTEN = 1, VD_TALK, VD_SECOND, VD_TKSA, VD_CIOUT, VD_ACPTR, VD_UNLSN, VD_UNTLK };
 
 #define VD_CMDBUF 64
+#define VD_HFBUF  64      /* chunk size of the host text file channels */
 
 /* Directory listings are generated a line at a time: no listing buffer. */
 typedef struct {
@@ -27,8 +28,10 @@ typedef struct {
 } vd_dirstream_t;
 
 typedef struct {
-    uint8_t  mode;              /* 0 free, 1 file read, 3 file write, 4 directory stream, 5 direct-access buffer (OPEN n,d,n,"#") */
-    union { d64_file_t r; d64_wfile_t w; vd_dirstream_t d; struct { uint16_t pos; uint8_t buf[D64_SECTOR]; } b; } u;
+    uint8_t  mode;              /* 0 free, 1 file read, 3 file write, 4 directory stream, 5 direct-access buffer (OPEN n,d,n,"#"),
+                                   6 / 7 host text file read / write (OPEN n,d,n,"!CONFIG[,W]" / "!STATE") */
+    union { d64_file_t r; d64_wfile_t w; vd_dirstream_t d; struct { uint16_t pos; uint8_t buf[D64_SECTOR]; } b;
+            struct { uint8_t kind, pos, len; uint8_t buf[VD_HFBUF]; } h; } u;
 } vd_chan_t;
 
 /* Services the host (Teensy glue / test harness) provides for image selection.
@@ -47,7 +50,17 @@ typedef struct {
      * Both optional; without them a listing by path leaves the new folder / image selected. $==path never pops. */
     void (*push)(void *ctx, int unit);
     int  (*pop)(void *ctx, int unit, d64_t **out);
+    /* Host text files for the configuration utility (OPEN n,d,n,"!CONFIG" read, "!CONFIG,W" write, "!STATE" read only): the unit's disk
+     * switching list (/vdrive-config.txt) and a two-line description of what the unit has mounted ("path", "folder"). The host
+     * converts the text to / from PETSCII (a line ends with CR on the C64 side). Only one such file is open at a time on the host side.
+     * hf_open: kind VD_HF_CONFIG / VD_HF_STATE; 0 ok, else a DOS error code (62 when there is no such file to read). hf_read: up to n bytes,
+     * 0 = end of file. hf_write: 0 ok. hf_close: after the last write the host should flush. All optional (a missing hf_open = 62). */
+    int  (*hf_open)(void *ctx, int unit, int kind, int write);
+    int  (*hf_read)(void *ctx, int unit, uint8_t *buf, int n);
+    int  (*hf_write)(void *ctx, int unit, const uint8_t *buf, int n);
+    void (*hf_close)(void *ctx, int unit, int write);
 } vd_host_t;
+enum { VD_HF_CONFIG = 0, VD_HF_STATE = 1 };
 
 struct vdrive_s;
 typedef struct {

@@ -144,6 +144,15 @@ serves every setup. Build-time defaults of the automatic numbers are `VD_DEV0`/`
 C API. The EEPROM bytes are carved out of the reserved area (`eepAdNext` moves from 4235 to 4237, reset-to-defaults zeroes them);
 `eepMagicNum` is not bumped because 0/0xFF/garbage all mean automatic.
 
+## VDrive Config (the list editor)
+`VDrive Config.prg` (built by `make util` into `build/util/`; copy it to the card and start it from the TeensyROM menu with the VDrive handler) edits the Alt-button lists (next section) on the C64 and shows / changes what is mounted:
+```
+RETURN mount the entry   B browse the card, mount any image   U unmount
+A add (browse, colour, flashes)   E edit   D delete   +/- move down/up
+T switch SD / USB list   R refresh   Q quit        (left arrow cancels an entry field)
+```
+The top lines show the image mounted on each drive; `*` marks the list entry that is mounted. Changes to the list are saved immediately in `vdrive-config.txt`. Details: `docs/DESIGN.md` section 23.
+
 ## Changing the disk with the Alt button
 Without a computer: set the TR+ Alt button action to **None** (TR settings), and list the images you want in `vdrive-config.txt` in the root of the SD card (and, for the USB stick, in the root of the stick):
 ```

@@ -260,6 +260,83 @@ FLASHMEM static int VD_DirNext(void *ctx, int unit, char name[17], uint32_t *siz
    return 0;
 }
 
+// ---- host text files for the configuration utility (VDrive Config.prg): OPEN n,d,n,"!CONFIG[,W]" and "!STATE" ---------------------
+// !CONFIG is the unit's /vdrive-config.txt (see the Alt button section below), !STATE two lines: the mounted image's path and the
+// folder. Text crosses as PETSCII with CR line ends. One file at a time; opening another (or closing the channel) ends the first.
+#define VD_ConfigName "/vdrive-config.txt"
+static File       hfFile;
+static int        hfKind = -1;
+static bool       hfWriting = false;
+static char       hfText[2 * (VD_CwdLen + 20) + 4];
+static size_t     hfTextPos = 0, hfTextLen = 0;
+
+FLASHMEM static void VD_HfClose(void *ctx, int unit, int write)
+{
+   if (hfFile) { if (write) hfFile.flush(); hfFile.close(); }
+   hfKind = -1; hfWriting = false;
+}
+
+FLASHMEM static int VD_HfOpen(void *ctx, int unit, int kind, int write)
+{
+   VD_HfClose(NULL, unit, 0);
+   stcVDUnit *u = &vdUnit[unit];
+   if (kind == VD_HF_STATE)
+   {
+      char path[VD_CwdLen + 20];
+      path[0] = 0;
+      if (u->mounted) VD_PathFor(u, u->imgName, path, sizeof path);
+      hfTextLen = snprintf(hfText, sizeof hfText, "%s\n%s\n", path, u->cwd[0] ? u->cwd : "/");
+      if (hfTextLen >= sizeof hfText) hfTextLen = sizeof hfText - 1;
+      hfTextPos = 0; hfKind = kind;
+      return 0;
+   }
+   if (write)
+   {
+      if (u->fs->exists(VD_ConfigName)) u->fs->remove(VD_ConfigName);   // FILE_WRITE appends: start from an empty file
+      hfFile = u->fs->open(VD_ConfigName, FILE_WRITE);
+      if (!hfFile) return 74;
+   }
+   else
+   {
+      hfFile = u->fs->open(VD_ConfigName, FILE_READ);
+      if (!hfFile || hfFile.isDirectory()) { if (hfFile) hfFile.close(); return 62; }
+   }
+   hfKind = kind; hfWriting = write != 0;
+   return 0;
+}
+
+FLASHMEM static int VD_HfRead(void *ctx, int unit, uint8_t *buf, int n)
+{
+   int got = 0;
+   if (hfKind == VD_HF_STATE)
+   {
+      for (; got < n && hfTextPos < hfTextLen; got++, hfTextPos++)
+         buf[got] = hfText[hfTextPos] == '\n' ? '\r' : VD_ToPetscii(hfText[hfTextPos]);
+      return got;
+   }
+   if (hfKind != VD_HF_CONFIG || !hfFile || hfWriting) return 0;
+   while (got < n)
+   {
+      uint8_t c;
+      if (hfFile.read(&c, 1) != 1) break;
+      if (c == '\r') continue;                                          // CRLF files: the CR of the pair is dropped
+      buf[got++] = c == '\n' ? '\r' : VD_ToPetscii((char)c);
+   }
+   return got;
+}
+
+FLASHMEM static int VD_HfWrite(void *ctx, int unit, const uint8_t *buf, int n)
+{
+   if (hfKind != VD_HF_CONFIG || !hfFile || !hfWriting) return 1;
+   for (int i = 0; i < n; i++)
+   {
+      char c = buf[i] == '\r' ? '\n' : VD_ToAscii(buf[i]);
+      if (buf[i] == '\n') continue;                                      // a stray LF (PRINT# to device 10 / 13) adds nothing
+      if (hfFile.write(&c, 1) != 1) return 1;
+   }
+   return 0;
+}
+
 // ---- fixed device numbers in EEPROM (0 / out of range = automatic, see vdrive_set_devices) --------------------
 FLASHMEM static void VD_SaveDevices(void *ctx, uint8_t pin0, uint8_t pin1)
 {
@@ -352,6 +429,9 @@ FLASHMEM void VDrive_PreStart()
    host.mount = VD_Mount;  host.unmount = VD_Unmount;  host.chdir = VD_ChDir;
    host.dir_open = VD_DirOpen;  host.dir_next = VD_DirNext;  host.save_devices = VD_SaveDevices;
    host.push = VD_Push;  host.pop = VD_Pop;
+   host.hf_open = VD_HfOpen;  host.hf_read = VD_HfRead;  host.hf_write = VD_HfWrite;  host.hf_close = VD_HfClose;
+   if (hfFile) hfFile.close();        // the drive state (and with it any open channel) was just reset
+   hfKind = -1;
    vdrive_set_host(&vio->vd, &host);
    VD_LoadDevices();
 
@@ -582,7 +662,6 @@ FLASHMEM int VDrive_RemoteIdleSet(int unit, const char *path, char *msg, size_t 
 // skipped. With nothing mounted (or an image that is not in the list) the first usable image is picked.
 // Wired to the TR's Alt button only when its setting (TR menu, settings) is "None": a chosen action is never taken over.
 // The border change itself is done by the KERNAL's IRQ routine (patches/vdrive.s, irq_border), driven by the BORDER register.
-#define VD_CfgName       "/vdrive-config.txt"
 #define VD_CfgBufSize    2048
 #define VD_CfgMaxEntries 32
 #define VD_TapWindowMs   1000
@@ -724,7 +803,7 @@ FLASHMEM static bool VD_SwitchNext(int unit)
    if (!VD_RemoteReady(unit)) { VD_FlashError(); return false; }           // no card / stick (or VDrive not running)
    stcVDUnit *u = &vdUnit[unit];
    if (VDrive_RemoteQuiet(msg, sizeof msg)) { VD_FlashError(); return false; }   // card access only at a quiet moment
-   File f = u->fs->open(VD_CfgName, FILE_READ);
+   File f = u->fs->open(VD_ConfigName, FILE_READ);
    if (!f || f.isDirectory()) { if (f) f.close(); VD_FlashError(); return false; }
    int len = f.read(vdCfgBuf, VD_CfgBufSize - 1);
    f.close();
