@@ -27,8 +27,8 @@ typedef struct {
 } vd_dirstream_t;
 
 typedef struct {
-    uint8_t  mode;              /* 0 free, 1 file read, 3 file write, 4 directory stream */
-    union { d64_file_t r; d64_wfile_t w; vd_dirstream_t d; } u;
+    uint8_t  mode;              /* 0 free, 1 file read, 3 file write, 4 directory stream, 5 direct-access buffer (OPEN n,d,n,"#") */
+    union { d64_file_t r; d64_wfile_t w; vd_dirstream_t d; struct { uint16_t pos; uint8_t buf[D64_SECTOR]; } b; } u;
 } vd_chan_t;
 
 /* Services the host (Teensy glue / test harness) provides for image selection.
@@ -89,7 +89,7 @@ int  vdrive_scan_begin(vdrive_t *v);
 int  vdrive_scan_free(vdrive_t *v, uint8_t dev);
 int  vdrive_unit_for(const vdrive_t *v, uint8_t dev);                /* unit 0/1 serving this device number, or -1 */
 void vdrive_set_host(vdrive_t *v, const vd_host_t *host);
-int  vdrive_chan_mode(const vdrive_t *v, int unit, int ch);   /* 0 closed, 1 file-read, 3 file-write, 4 directory */
+int  vdrive_chan_mode(const vdrive_t *v, int unit, int ch);   /* 0 closed, 1 file-read, 3 file-write, 4 directory, 5 buffer */
 int  vdrive_active(const vdrive_t *v);                        /* unit of the open bus transaction: 0/1, 2 absent device, -1 none */
 int  vdrive_pending_err(const vdrive_t *v, int unit);         /* DOS error code waiting on the status channel (0 = none) */
 

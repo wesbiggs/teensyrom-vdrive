@@ -228,3 +228,22 @@ The C64 side has no way to ask for a different disk without BASIC, and an on-scr
 **Paths (0.9.0.12).** The TR menu hands USB paths over as `//NAME.D64`; `VD_MountPath()` and the sidecar reader collapse repeated slashes, and `VD_PathFor()` no longer doubles the slash after a root `cwd`, so `trvdrive` shows `/NAME.D64` for both units.
 
 **Not done:** a firmware-to-6502 "disk changed" flag or generation counter (nothing on the C64 side needs it yet), the other file commands while a program runs (still refused as busy), and the Alt-button/freezer integration. Client: `trvdrive` in the `teensyrom-rcp` tools.
+
+## 21. Direct sector access: buffer channels, U1/U2, B-P, B-A, B-F (0.9.0.16; done on the host and in VICE, not on hardware)
+
+Programs that read or write raw sectors (disk editors, copiers, save routines of some games) use buffer channels. On a real drive `OPEN n,8,n,"#"` takes a 256-byte buffer, and commands on channel 15 move whole sectors in and out of it. All of it is plain serial-bus traffic, so it is handled in `vdrive.c` like the other DOS commands, with no 6502-side change.
+
+| Command | Here |
+|---|---|
+| `OPEN n,d,n,"#"` | channel mode 5. The buffer shares the union with the file/directory state of a slot (`u.b`: pointer + 256 bytes), so a slot costs no more RAM. Zero-filled on open. A `#2` style request for a particular buffer number is accepted and ignored. Takes a slot from the same pool of `VD_NSLOT` as files (error 70 when none is left). |
+| `U1:ch d t s`, `UA:` | read track/sector into the buffer of channel `ch`, buffer pointer to 0. The drive number is ignored; the numbers can be separated by any non-digit (`,` space `:`). |
+| `U2:ch d t s`, `UB:` | write the buffer to the sector. |
+| `B-R`, `B-W` | **same as `U1` / `U2`.** The real `B-R` treats the first byte of the buffer as an end-of-data count; no emulator of note does, and programs that care use `U1`. |
+| `B-P:ch,pos` | buffer pointer (low 8 bits). |
+| `B-A:d t s` / `B-F:d t s` | mark a sector used / free in the BAM (works on D64, D71 and D81 BAM layouts, through the same `bam_load`/`bam_store` as file writes). `B-A` on a used sector answers `65,NO BLOCK,t,s` with the next free sector (0,0 when the disk is full) and changes nothing. |
+
+Reading a buffer channel returns bytes from the pointer to 255 and flags EOI on byte 255. Writing (PRINT#, bytes after `LISTEN`/`SECOND $6n`) stores at the pointer and silently drops what does not fit. Errors: `70` no such buffer channel (or channel is not a buffer), `66,ILLEGAL TRACK OR SECTOR,t,s` for a sector outside the image geometry (D64 35/40 tracks, D71 70, D81 80), `30` too few numbers, `21`/`25` transfer failures, `26` write to a read-only image, `31` for any other `B-x`. Commands need a mounted image (`74` otherwise, as for the other DOS commands).
+
+The library side is `d64_block_read/write/alloc/free` in `d64.c`: raw sector transfers go straight to the image callbacks, so a `U2` to a file's sector is not seen by a file channel that has already buffered it, as on a real drive.
+
+**Not emulated:** memory commands (`M-R`/`M-W`/`M-E`, used to detect the drive type and to upload drive code), user jumps `U3`-`U8`, `B-E`, error bytes in `.d64` images (no 21-29 errors from the image), GCR-level access. Fast loaders and copy protection that rely on drive code cannot work.

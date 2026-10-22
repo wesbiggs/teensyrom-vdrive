@@ -115,6 +115,15 @@ int  d64_scratch(d64_t *d, const char *pattern);                 /* returns file
 int  d64_rename(d64_t *d, const char *oldname, const char *newname);
 int  d64_format(d64_t *d, const char *name, const char *id);     /* id==NULL: quick (BAM + directory only) */
 
+/* ---- raw blocks (direct access: U1/U2, B-A, B-F) ----
+ * Sector numbers are checked against the geometry: D64_E_IO for an illegal track/sector or a failed transfer. */
+int  d64_block_read(d64_t *d, uint8_t t, uint8_t s, uint8_t *buf);
+int  d64_block_write(d64_t *d, uint8_t t, uint8_t s, const uint8_t *buf);   /* D64_E_RO on a read-only image */
+/* Mark t/s used in the BAM. 0 = allocated; D64_E_EXISTS = already used, nt and ns = the next free sector (0/0 = none);
+ * D64_E_IO = illegal. */
+int  d64_block_alloc(d64_t *d, uint8_t t, uint8_t s, uint8_t *nt, uint8_t *ns);
+int  d64_block_free(d64_t *d, uint8_t t, uint8_t s);                          /* mark t/s free in the BAM */
+
 /* Generic BASIC-listing builder (also used for host directory listings). */
 typedef struct { uint8_t *p; size_t cap, len, base; uint16_t link_at; int ok; } d64_bas_t;
 void   d64_bas_begin(d64_bas_t *b, uint8_t *out, size_t cap);

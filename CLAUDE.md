@@ -62,6 +62,7 @@ Firmware integration and usage: `firmware/README.md`.
   data lines are driven. 0.9.0.11 reads IO1 registers straight from the struct (about 10x fewer errors) and the KERNAL reads ST/DATA, the fast-LOAD header and every
   window byte twice in a row until two reads agree, and reads back window writes. `VD_TRACE` is off by default (it prints right after the answer, but was not the cause).
   Keep new bus-handler code as short as possible and never add work before `DataPortWriteWait`.
+* 0.9.0.16: direct sector access (`OPEN n,d,n,"#"`, `U1`/`U2`/`UA`/`UB`, `B-R`/`B-W` as aliases, `B-P`, `B-A`, `B-F`; docs/DESIGN.md 21). Unit tests (`tests/test_vdrive.py`) and `BLKTEST` in VICE pass; **not on hardware yet**. No `M-R`/`M-W`/`M-E`.
 * Known open risks: C128 not supported (see above); tape (device 1) intentionally broken (its code space was reclaimed).
 
 ## Layout

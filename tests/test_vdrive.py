@@ -168,9 +168,83 @@ class VDriveTests(unittest.TestCase):
         vd.listen(8, 0x6F, b"S:X")                                          # other commands still need a disk
         self.assertTrue(vd.status().startswith("74,DRIVE NOT READY"))
 
-    def test_block_commands_are_refused_not_silently_accepted(self):
-        self.vd.listen(8, 0x6F, b"U1:2 0 18 0")
-        self.assertTrue(self.vd.status().startswith("31,SYNTAX ERROR"))
+    # ---- direct access: OPEN n,8,n,"#" + U1/U2/B-P/B-A/B-F ----
+    def sector(self, t, s):
+        off = LIB.d64_sector_offset(self.disk.d, t, s)
+        return self.disk.dump()[off: off + 256]
+
+    def cmd(self, text):
+        self.vd.listen(8, 0x6F, text); return self.vd.status()
+
+    def test_block_read_gets_the_whole_sector_with_eoi_at_255(self):
+        self.vd.open(8, 5, b"#")
+        self.assertEqual(self.vd.status(), "00, OK,00,00\r")
+        self.assertEqual(self.cmd(b"U1:5 0 18 0"), "00, OK,00,00\r")
+        data, last = self.vd.talk(8, 0x65)
+        self.assertEqual(data, self.sector(18, 0)); self.assertTrue(last & 0x40)
+        self.assertEqual(self.cmd(b"UA:5,0,18,1"), "00, OK,00,00\r")             # UA = U1, separators vary
+        self.assertEqual(self.vd.talk(8, 0x65)[0], self.sector(18, 1))
+        self.assertEqual(self.cmd(b"B-R:5,0,18,0\r"), "00, OK,00,00\r")            # B-R behaves like U1 here
+        self.assertEqual(self.vd.talk(8, 0x65)[0], self.sector(18, 0))
+
+    def test_buffer_pointer_and_partial_read(self):
+        self.vd.open(8, 5, b"#"); self.cmd(b"U1:5 0 18 0")
+        self.assertEqual(self.cmd(b"B-P:5,144"), "00, OK,00,00\r")
+        data, last = self.vd.talk(8, 0x65)                              # disk name at $90, to the end of the sector
+        self.assertEqual(data, self.sector(18, 0)[144:]); self.assertTrue(last & 0x40)
+        self.cmd(b"B-P:5,144")
+        self.assertEqual(self.vd.talk(8, 0x65, 5)[0], self.sector(18, 0)[144:149])
+
+    def test_block_write_roundtrip_and_c1541_sees_it(self):
+        payload = self.data(256)
+        self.vd.open(8, 5, b"#")
+        self.cmd(b"B-P:5,0")
+        self.vd.listen(8, 0x65, payload)
+        self.assertEqual(self.cmd(b"U2:5 0 1 0"), "00, OK,00,00\r")
+        self.assertEqual(self.sector(1, 0), payload)
+        self.cmd(b"U1:5 0 1 0")
+        self.assertEqual(self.vd.talk(8, 0x65)[0], payload)
+        c1541(self.img(), "-block", "1", "0")                                # c1541 reads the same sector
+
+    def test_buffer_ignores_writes_past_the_end(self):
+        self.vd.open(8, 5, b"#"); self.cmd(b"B-P:5,250")
+        self.vd.listen(8, 0x65, b"ABCDEFGHIJ")
+        self.assertEqual(self.cmd(b"U2:5 0 1 1"), "00, OK,00,00\r")
+        self.assertEqual(self.sector(1, 1)[250:], b"ABCDEF")
+
+    def test_block_errors(self):
+        self.assertEqual(self.cmd(b"U1:5 0 18 0"), "70,NO CHANNEL,00,00\r")          # no buffer open
+        self.vd.open(8, 5, b"#")
+        self.assertEqual(self.cmd(b"U1:5 0 36 0"), "66,ILLEGAL TRACK OR SECTOR,36,00\r")
+        self.assertEqual(self.cmd(b"U1:5 0 18 21"), "66,ILLEGAL TRACK OR SECTOR,18,21\r")
+        self.assertEqual(self.cmd(b"U1:5 0 18"), "30,SYNTAX ERROR,00,00\r")
+        self.vd.open(8, 2, b"SEED")                                          # a file channel is not a buffer
+        self.assertEqual(self.cmd(b"U1:2 0 18 0"), "70,NO CHANNEL,00,00\r")
+        self.assertEqual(self.cmd(b"B-P:7,0"), "70,NO CHANNEL,00,00\r")
+
+    def test_buffer_channel_exhausts_the_pool_and_close_releases_it(self):
+        for ch in range(2, 9): self.vd.open(8, ch, b"#")           # VD_NSLOT = 6, so the 7th fails
+        self.assertEqual(self.vd.status(), "70,NO CHANNEL,00,00\r")
+        self.vd.close(8, 2)
+        self.vd.open(8, 2, b"#"); self.assertEqual(self.vd.status(), "00, OK,00,00\r")
+
+    def test_b_a_and_b_f_update_the_bam(self):
+        free = self.disk.free()
+        self.assertEqual(self.cmd(b"B-A:0,1,0"), "00, OK,00,00\r")
+        self.assertEqual(self.disk.free(), free - 1)
+        self.assertEqual(self.cmd(b"B-A:0,1,0"), "65,NO BLOCK,01,01\r")            # taken: next free is 1/1
+        self.assertEqual(self.disk.free(), free - 1)
+        self.assertEqual(self.cmd(b"B-F:0,1,0"), "00, OK,00,00\r")
+        self.assertEqual(self.disk.free(), free)
+        self.assertEqual(self.cmd(b"B-A:0,99,0"), "66,ILLEGAL TRACK OR SECTOR,99,00\r")
+        self.valid()
+
+    def test_b_a_on_a_used_system_sector_reports_the_next_free_one(self):
+        r = self.cmd(b"B-A:0,18,0")
+        self.assertTrue(r.startswith("65,NO BLOCK,"), r)
+
+    def test_unknown_b_command_is_syntax_error(self):
+        self.assertTrue(self.cmd(b"B-X:1").startswith("31,SYNTAX ERROR"))
 
     def test_unread_status_is_dropped_by_the_next_operation(self):
         # the Q4K pattern: scratch through channel 15, read only the first 2 bytes, then save; the next status read must be the

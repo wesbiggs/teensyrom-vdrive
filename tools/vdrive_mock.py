@@ -349,6 +349,7 @@ def main(kernal, scenario="basic"):
             return ok_
         ok = prog("seqtest", [""], ["SEQ TEST PASS", "CHECKED 100 LINES, 0 ERRORS"]) and ok
         ok = prog("dostest", [""], ["10 PASSED, 0 FAILED"]) and ok
+        ok = prog("blktest", [""], ["12 PASSED, 0 FAILED"]) and ok
         run('NEW\r')
         run('LOAD"SOAK",8\r', "READY.")
         m.keys('RUN\r')

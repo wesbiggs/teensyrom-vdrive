@@ -15,7 +15,7 @@ index 6024ccd..2f5cbbf 100644
     else IOHandlerNextInit();
  }
 diff --git a/Source/Teensy/MinimalBoot/Common/Common_Defs.h b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
-index 7feae53..1b275d8 100644
+index 7feae53..ac094e8 100644
 --- a/Source/Teensy/MinimalBoot/Common/Common_Defs.h
 +++ b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
 @@ -14,6 +14,7 @@
@@ -31,7 +31,7 @@ index 7feae53..1b275d8 100644
  
  
 -#define TRVersion              "0.9"    //*VERSION*
-+#define TRVersion              "0.9.0.15"    //*VERSION*  (stock 0.9 + VDrive rev 15)
++#define TRVersion              "0.9.0.16"    //*VERSION*  (stock 0.9 + VDrive rev 16)
  #ifdef Fab04_Features
     char strVersionNumber[] = "TeensyROM+ v" TRVersion; 
  #else
@@ -932,10 +932,10 @@ index 166ecfe..ebb9a28 100644
  
 diff --git a/Source/Teensy/MinimalBoot/Common/vdrive/d64.c b/Source/Teensy/MinimalBoot/Common/vdrive/d64.c
 new file mode 100644
-index 0000000..b8e1694
+index 0000000..596f91f
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/vdrive/d64.c
-@@ -0,0 +1,688 @@
+@@ -0,0 +1,719 @@
 +#include "d64.h"
 +#include "vd_cfg.h"
 +#include <string.h>
@@ -1287,6 +1287,37 @@ index 0000000..b8e1694
 +    return bam_store(d, &L, bufA, bufB);
 +}
 +
++VD_COLD int d64_block_read(d64_t *d, uint8_t t, uint8_t s, uint8_t *buf) { return rd(d, t, s, buf); }
++VD_COLD int d64_block_write(d64_t *d, uint8_t t, uint8_t s, const uint8_t *buf) { return wr(d, t, s, buf); }
++VD_COLD int d64_block_free(d64_t *d, uint8_t t, uint8_t s) { return d->write ? free_sector(d, t, s) : D64_E_RO; }
++
++VD_COLD int d64_block_alloc(d64_t *d, uint8_t t, uint8_t s, uint8_t *nt, uint8_t *ns)
++{
++    uint8_t bufA[D64_SECTOR], bufB[D64_SECTOR], *cnt, *bits;
++    bamloc_t L;
++    if (t < 1 || t > bam_tracks(d) || s >= spt(d, t)) return D64_E_IO;
++    if (!d->write) return D64_E_RO;
++    int r = bam_load(d, t, &L, bufA, bufB, &cnt, &bits);
++    if (r) return r;
++    if (bits[s / 8] & (1 << (s % 8))) {
++        bits[s / 8] &= (uint8_t)~(1 << (s % 8));
++        if (*cnt) (*cnt)--;
++        return bam_store(d, &L, bufA, bufB);
++    }
++    /* taken: report the next free sector at or after it (track by track, wrapping), as DOS does with error 65 */
++    *nt = *ns = 0;
++    uint8_t tr = t, first = s + 1;
++    for (int n = 0; n < bam_tracks(d); n++) {
++        if (!bam_reserved(d, tr)) {
++            if ((r = bam_load(d, tr, &L, bufA, bufB, &cnt, &bits))) return r;
++            for (int k = (n ? 0 : first); k < spt(d, tr); k++)
++                if (bits[k / 8] & (1 << (k % 8))) { *nt = tr; *ns = (uint8_t)k; return D64_E_EXISTS; }
++        }
++        tr = (uint8_t)(tr % bam_tracks(d) + 1);
++    }
++    return D64_E_EXISTS;
++}
++
 +VD_COLD static int valid_name(const char *n)
 +{
 +    size_t l = strlen(n);
@@ -1626,10 +1657,10 @@ index 0000000..b8e1694
 +VD_COLD size_t d64_sizeof_entry(void) { return sizeof(d64_entry_t); }
 diff --git a/Source/Teensy/MinimalBoot/Common/vdrive/d64.h b/Source/Teensy/MinimalBoot/Common/vdrive/d64.h
 new file mode 100644
-index 0000000..2dadfcf
+index 0000000..0ceac78
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/vdrive/d64.h
-@@ -0,0 +1,135 @@
+@@ -0,0 +1,144 @@
 +/* Disk image engine (read + write) for .d64 (1541, 35/40 tracks), .d71 (1571, 70 tracks) and .d81 (1581, 80 tracks).
 + * Portable C99, no malloc: all state lives in caller structs and sectors are fetched through a callback, so the same
 + * code runs on the Teensy (SD/USB file backend) and on the host (tests, VICE mock). Names keep the d64_ prefix. */
@@ -1747,6 +1778,15 @@ index 0000000..2dadfcf
 +int  d64_rename(d64_t *d, const char *oldname, const char *newname);
 +int  d64_format(d64_t *d, const char *name, const char *id);     /* id==NULL: quick (BAM + directory only) */
 +
++/* ---- raw blocks (direct access: U1/U2, B-A, B-F) ----
++ * Sector numbers are checked against the geometry: D64_E_IO for an illegal track/sector or a failed transfer. */
++int  d64_block_read(d64_t *d, uint8_t t, uint8_t s, uint8_t *buf);
++int  d64_block_write(d64_t *d, uint8_t t, uint8_t s, const uint8_t *buf);   /* D64_E_RO on a read-only image */
++/* Mark t/s used in the BAM. 0 = allocated; D64_E_EXISTS = already used, nt and ns = the next free sector (0/0 = none);
++ * D64_E_IO = illegal. */
++int  d64_block_alloc(d64_t *d, uint8_t t, uint8_t s, uint8_t *nt, uint8_t *ns);
++int  d64_block_free(d64_t *d, uint8_t t, uint8_t s);                          /* mark t/s free in the BAM */
++
 +/* Generic BASIC-listing builder (also used for host directory listings). */
 +typedef struct { uint8_t *p; size_t cap, len, base; uint16_t link_at; int ok; } d64_bas_t;
 +void   d64_bas_begin(d64_bas_t *b, uint8_t *out, size_t cap);
@@ -1798,10 +1838,10 @@ index 0000000..20f3ecc
 +#endif
 diff --git a/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.c b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.c
 new file mode 100644
-index 0000000..93711d9
+index 0000000..6d77b54
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.c
-@@ -0,0 +1,595 @@
+@@ -0,0 +1,674 @@
 +#include "vdrive.h"
 +#include "vd_cfg.h"
 +#include <string.h>
@@ -1814,7 +1854,7 @@ index 0000000..93711d9
 +static const struct { uint8_t code; const char *msg; } MSGS[] = {
 +    {0, " OK"}, {1, "FILES SCRATCHED"}, {26, "WRITE PROTECT ON"}, {30, "SYNTAX ERROR"},
 +    {31, "SYNTAX ERROR"}, {33, "SYNTAX ERROR"}, {62, "FILE NOT FOUND"}, {63, "FILE EXISTS"},
-+    {70, "NO CHANNEL"}, {72, "DISK FULL"}, {73, "TRVDRIVE V1.0"}, {74, "DRIVE NOT READY"},
++    {21, "READ ERROR"}, {25, "WRITE ERROR"}, {65, "NO BLOCK"}, {66, "ILLEGAL TRACK OR SECTOR"}, {70, "NO CHANNEL"}, {72, "DISK FULL"}, {73, "TRVDRIVE V1.0"}, {74, "DRIVE NOT READY"},
 +};
 +
 +VD_COLD static void set_err(vd_unit_t *u, uint8_t code, uint8_t t, uint8_t s)
@@ -2108,6 +2148,13 @@ index 0000000..93711d9
 +{
 +    chan_close(u, ch);
 +    if (len && raw[0] == '$' && (u->disk || (v->host.dir_open && v->host.dir_next))) { open_dir(v, unit, u, ch, raw, len); return; }
++    if (len && raw[0] == '#') {                                      /* direct-access buffer: U1/U2/B-P work on it */
++        vd_chan_t *c = chan_alloc(u, ch);
++        if (!c) return;
++        c->mode = 5; c->u.b.pos = 0;
++        memset(c->u.b.buf, 0, sizeof c->u.b.buf);
++        return;
++    }
 +    open_spec_t o = parse_open(raw, len);
 +    if (!o.has_name) { set_err(u, u->disk ? 33 : 74, 0, 0); return; }
 +    char mode = o.mode ? o.mode : (ch == 1 ? 'W' : 'R');
@@ -2193,6 +2240,60 @@ index 0000000..93711d9
 +    if (v->host.save_devices) v->host.save_devices(v->host.ctx, v->pin[0], v->pin[1]);
 +}
 +
++/* Up to max decimal numbers from p (any non-digit separates them: "5,0,18,0", " 5 0 18 0", ":5;0;18;0"); returns how many. */
++VD_COLD static int parse_nums(const char *p, const char *end, int *v, int max)
++{
++    int n = 0;
++    while (p < end && n < max) {
++        if (*p < '0' || *p > '9') { p++; continue; }
++        int x = 0;
++        while (p < end && *p >= '0' && *p <= '9') { x = x * 10 + (*p - '0'); if (x > 999) x = 999; p++; }
++        v[n++] = x;
++    }
++    return n;
++}
++
++/* U1/UA (B-R) and U2/UB (B-W): "U1:ch drive track sector" copies a whole sector to / from the buffer channel `ch`.
++ * B-R / B-W are the same here: the sector is transferred whole and the buffer pointer starts at 0. */
++VD_COLD static void cmd_block_io(vd_unit_t *u, const char *p, const char *end, int write)
++{
++    int a[4];
++    if (parse_nums(p, end, a, 4) != 4) { set_err(u, 30, 0, 0); return; }
++    if (a[0] < 0 || a[0] > 14 || a[0] == 15) { set_err(u, 70, 0, 0); return; }
++    vd_chan_t *c = chan_find(u, a[0]);
++    if (!c || c->mode != 5) { set_err(u, 70, 0, 0); return; }
++    if (a[2] > 255 || a[3] > 255 || d64_sector_offset(u->disk, (uint8_t)a[2], (uint8_t)a[3]) < 0) { set_err(u, 66, (uint8_t)a[2], (uint8_t)a[3]); return; }
++    uint8_t t = (uint8_t)a[2], s = (uint8_t)a[3];
++    if (write) {
++        int r = d64_block_write(u->disk, t, s, c->u.b.buf);
++        if (r == D64_E_RO) set_err(u, 26, t, s);
++        else if (r) set_err(u, 25, t, s);
++    } else {
++        if (d64_block_read(u->disk, t, s, c->u.b.buf)) set_err(u, 21, t, s);
++        c->u.b.pos = 0;
++    }
++}
++
++/* B-P:ch,pos moves the buffer pointer; B-A / B-F:drive,track,sector allocate / free a sector in the BAM. */
++VD_COLD static void cmd_buffer(vd_unit_t *u, char op, const char *p, const char *end)
++{
++    int a[3];
++    if (op == 'P') {
++        if (parse_nums(p, end, a, 2) != 2) { set_err(u, 30, 0, 0); return; }
++        vd_chan_t *c = a[0] <= 14 ? chan_find(u, a[0]) : NULL;
++        if (!c || c->mode != 5) { set_err(u, 70, 0, 0); return; }
++        c->u.b.pos = (uint16_t)(a[1] & 0xFF);
++        return;
++    }
++    if (parse_nums(p, end, a, 3) != 3) { set_err(u, 30, 0, 0); return; }
++    if (a[1] > 255 || a[2] > 255) { set_err(u, 66, (uint8_t)a[1], (uint8_t)a[2]); return; }
++    uint8_t t = (uint8_t)a[1], s = (uint8_t)a[2], nt = 0, ns = 0;
++    int r = op == 'A' ? d64_block_alloc(u->disk, t, s, &nt, &ns) : d64_block_free(u->disk, t, s);
++    if (r == D64_E_IO) set_err(u, 66, t, s);
++    else if (r == D64_E_EXISTS) set_err(u, 65, nt, ns);
++    else if (r) err_from(u, r);
++}
++
 +VD_COLD static void exec_command(vdrive_t *v, int unit, vd_unit_t *u, uint8_t *cmd, uint8_t len)
 +{
 +    /* OPEN 15,d,15,"U0>"+CHR$(n) sends 4 bytes; PRINT#15 adds a CR, making 5 */
@@ -2204,6 +2305,17 @@ index 0000000..93711d9
 +    if (cmd[0] == 'U' && len == 2 && (cmd[1] == 'I' || cmd[1] == 'J' || cmd[1] == '9')) { cmd_reset(u); return; }
 +    if (cmd[0] == 'U' && len == 3 && cmd[1] == 'I' && (cmd[2] == '+' || cmd[2] == '-')) return;   /* VIC-20 / C64 bus speed: nothing to do */
 +    if (!u->disk) { set_err(u, 74, 0, 0); return; }
++    if (cmd[0] == 'U' && len >= 2 && (cmd[1] == '1' || cmd[1] == 'A' || cmd[1] == '2' || cmd[1] == 'B')) {
++        cmd_block_io(u, (const char *)cmd + 2, (const char *)cmd + len, cmd[1] == '2' || cmd[1] == 'B'); return;
++    }
++    if (cmd[0] == 'B' && len >= 3 && cmd[1] == '-') {
++        const char *q = (const char *)cmd + 3, *e = (const char *)cmd + len;
++        switch (cmd[2]) {
++        case 'R': case 'W': cmd_block_io(u, q, e, cmd[2] == 'W'); return;
++        case 'P': case 'A': case 'F': cmd_buffer(u, (char)cmd[2], q, e); return;
++        default: set_err(u, 31, 0, 0); return;
++        }
++    }
 +    const char *p = (const char *)cmd + 1, *end = (const char *)cmd + len;
 +    while (p < end && *p >= '0' && *p <= '9') p++;       /* optional drive number */
 +    switch (cmd[0]) {
@@ -2318,6 +2430,12 @@ index 0000000..93711d9
 +        *eoi = d64_file_eof(&c->u.r);
 +        return 1;
 +    }
++    if (c->mode == 5) {
++        if (c->u.b.pos >= D64_SECTOR) return 0;
++        *b = c->u.b.buf[c->u.b.pos++];
++        *eoi = c->u.b.pos >= D64_SECTOR;
++        return 1;
++    }
 +    if (c->mode == 4) {
 +        vd_dirstream_t *d = &c->u.d;
 +        if (d->lpos >= d->llen) dir_gen(v, unit, u, d);
@@ -2361,6 +2479,7 @@ index 0000000..93711d9
 +                int r = d64_write(u->disk, &c->u.w, &arg, 1);
 +                if (r < 0) { err_from(u, r); c->mode = 0; chan_close(u, ch); *st = ST_TIMEOUT; }   /* write already aborted: just release the slot */
 +            }
++            else if (c && c->mode == 5 && c->u.b.pos < D64_SECTOR) c->u.b.buf[c->u.b.pos++] = arg;     /* buffer: full buffer ignores the rest */
 +        } else if (v->wlen < VD_CMDBUF - 1) {
 +            v->wbuf[v->wlen++] = arg;
 +        }
@@ -2399,7 +2518,7 @@ index 0000000..93711d9
 +}
 diff --git a/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.h b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.h
 new file mode 100644
-index 0000000..928050a
+index 0000000..6ac6168
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.h
 @@ -0,0 +1,105 @@
@@ -2432,8 +2551,8 @@ index 0000000..928050a
 +} vd_dirstream_t;
 +
 +typedef struct {
-+    uint8_t  mode;              /* 0 free, 1 file read, 3 file write, 4 directory stream */
-+    union { d64_file_t r; d64_wfile_t w; vd_dirstream_t d; } u;
++    uint8_t  mode;              /* 0 free, 1 file read, 3 file write, 4 directory stream, 5 direct-access buffer (OPEN n,d,n,"#") */
++    union { d64_file_t r; d64_wfile_t w; vd_dirstream_t d; struct { uint16_t pos; uint8_t buf[D64_SECTOR]; } b; } u;
 +} vd_chan_t;
 +
 +/* Services the host (Teensy glue / test harness) provides for image selection.
@@ -2494,7 +2613,7 @@ index 0000000..928050a
 +int  vdrive_scan_free(vdrive_t *v, uint8_t dev);
 +int  vdrive_unit_for(const vdrive_t *v, uint8_t dev);                /* unit 0/1 serving this device number, or -1 */
 +void vdrive_set_host(vdrive_t *v, const vd_host_t *host);
-+int  vdrive_chan_mode(const vdrive_t *v, int unit, int ch);   /* 0 closed, 1 file-read, 3 file-write, 4 directory */
++int  vdrive_chan_mode(const vdrive_t *v, int unit, int ch);   /* 0 closed, 1 file-read, 3 file-write, 4 directory, 5 buffer */
 +int  vdrive_active(const vdrive_t *v);                        /* unit of the open bus transaction: 0/1, 2 absent device, -1 none */
 +int  vdrive_pending_err(const vdrive_t *v, int unit);         /* DOS error code waiting on the status channel (0 = none) */
 +
