@@ -57,7 +57,7 @@ The examples here use `8` as an illustration only, and work the same on both SD 
 | `OPEN15,8,15,"CD:GAME.D64"` | Mount a disk image (`.d64`/`.d71`,`.d81` supported) |
 | `OPEN15,8,15,"CD:SUBDIR"` | Move into a folder |
 | `OPEN15,8,15,"CD:.."` | Move up one level |
-| `OPEN15,8,15,"CD:_"` | Unmount the image |
+| `OPEN15,8,15,"CD:←"` | Unmount the image (← is the left-arrow key, top left; `$5F`, shown as `_` on a PC) |
 | `OPEN15,8,15,"CD:/"` | Unmount and move to the folder root |
 | `OPEN15,8,15,"CD:/GAMES/G.D81"` | Paths work: absolute (leading `/`) or relative, folders and an image in one go |
 | `OPEN15,8,15,"S:OLD*"` | Scratch |
@@ -84,11 +84,11 @@ before are restored when the listing is closed). `$==` is what selects.
 | `LOAD"$==T",8` | Enter a folder called `T` (or `P`) |
 
 `$==path` (also `$:==path`, `$0:==path`) always means a path, even without a `/` or an image suffix. A single `=`, as in `$=T` / `$=P`, stays a
-CBM listing modifier and is not a path. With an image mounted, a bare name is a file inside it; leave with `CD:_` (or use a path containing a `/`).
+CBM listing modifier and is not a path. With an image mounted, a bare name is a file inside it; leave with `CD:←` (or use a path containing a `/`).
 
 ### Images and drives
 Image formats: `.d64` (35/40 tracks), `.d71` (1571, 70 tracks) and `.d81` (1581; root directory only, no sub-directories) are recognised by file size and extension; files may carry the trailing error-info bytes.
-Opening a `.d64` in the TeensyROM menu and launching a program from it mounts that image automatically on device 8 (SD) or 9 (USB), so the program's own LOADs find its files; `CD:_` unmounts it. The last mounted image of each drive is also remembered in a hidden `/.vdrive` file on that card and mounted again at the next start (any unmount forgets it).
+Opening a `.d64` in the TeensyROM menu and launching a program from it mounts that image automatically on device 8 (SD) or 9 (USB), so the program's own LOADs find its files; `CD:←` unmounts it. The last mounted image of each drive is also remembered in a hidden `/.vdrive` file on that card and mounted again at the next start (any unmount forgets it).
 The USB drive works the same. Any other device number uses the real IEC bus untouched.
 
 ### Supported
