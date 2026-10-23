@@ -3,7 +3,8 @@
  *   IO1 ($DE10, offsets below are relative to it): +0 CMD (W: trigger)  +1 ARG (RW)  +2 DATA (R)  +3 STAT (R)  +4 ST (R)  +5 LEN (RW)
  *                                                  +6 DEV0 (R)  +7 DEV1 (R): IEC device number of the SD / USB drive now (0 = none)
  *                                                  +8 BORDER (R): request for the KERNAL's IRQ routine, see VIO_BRD_* (disk-switch feedback)
- *   IO2 ($DF00): 256-byte window (RW): file name in, data blocks in/out
+ *   IO2 ($DF80): 128-byte window (RW): file name in, data blocks in/out. $DF00-$DF7F is not ours: the REU's registers live
+ *                there in the "VDrive+Swift+REU" handler (IOH_VDriveSwiftREU.c); the plain handlers leave it unanswered.
  *
  * ISR side (vio_io*_read/write) is O(1) and never touches storage. Everything
  * else runs from vio_poll() in the main loop. Portable C: host tests and the
@@ -38,23 +39,25 @@ enum { VIO_CMD = 0, VIO_ARG = 1, VIO_DATA = 2, VIO_STAT = 3, VIO_ST = 4, VIO_LEN
 #define VIO_BRD_SET     0xC0   /* | colour 0..15: set the border to it */
 #define VIO_BRD_SAVE    0xB0   /* remember the current border colour */
 #define VIO_BRD_RESTORE 0xD0   /* set the border back to the remembered colour */
+#define VIO_WIN     128   /* window size: names, fast LOAD / SAVE blocks (a power of two, see vio_io2_read) */
+#define VIO_WIN_OFS 0x80  /* the window starts at IO2 + this ($DF80) */
 #define VIO_SCANREQ 0x3C   /* answer to the first LISTEN / TALK / fast LOAD / fast SAVE of a run: "scan the bus, then ask again" (see VIO_SCAN) */
 
 /* Commands 1..8 are VD_LISTEN..VD_UNTLK (byte-level). Fast paths: */
 enum {
-    VIO_FLOAD_OPEN = 9,    /* ARG=device, window[0..LEN) = name. DATA: 0 ok (window[0..1] = load address), 4 not found, 5 no device */
-    VIO_FLOAD_BLK  = 10,   /* DATA = byte count (0..255) now in window; ST=$40 on the last block */
+    VIO_FLOAD_OPEN = 9,    /* ARG=device, window[0..LEN) = name (LEN < VIO_WIN). DATA: 0 ok (window[0..1] = load address), 4 not found, 5 no device */
+    VIO_FLOAD_BLK  = 10,   /* DATA = byte count (0..VIO_WIN) now in window; ST=$40 on the last block */
     VIO_FSAVE_OPEN = 11,   /* ARG=device, window[0..LEN) = name. DATA: 0 ok else DOS error code (63, 72, ...) or 5 */
-    VIO_FSAVE_BLK  = 12,   /* LEN bytes from window are appended to the file */
+    VIO_FSAVE_BLK  = 12,   /* LEN bytes (at most VIO_WIN) from window are appended to the file */
     VIO_FSAVE_CLOSE= 13,   /* DATA: 0 ok else DOS error code */
     VIO_SCAN       = 14,   /* start of the reset-time bus scan: releases the automatic units' numbers. DATA = units that need a number */
     VIO_FREE       = 15    /* ARG = a device number nobody answered at; it goes to the next unit that needs one. DATA = units still waiting */
 };
 
-/* Registers + window: the only memory the bus ISR reads or writes (~270 bytes). Keep in DTCM. */
+/* Registers + window: the only memory the bus ISR reads or writes (~140 bytes). Keep in DTCM. */
 typedef struct {
     volatile uint8_t cmd, arg, data, stat, st, len, dev0, dev1, border, pending;   /* cmd..border are in register order (see the static_assert in IOH_VDrive.c) */
-    uint8_t window[256];
+    uint8_t window[VIO_WIN];
 } vio_hot_t;
 
 /* Drive state and fast-path bookkeeping: main loop only. */
@@ -68,7 +71,7 @@ typedef struct {
 void    vio_init(vio_t *v, vio_hot_t *hot);
 uint8_t vio_io1_read(const vio_hot_t *h, uint8_t off);          /* ISR */
 void    vio_io1_write(vio_hot_t *h, uint8_t off, uint8_t val);  /* ISR */
-uint8_t vio_io2_read(const vio_hot_t *h, uint8_t off);          /* ISR */
+uint8_t vio_io2_read(const vio_hot_t *h, uint8_t off);          /* ISR; off = window index (IO2 address - VIO_WIN_OFS), wraps */
 void    vio_io2_write(vio_hot_t *h, uint8_t off, uint8_t val);  /* ISR */
 int     vio_poll(vio_t *v);                  /* 1 if a command was processed */
 int     vio_arm_scan(vio_t *v);              /* call once the units and pinned numbers are set: 1 if the KERNAL will be asked to scan the bus */

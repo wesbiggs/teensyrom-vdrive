@@ -31,13 +31,35 @@ void PollingHndlr_SwiftLink() { g_sw_poll++; }
 void CycleHndlr_SwiftLink(bool) { g_sw_cycle++; }
 #include "IO_Handlers/swift.c"   // = firmware/IOH_VDriveSwift.c
 
+// stand-ins for IOH_REU.c and KernalCheck: the REU's registers (command = offset 1: bit 7 execute, bit 4 "no $FF00 wait") and
+// what it does to fBusSnoop, as the real IO2Hndlr_REU / REU_FF00_W_Check do
+bool (*fBusSnoop)(uint16_t Address, bool R_Wn) = nullptr;
+static std::string g_order;                          // init / poll order across the three handlers
+static int g_reu_io2 = 0, g_reu_xfer = 0, g_kc = 0; static uint8_t g_reu_last = 0xEE, g_reu_regs[32];
+void SpecialBtn_REU(bool) {}
+void InitHndlr_REU() { g_order += "R"; fSpecialBtnChange = &SpecialBtn_REU; }
+void PollingHndlr_REU() { g_order += "r"; }
+bool REU_FF00_W_Check(uint16_t Address, bool R_Wn) { if (Address == 0xff00 && !R_Wn) { fBusSnoop = nullptr; g_reu_xfer++; return true; } return false; }
+void IO2Hndlr_REU(uint8_t a, bool R_Wn)
+{
+    g_reu_io2++; g_reu_last = a; a &= 0x1f;
+    if (R_Wn) { g_bus_out = g_reu_regs[a]; return; }
+    g_reu_regs[a] = g_bus_in;
+    if (a == 1 && (g_bus_in & 0x80)) {
+        if (g_bus_in & 0x10) { fBusSnoop = nullptr; g_reu_xfer++; }   // immediate
+        else fBusSnoop = &REU_FF00_W_Check;                           // wait for a write to $FF00
+    }
+}
+bool KernalCheck(uint16_t, bool) { g_kc++; return false; }
+#include "IO_Handlers/swiftreu.c"   // = firmware/IOH_VDriveSwiftREU.c
+
 static int fails = 0;
 static void check(const char *what, bool ok) { printf("%s %s\n", ok ? "PASS" : "FAIL", what); if (!ok) fails++; }
 
 static void w1(uint8_t reg, uint8_t v) { g_bus_in = v; IO1Hndlr_VDrive(VD_MboxBase + reg, false); }     // reg = mailbox offset
 static uint8_t r1(uint8_t reg) { IO1Hndlr_VDrive(VD_MboxBase + reg, true); return g_bus_out; }
-static void ww(uint8_t off, uint8_t v) { g_bus_in = v; IO2Hndlr_VDrive(off, false); }
-static uint8_t wr_(uint8_t off) { IO2Hndlr_VDrive(off, true); return g_bus_out; }
+static void ww(uint8_t off, uint8_t v) { g_bus_in = v; IO2Hndlr_VDrive(VIO_WIN_OFS + off, false); }     // off = window index
+static uint8_t wr_(uint8_t off) { IO2Hndlr_VDrive(VIO_WIN_OFS + off, true); return g_bus_out; }
 
 static int g_scans = 0;                                    // bus scans the fake KERNAL did
 static std::set<int> g_real_drives;                        // device numbers with a "real drive" on the fake bus
@@ -78,6 +100,7 @@ static std::string fast_load(int dev, const std::string &name, int *rc = nullptr
     out.push_back((char)wr_(0)); out.push_back((char)wr_(1));
     for (;;) {
         uint8_t st; int n = call(VIO_FLOAD_BLK, 0, 0, &st) & 0xFF;
+        if (n > VIO_WIN) { printf("FAIL load block of %d bytes is larger than the window\n", n); fails++; }
         for (int i = 0; i < n; i++) out.push_back((char)wr_((uint8_t)i));
         if (st & 0x40) break;
     }
@@ -90,8 +113,8 @@ static int fast_save(int dev, const std::string &name, const std::string &data)
     int r = call(VIO_FSAVE_OPEN, dev, (uint8_t)name.size());
     if (r) return r;
     ww(0, 0x01); ww(1, 0x08); call(VIO_FSAVE_BLK, 0, 2);
-    for (size_t i = 0; i < data.size(); i += 255) {
-        size_t n = std::min<size_t>(255, data.size() - i);
+    for (size_t i = 0; i < data.size(); i += VIO_WIN) {
+        size_t n = std::min<size_t>(VIO_WIN, data.size() - i);
         for (size_t j = 0; j < n; j++) ww((uint8_t)j, (uint8_t)data[i + j]);
         call(VIO_FSAVE_BLK, 0, (uint8_t)n);
     }
@@ -156,6 +179,66 @@ int main(int argc, char **argv)
     EEPROM.write(eepAdNextIOHndlr, IOH_VDriveSwift);
     check("remap: default VDrive+SwiftLink too", VDriveSwift_Remap(IOH_Swiftlink) == IOH_VDriveSwift);
     check("remap: other handlers pass through", VDriveSwift_Remap(IOH_Other) == IOH_Other && VDriveSwift_Remap(IOH_None) == IOH_None);
+    check("remap: REU programs keep the plain REU unless the default is VDrive+Swift+REU", VDriveSwift_Remap(IOH_REU) == IOH_REU);
+
+    // combined VDrive+Swift+REU handler
+    check("REU combo named and wired", strcmp(IOHndlr_VDriveSwiftREU.Name, "VDrive+Swift+REU") == 0 && strlen(IOHndlr_VDriveSwiftREU.Name) < IOHNameLength
+          && IOHndlr_VDriveSwiftREU.IO1Hndlr == IO1Hndlr_VDriveSwift && IOHndlr_VDriveSwiftREU.CycleHndlr == CycleHndlr_SwiftLink);
+    g_sw_last = 0xEE; IOHndlr_VDriveSwiftREU.IO1Hndlr(0x02, true);
+    check("REU combo: ACIA offsets go to SwiftLink", g_sw_last == 0x02);
+    {
+        int bad = 0;
+        for (int a = 0; a < 0x80; a++) { g_reu_last = 0xEE; g_bus_out = 0x77; IOHndlr_VDriveSwiftREU.IO2Hndlr((uint8_t)a, true); if (g_reu_last != a) bad++; }
+        check("REU combo: $DF00-$DF7F go to the REU", bad == 0);
+        g_reu_io2 = 0;
+        for (int a = 0; a < VIO_WIN; a++) { g_bus_in = (uint8_t)(a ^ 0x5A); IOHndlr_VDriveSwiftREU.IO2Hndlr((uint8_t)(VIO_WIN_OFS + a), false); }
+        for (int a = 0; a < VIO_WIN; a++) { IOHndlr_VDriveSwiftREU.IO2Hndlr((uint8_t)(VIO_WIN_OFS + a), true); if (g_bus_out != (a ^ 0x5A)) bad++; }
+        check("REU combo: $DF80-$DFFF are the VDrive window, the REU never sees them", bad == 0 && g_reu_io2 == 0);
+        check("window index 0 is $DF80", wr_(0) == 0x5A && vioHot.window[0] == 0x5A);
+        g_bus_out = 0x77; IO2Hndlr_VDrive(0x00, true); IO2Hndlr_VDrive(0x7F, true);
+        check("plain VDrive leaves $DF00-$DF7F unanswered", g_bus_out == 0x77);
+        g_bus_in = 0x99; IO2Hndlr_VDrive(0x10, false);
+        check("a write to $DF10 does not reach the window", vioHot.window[0x10] == (0x10 ^ 0x5A));
+    }
+    // init order: SwiftLink, REU, VDrive (VDrive re-stages the KERNAL hook and may take the alt button after the REU)
+    g_order.clear(); g_sw_init = 0; fSpecialBtnChange = nullptr;
+    IO1[rwRegPwrUpDefaults2] = rpud2AltBtnAutoLaunch;
+    IOHndlr_VDriveSwiftREU.InitHndlr();
+    check("REU combo init: SwiftLink before REU", g_sw_init == 1 && g_order == "R");
+    check("REU combo init: alt button stays 'save REU' when the setting is not None", fSpecialBtnChange == &SpecialBtn_REU);
+    IO1[rwRegPwrUpDefaults2] = rpud2AltBtnNone;
+    IOHndlr_VDriveSwiftREU.InitHndlr();
+    check("REU combo init: alt button 'None' -> VDrive disk switching", fSpecialBtnChange == &SpecialBtn_VDrive);
+    IO1[rwRegPwrUpDefaults2] = 0;
+    g_order.clear(); g_sw_poll = 0; IOHndlr_VDriveSwiftREU.PollingHndlr();
+    check("REU combo polls all three", g_sw_poll == 1 && g_order == "r");
+    // the bus-snoop hook: KernalCheck must keep serving the KERNAL through every REU command
+    {
+        fBusSnoop = &KernalCheck; g_reu_xfer = 0;
+        auto cmd = [](uint8_t v) { g_bus_in = v; IOHndlr_VDriveSwiftREU.IO2Hndlr(0x01, false); };
+        g_bus_in = 0x12; IOHndlr_VDriveSwiftREU.IO2Hndlr(0x02, false);
+        check("REU register write that starts nothing leaves KernalCheck", fBusSnoop == &KernalCheck);
+        cmd(0x90);
+        check("immediate REU command: transfer, KernalCheck back", g_reu_xfer == 1 && fBusSnoop == &KernalCheck);
+        cmd(0x80);
+        check("$FF00-armed REU command: our snoop, not the REU's", fBusSnoop == &VDREU_Snoop);
+        g_kc = 0;
+        check("armed: other cycles still go to KernalCheck", !fBusSnoop(0xE000, true) && !fBusSnoop(0xff00, true) && g_kc == 2 && g_reu_xfer == 1);
+        check("armed: the $FF00 write starts the transfer", fBusSnoop(0xff00, false) && g_reu_xfer == 2);
+        check("after the trigger KernalCheck is back", fBusSnoop == &KernalCheck);
+        cmd(0x80); cmd(0x80);
+        check("armed twice: still our snoop", fBusSnoop == &VDREU_Snoop);
+        cmd(0x90);
+        check("armed, then an immediate command: KernalCheck back", fBusSnoop == &KernalCheck && g_reu_xfer == 3);
+        cmd(0x80); fBusSnoop(0xff00, false);
+        check("re-arm after a trigger works", fBusSnoop == &KernalCheck && g_reu_xfer == 4);
+        fBusSnoop = nullptr;
+    }
+    EEPROM.write(eepAdNextIOHndlr, IOH_VDriveSwiftREU);
+    check("remap: default VDrive+Swift+REU -> SwiftLink and REU programs get it", VDriveSwift_Remap(IOH_Swiftlink) == IOH_VDriveSwiftREU && VDriveSwift_Remap(IOH_REU) == IOH_VDriveSwiftREU);
+    check("remap: default VDrive+Swift+REU, others pass through", VDriveSwift_Remap(IOH_Other) == IOH_Other && VDriveSwift_Remap(IOH_None) == IOH_None);
+    check("VD_IsHandler covers the three VDrive Special IOs", VD_IsHandler(IOH_VDrive) && VD_IsHandler(IOH_VDriveSwift) && VD_IsHandler(IOH_VDriveSwiftREU)
+          && !VD_IsHandler(IOH_REU) && !VD_IsHandler(IOH_Swiftlink));
     EEPROM.write(eepAdNextIOHndlr, 0xFF);
     memset(EEPROM.m + eepAdVDriveDevs, 0xFF, 2);
 

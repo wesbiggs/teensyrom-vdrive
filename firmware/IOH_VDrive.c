@@ -31,12 +31,19 @@ stcIOHandlers IOHndlr_VDrive =
   "VDrive KERNAL",          //Name of handler (IOHNameLength max)
   &InitHndlr_VDrive,        //Called once at handler startup
   &IO1Hndlr_VDrive,         //IO1 R/W handler: mailbox registers
-  &IO2Hndlr_VDrive,         //IO2 R/W handler: 256-byte data window
+  &IO2Hndlr_VDrive,         //IO2 R/W handler: 128-byte data window at $DF80
   NULL,                     //ROML Read handler, in addition to any ROM data sent
   NULL,                     //ROMH Read handler, in addition to any ROM data sent
   &PollingHndlr_VDrive,     //Polled in main routine: does all file system work
   NULL,                     //called at the end of EVERY c64 cycle
 };
+
+// The VDrive Special IOs: PreStart, the remote control and the listings while a program runs treat them all alike.
+#ifdef Fab04_REU
+   #define VD_IsHandler(h) ((h) == IOH_VDrive || (h) == IOH_VDriveSwift || (h) == IOH_VDriveSwiftREU)
+#else
+   #define VD_IsHandler(h) ((h) == IOH_VDrive || (h) == IOH_VDriveSwift)
+#endif
 
 #define VD_MboxBase    0x10  // mailbox at $DE10-$DE15: $DE00-$DE07 stays free for the SwiftLink ACIA (see IOH_VDriveSwift.c)
 #define VD_CwdLen      96
@@ -964,8 +971,9 @@ FASTRUN void IO1Hndlr_VDrive(uint8_t Address, bool R_Wn)
 
 FASTRUN void IO2Hndlr_VDrive(uint8_t Address, bool R_Wn)
 {
-   if (!vioReady) return;
-   if (R_Wn) DataPortWriteWaitLog(vio_io2_read(&vioHot, Address));
+   Address -= VIO_WIN_OFS;                                 // window at $DF80-$DFFF; $DF00-$DF7F wraps past it: open bus
+   if (!vioReady || Address >= VIO_WIN) return;           // (the REU's registers in IOH_VDriveSwiftREU.c)
+   if (R_Wn) DataPortWriteWaitLog(vioHot.window[Address]);   // straight from the struct, as in IO1Hndlr_VDrive
    else
    {
       uint8_t Data = DataPortWaitRead();

@@ -1,11 +1,11 @@
-; Bus stress test for the TR+ mailbox (IO1 $DE10..) and window (IO2 $DF00..). Raw 6502 accesses at full speed, no commands are sent:
-; it only uses registers that read back what was written (ARG, LEN), the idle STAT token and the 256-byte window.
+; Bus stress test for the TR+ mailbox (IO1 $DE10..) and window (IO2 $DF80..). Raw 6502 accesses at full speed, no commands are sent:
+; it only uses registers that read back what was written (ARG, LEN), the idle STAT token and the 128-byte window.
 ; Output per test: error count (hex) and the OR of all wrong bit patterns (hex). Zero errors everywhere = the bus handlers keep up.
 .ifndef MBX
 MBX      = $DE10
 .endif
 .ifndef WIN
-WIN      = $DF00
+WIN      = $DF80                 ; 128 bytes (VIO_WIN); every window loop below runs Y 0..127
 .endif
 MBX_ARG  = MBX+1
 MBX_STAT = MBX+3
@@ -125,7 +125,7 @@ fillwin: ldy #0
         eor #$5C
         sta WIN,y
         iny
-        bne :-
+        bpl :-
         rts
 
 ; --- tests ---------------------------------------------------------------------------------------------------------
@@ -189,7 +189,7 @@ run3:   jsr begin
         beq @ok
         jsr rec
 @ok:    iny
-        bne @li
+        bpl @li
         dex
         bne @lo
         dec rep
@@ -198,9 +198,9 @@ run3:   jsr begin
 
 ; T4: window read as fast as the CPU can (LDA abs / STA abs, 8 cycles per byte), checked afterwards
 run4:   jsr begin
-@rp:    ldx #0                  ; 256 passes of 256 reads
+@rp:    ldx #0                  ; 256 passes of 128 reads
 @lo:
-.repeat 256, i
+.repeat 128, i
         lda WIN+i
         sta BUF+i
 .endrepeat
@@ -211,7 +211,7 @@ run4:   jsr begin
         beq @ok
         jsr rec
 @ok:    iny
-        bne @ck
+        bpl @ck
         dex
         beq :+
         jmp @lo                 ; too far for a branch after the unrolled loop
@@ -235,7 +235,7 @@ run5:   jsr begin
         beq @ok
         jsr rec
 @ok:    iny
-        bne @li
+        bpl @li
         dex
         bne @lo
         dec rep
@@ -268,7 +268,7 @@ run6:   jsr begin
 run7:   jsr begin
 @rp:    ldx #0
 @lo:
-.repeat 256, i
+.repeat 128, i
         lda BUF+i                       ; BUF holds whatever T4 left: the pattern, so the stores below are idempotent
         sta WIN+i
 .endrepeat
@@ -279,7 +279,7 @@ run7:   jsr begin
         beq @ok
         jsr rec
 @ok:    iny
-        bne @ck
+        bpl @ck
         dex
         beq :+
         jmp @lo

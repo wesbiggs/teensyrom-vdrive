@@ -23,7 +23,7 @@ ANSWERED = 0x5A
 # ---- drive backed by libd64 ------------------------------------------------
 import ctypes, os, random, shutil, tempfile, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from d64py import LIB, Disk, VDrive, VIO, R_DEV0, R_DEV1
+from d64py import LIB, Disk, VDrive, VIO, R_DEV0, R_DEV1, WIN_SIZE
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "tests"))
 from test_vio import HostStruct               # ctypes layout of vd_host_t
 
@@ -196,14 +196,14 @@ def main(kernal, scenario="basic"):
                     c, a, ln = regs[0], regs[1], regs[5]
                     if 1 <= c <= 15:
                         if c in (9, 11, 12):                    # commands that consume the window
-                            io.win_write(bytes(m.read(WIN, 256)))
+                            io.win_write(bytes(m.read(WIN, WIN_SIZE)))
                         nm, d, st = io.call(c, a, ln, allow_scan=True)
                         if c == 10 and fault["at"]:
                             fault["n"] += 1
                             if fault["n"] == fault["at"]: nm = True
                         log.append((c, a, d, st, nm))
                         if c in (9, 10):                        # commands that produce window data
-                            m.write(WIN, io.win_read(256))
+                            m.write(WIN, io.win_read(WIN_SIZE))
                         m.write(DATA, [d]); m.write(ST, [st])
                         devs = (io.r(R_DEV0), io.r(R_DEV1))
                         if devs != last_devs[0]: m.write(DEV0, list(devs)); last_devs[0] = devs
@@ -325,6 +325,16 @@ def main(kernal, scenario="basic"):
         n_acptr = sum(1 for e in log if e[0] == 6)
         check("LOAD used the fast path (%d block calls, %d byte-level ACPTR calls in the whole run so far)" % (n_blk, n_acptr),
               n_blk >= 24 and n_acptr == 0)
+
+        # --- names and the 128-byte window: 127 characters still go the fast way, 128 and more fall back to the byte-level open ---
+        n0 = len(log)
+        run('N$="":FORI=1TO127:N$=N$+"X":NEXT:LOAD N$,8\r', "FILE NOT FOUND")
+        check("127-character name: fast open with the whole name in the window",
+              any(e[0] == 9 for e in log[n0:]) and not any(e[0] == 5 for e in log[n0:]))
+        n0 = len(log)
+        run('N$="":FORI=1TO130:N$=N$+"X":NEXT:LOAD N$,8\r', "FILE NOT FOUND")
+        check("130-character name: no fast open, the name goes byte by byte (CIOUT)",
+              not any(e[0] == 9 for e in log[n0:]) and sum(1 for e in log[n0:] if e[0] == 5) >= 130)
 
         # --- regression: CIOUT must return the byte sent (CHROUT tail-jumps into it); numbers followed by more PRINT items broke BASIC ---
         run('NEW\r')

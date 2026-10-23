@@ -3,6 +3,8 @@
 ## Unreleased
 
 ### Added
+- "VDrive+Swift+REU" Special IO: the virtual drive, SwiftLink and a 128 KB REU at the same time (firmware 0.9.0.28, `docs/DESIGN.md` section 32). With it as the default Special IO, menu programs paired with SwiftLink or the REU get it. Host tests, VICE and a firmware build; not on hardware.
+
 - `MD:NAME` / `RD:NAME` make and remove (empty) folders on the card when nothing is mounted (CMD syntax; firmware 0.9.0.26, `docs/DESIGN.md` section 31). With an image mounted they answer 31 (no D81 partitions). Unit and glue host tests, not on hardware.
 - Plain files on the card: with nothing mounted, `LOAD"GAME.PRG",8` (also `"GAME"`, `"GA*"`, `"DIR/GAME.PRG"`) loads the file itself; reading only (firmware 0.9.0.25, `docs/DESIGN.md` section 30). Unit and glue host tests, not on hardware.
 - `N:NAME.D64,ID` (or `.D71` / `.D81`) with nothing mounted creates a new blank image in the current folder (or `N:/DIR/NAME.D64`), mounts it and formats it; an existing file is never replaced (firmware 0.9.0.24, `docs/DESIGN.md` section 29). Unit and glue host tests, not on hardware: time a D81 on a USB stick against the KERNAL mailbox wait.
@@ -25,6 +27,9 @@
 - `VDCOPY` (`util/`, `make util`, also on `vdtest.d64`): copies files from a real drive on the serial bus to a vdrive unit.
   BASIC front end (directory list, `A` / `1,3,5-8` selection, optional replace) with a 2 KB-chunk machine-code copy loop;
   RUN/STOP aborts cleanly and removes the partial file. Tested in VICE with a true-drive 1541; not yet on hardware.
+
+### Changed
+- The KERNAL's IO2 window is now 128 bytes at `$DF80` (was 256 at `$DF00`), so the REU's registers fit beside it; fast LOAD / SAVE move 128-byte blocks, and names of 128 characters or more open through the byte-level path. **Rebuild `kernal-tr.bin` together with firmware 0.9.0.28**: an older image does not match.
 
 ### Fixed
 - Real IEC drives never received UNTALK: the UNLSN hook at `$EDFE` overwrote the operand of the `BIT` that stock UNTLK

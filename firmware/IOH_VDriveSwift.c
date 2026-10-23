@@ -1,7 +1,7 @@
 // "VDrive+SwiftLink" Special IO for TeensyROM+: the virtual-drive KERNAL (IOH_VDrive.c) together with the SwiftLink / Turbo232
 // modem emulation (IOH_Swiftlink.c), so a terminal such as CCGMS can download to device 8/9 through the normal KERNAL.
 //   IO1 $DE00-$DE0F -> SwiftLink ACIA ($DE00-$DE03, Turbo232 speed register $DE07)
-//   IO1 $DE10-$DE15 -> VDrive mailbox, IO2 -> VDrive 256-byte window
+//   IO1 $DE10-$DE18 -> VDrive mailbox, IO2 $DF80-$DFFF -> VDrive 128-byte window
 //   per-cycle callback -> SwiftLink (NMI timing); init and polling run both.
 // Included from IOHandlers.h after IOH_VDrive.c and IOH_Swiftlink.c (unity build, compiled as C++).
 
@@ -14,7 +14,7 @@ stcIOHandlers IOHndlr_VDriveSwift =
   "VDrive+SwiftLink",       //Name of handler (IOHNameLength max)
   &InitHndlr_VDriveSwift,   //Called once at handler startup
   &IO1Hndlr_VDriveSwift,    //IO1 R/W handler: ACIA below $10, mailbox registers above
-  &IO2Hndlr_VDrive,         //IO2 R/W handler: 256-byte data window
+  &IO2Hndlr_VDrive,         //IO2 R/W handler: 128-byte data window at $DF80
   NULL,                     //ROML Read handler, in addition to any ROM data sent
   NULL,                     //ROMH Read handler, in addition to any ROM data sent
   &PollingHndlr_VDriveSwift,//Polled in main routine
@@ -22,11 +22,15 @@ stcIOHandlers IOHndlr_VDriveSwift =
 };
 
 // When the user's default Special IO is a VDrive one, programs that the menu pairs with plain SwiftLink (CCGMS, ...) get the
-// combined handler instead, so launching them does not drop the virtual drive.
+// combined handler instead, so launching them does not drop the virtual drive. With "VDrive+Swift+REU" as the default, REU
+// programs get it too (with "VDrive" or "VDrive+SwiftLink" they keep the plain 512 KB REU: the combined one is smaller).
 FLASHMEM uint8_t VDriveSwift_Remap(uint8_t ioh)
 {
-   if (ioh != IOH_Swiftlink) return ioh;
    uint8_t pref = EEPROM.read(eepAdNextIOHndlr);
+#ifdef Fab04_REU
+   if (pref == IOH_VDriveSwiftREU) return (ioh == IOH_Swiftlink || ioh == IOH_REU) ? IOH_VDriveSwiftREU : ioh;
+#endif
+   if (ioh != IOH_Swiftlink) return ioh;
    return (pref == IOH_VDrive || pref == IOH_VDriveSwift) ? IOH_VDriveSwift : ioh;
 }
 

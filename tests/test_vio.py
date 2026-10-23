@@ -1,6 +1,6 @@
 import ctypes, pathlib, random, shutil, subprocess, sys, tempfile, unittest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / 'tools'))
-from d64py import (LIB, Disk, VIO, VDrive, F_LOAD_OPEN, F_LOAD_BLK, F_SAVE_OPEN, F_SAVE_BLK, F_SAVE_CLOSE,
+from d64py import (LIB, Disk, VIO, VDrive, WIN_SIZE, F_LOAD_OPEN, F_LOAD_BLK, F_SAVE_OPEN, F_SAVE_BLK, F_SAVE_CLOSE,
                    R_STAT, R_DEV0, R_DEV1, F_SCAN, F_FREE, BUSY, OK, NOTMINE, SCANREQ)
 
 LISTEN, TALK, SECOND, TKSA, CIOUT, ACPTR, UNLSN, UNTLK = range(1, 9)
@@ -60,8 +60,13 @@ class VioTests(unittest.TestCase):
         self.assertEqual(self.io.r(9), 0)                                # past it: nothing
 
     def test_window_rw(self):
-        for i in range(256): self.io.win_w(i, i ^ 0xA5)
-        self.assertTrue(all(self.io.win_r(i) == i ^ 0xA5 for i in range(256)))
+        for i in range(WIN_SIZE): self.io.win_w(i, i ^ 0xA5)
+        self.assertTrue(all(self.io.win_r(i) == i ^ 0xA5 for i in range(WIN_SIZE)))
+
+    def test_window_index_wraps(self):
+        # 128 bytes: an index past the end wraps instead of reaching the bytes after the window
+        self.io.win_w(0, 0x11); self.io.win_w(WIN_SIZE, 0x22)
+        self.assertEqual((self.io.win_r(0), self.io.win_r(WIN_SIZE + 5) == self.io.win_r(5)), (0x22, True))
 
     def test_byte_level_through_registers(self):
         nm, _, st = self.io.call(LISTEN, 8); self.assertEqual((nm, st), (False, 0))
@@ -104,18 +109,28 @@ class VioTests(unittest.TestCase):
         nm, _, _ = self.io.call(ACPTR)                                     # stray ACPTR must not be ours
         self.assertTrue(nm)
 
-    def test_block_sizes_never_exceed_255(self):
+    def test_block_sizes_never_exceed_the_window(self):
         self.io.win_write(b"HUGE"); self.io.call(F_LOAD_OPEN, 8, 4)
         sizes = []
         while True:
             _, n, st = self.io.call(F_LOAD_BLK); sizes.append(n)
             if st & 0x40: break
-        self.assertTrue(all(0 < n <= 255 for n in sizes[:-1]))
+        self.assertTrue(all(n == WIN_SIZE for n in sizes[:-1]))
+        self.assertTrue(0 <= sizes[-1] <= WIN_SIZE)
         self.assertEqual(sum(sizes), len(self.files[b"HUGE"]) - 2)
 
     # ---- fast save ----
+    def test_fast_save_len_past_the_window_is_clamped(self):
+        # a KERNAL built for the old 256-byte window (or a bad LEN) must not read past the 128 bytes the window has
+        self.io.win_write(b"CLAMP"); self.assertEqual(self.io.call(F_SAVE_OPEN, 8, 5)[1], 0)
+        self.io.win_write(b"\x01\x08"); self.io.call(F_SAVE_BLK, 0, 2)
+        body = self.data(WIN_SIZE); self.io.win_write(body)
+        self.io.call(F_SAVE_BLK, 0, 255)
+        self.assertEqual(self.io.call(F_SAVE_CLOSE)[1], 0)
+        self.assertEqual(self.io.fast_load(8, b"CLAMP"), (0, 0x0801, body))
+
     def test_fast_save_c1541_roundtrip(self):
-        for i, n in enumerate((0, 1, 2, 253, 254, 255, 1000, 20000)):
+        for i, n in enumerate((0, 1, 2, 127, 128, 129, 1000, 20000)):
             data = self.data(n); name = b"SV%d" % i
             self.assertEqual(self.io.fast_save(8, name, 0x0801, data), 0)
             rc, addr, got = self.io.fast_load(8, name)

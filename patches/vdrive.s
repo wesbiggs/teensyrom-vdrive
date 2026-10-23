@@ -20,8 +20,9 @@
 MBX = $DE10
 .endif
 .ifndef WIN
-WIN = $DF00                 ; 256-byte IO2 window: file names and data blocks
+WIN = $DF80                 ; 128-byte IO2 window: file names and data blocks ($DF00-$DF7F: REU registers in "VDrive+Swift+REU")
 .endif
+WINSZ    = 128              ; VIO_WIN in d64/vdrive_io.h
 MBX_CMD  = MBX+0
 MBX_ARG  = MBX+1
 MBX_DATA = MBX+2
@@ -285,20 +286,15 @@ hk_acptr:
 ; ---- fast LOAD ---------------------------------------------------------------
 ; Entered instead of `JSR $F3D5` in the serial LOAD path. Handles LOAD (not
 ; VERIFY) entirely through the mailbox for whatever devices the Teensy claims: the Teensy streams the
-; file in blocks of <=255 bytes through the IO2 window. Anything else, or a
+; file in blocks of <=128 bytes through the IO2 window. Anything else (also a name too long for the window), or a
 ; firmware without the fast commands, replays the displaced JSR and continues
 ; in the stock code ($F4CB).
-fl_fail:
-        jmp $F707               ; an answer failed mid-transfer: report an error instead of using stale data
-fl_slowx:
-        ldx $A4                 ; restore X (original SA) for the stock path
-fl_slow:
-        jsr $F3D5
-        jmp $F4CB
-fl_hook:
-        lda $93
-        bne fl_slow               ; VERIFY
-        stx $A4                 ; original SA: 0 = load to caller's address
+; in: A = FLOAD_OPEN / FSAVE_OPEN. Copies the file name to the window and sends the command (out: as vcall).
+; A name of WINSZ bytes or more does not fit: C=1 ("not mine"), and the byte-level path opens it instead.
+open_named:
+        pha
+        ldy $B7                 ; never 0 here: LOAD / SAVE stop at MISSING FILE NAME first
+        bmi @long               ; >= 128 = WINSZ
         ldy #0
 @nm:    lda ($BB),y             ; file name -> window, each byte read back
         sta WIN,y
@@ -310,8 +306,25 @@ fl_hook:
         sty MBX_LEN
         lda $BA
         sta MBX_ARG
+        pla
+        jmp vcall
+@long:  pla
+        sec
+        rts
+
+fl_fail:
+        jmp $F707               ; an answer failed mid-transfer: report an error instead of using stale data
+fl_slowx:
+        ldx $A4                 ; restore X (original SA) for the stock path
+fl_slow:
+        jsr $F3D5
+        jmp $F4CB
+fl_hook:
+        lda $93
+        bne fl_slow               ; VERIFY
+        stx $A4                 ; original SA: 0 = load to caller's address
         lda #C_FLOAD_OPEN
-        jsr vcall
+        jsr open_named
         bcs fl_slowx
         tay                     ; keep the result while X is reloaded
         ldx $A4
@@ -339,7 +352,7 @@ fl_hook:
 @blk:   lda #C_FLOAD_BLK
         jsr vcall
         bcs fl_fail             ; time-out / not-mine in the middle of a load
-        sta $A3                 ; byte count (0..255)
+        sta $A3                 ; byte count (0..WINSZ)
         beq @chk
         ldy #0
 @cp:    lda WIN,y               ; double read: the byte is only taken when two reads in a row agree
@@ -365,19 +378,8 @@ fs_slow:
         jsr $F3D5
         jmp $F608
 fs_hook:
-        ldy #0
-@nm:    lda ($BB),y
-        sta WIN,y
-        cmp WIN,y
-        bne @nm
-        iny
-        cpy $B7
-        bne @nm
-        sty MBX_LEN
-        lda $BA
-        sta MBX_ARG
         lda #C_FSAVE_OPEN
-        jsr vcall
+        jsr open_named
         bcs fs_slow
         sta $A4                 ; 0 = open, else DOS error / 5 = no device
         jsr $F68F               ; "SAVING name"
@@ -408,8 +410,9 @@ fs_hook:
         bne @full
         lda $A3
         beq @fin
-        bne @send
-@full:  lda #255
+        cmp #WINSZ+1
+        bcc @send               ; the rest fits in one block
+@full:  lda #WINSZ
         sta $A3
 @send:  ldy #0
 @c:     lda ($AC),y

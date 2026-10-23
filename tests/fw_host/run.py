@@ -9,6 +9,7 @@ try:
     (tmp / "IO_Handlers").mkdir(); (tmp / "vdrive").mkdir()
     shutil.copy(ROOT / "firmware/IOH_VDrive.c", tmp / "IO_Handlers/glue.c")
     shutil.copy(ROOT / "firmware/IOH_VDriveSwift.c", tmp / "IO_Handlers/swift.c")
+    shutil.copy(ROOT / "firmware/IOH_VDriveSwiftREU.c", tmp / "IO_Handlers/swiftreu.c")
     for f in (ROOT / "d64").iterdir():
         if f.suffix in (".c", ".h"): shutil.copy(f, tmp / "vdrive" / f.name)
     shutil.copy(ROOT / "tests/fw_host/stub.h", tmp / "stub.h")

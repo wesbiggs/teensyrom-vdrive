@@ -6,7 +6,7 @@ Commodore 64, backed by `.d64`, `.d71` and `.d81` images. No IEC cable, no addit
 It has two halves:
 
 * **A patched KERNAL** (901227-03 plus a few hundred bytes of 6502, served live by the TR+). The serial routines
-  (`LISTEN TALK SECOND TKSA CIOUT ACPTR UNLSN UNTLK`) ask a mailbox in I/O space (`$DE10`, with a 256-byte window at `$DF00`) whether the
+  (`LISTEN TALK SECOND TKSA CIOUT ACPTR UNLSN UNTLK`) ask a mailbox in I/O space (`$DE10`, with a 128-byte window at `$DF80`) whether the
   device is virtual. If so the Teensy answers; otherwise the stock IEC code runs, so real drives keep working. LOAD and SAVE have
   block-transfer fast paths.
 * **Teensy firmware** (`firmware/`, a patch for the TeensyROM source) with a portable C99 D64/D71/D81 engine (`d64/`) and a virtual drive on top of it:
@@ -20,7 +20,7 @@ The C128 is not yet supported, and tape (device 1) no longer works because its K
 ## Installing
 1. Build the patched KERNAL from your own 901227-03 dump (the ROM itself is not in this repo):
    ```
-   make build/kernal-tr.bin STOCK=/path/to/kernal-901227-03.bin     # 8192 bytes, mailbox at $DE10, window at $DF00
+   make build/kernal-tr.bin STOCK=/path/to/kernal-901227-03.bin     # 8192 bytes, mailbox at $DE10, window at $DF80
    ```
    Copy it to the SD card or USB drive.
 2. Patch the firmware source (TeensyROM checkout, FW ≥ 0.9 layout) and build the TR+ target:
@@ -28,13 +28,15 @@ The C128 is not yet supported, and tape (device 1) no longer works because its K
    cd /path/to/TeensyROM && git apply /path/to/teensyrom-vdrive/firmware/teensyrom-vdrive.patch
    ```
    The patch adds `Fab04_VDrive` (enabled next to `Fab04_KernalReplace` in `Common_Defs.h`), a new Special IO
-   `IOH_VDrive` ("VDrive KERNAL") and `IOH_VDriveSwift` ("VDrive+SwiftLink"), the library under `MinimalBoot/Common/vdrive/`, and one condition in
+   `IOH_VDrive` ("VDrive KERNAL"), `IOH_VDriveSwift` ("VDrive+SwiftLink") and `IOH_VDriveSwiftREU` ("VDrive+Swift+REU"), the library under `MinimalBoot/Common/vdrive/`, and one condition in
    `KERNALPreStart()` so the KERNAL image is loaded when this Special IO is selected.
 3. On the C64: in the TR file browser select the image and press `<Shift-K>`; in Settings choose Special IO
    **VDrive KERNAL** (`a`/`A`); then start BASIC (`F2`) or launch a PRG.
 
 
 The "VDrive+SwiftLink" Special IO runs the virtual drive and the SwiftLink / Turbo232 modem together. When the default Special IO is VDrive or VDrive+SwiftLink, menu programs paired with plain SwiftLink (CCGMS, Retromate, Simple SwiftLink Term) start with it, so launching one does not drop the drive. `.crt` SwiftLink/Turbo232 images are left alone and run with the C64's own KERNAL. It costs SwiftLink's normal start-up RAM (about 355 KB of RAM2 buffers, drive menu freed), so it is a separate Special IO.
+
+The "VDrive+Swift+REU" Special IO adds an REU (RAM Expansion Unit) to those two. SwiftLink's buffers leave room for a **128 KB** REU (a 1700), not 512 KB; software that insists on a bigger one will refuse it. When it is the default Special IO, menu programs paired with SwiftLink or with the REU start with it; otherwise REU programs keep the plain 512 KB REU. Not yet tried on a real C64.
 
 ## Using it
 

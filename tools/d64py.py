@@ -151,6 +151,7 @@ LIB.vdrive_active.restype = ctypes.c_int
 (R_CMD, R_ARG, R_DATA, R_STAT, R_ST, R_LEN, R_DEV0, R_DEV1) = range(8)
 (F_LOAD_OPEN, F_LOAD_BLK, F_SAVE_OPEN, F_SAVE_BLK, F_SAVE_CLOSE, F_SCAN, F_FREE) = range(9, 16)
 BUSY, OK, NOTMINE, SCANREQ = 0x80, 0x5A, 0xA5, 0x3C
+WIN_SIZE = 128                                    # VIO_WIN: the IO2 window at $DF80 (d64/vdrive_io.h)
 
 
 class VIO:
@@ -204,7 +205,7 @@ class VIO:
             if st & 0x40: break
         return 0, addr, data
 
-    def fast_save(self, dev, name, addr, data, block=255):
+    def fast_save(self, dev, name, addr, data, block=WIN_SIZE):
         self.win_write(name)
         nm, rc, _ = self.call(F_SAVE_OPEN, dev, len(name))
         if nm: return "notmine"

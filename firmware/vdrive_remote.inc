@@ -36,7 +36,7 @@ FLASHMEM void VDriveRemoteCommand(bool Set)
       return;
    }
    int Unit = (Drive == rmtSD) ? 0 : 1;   //VDrive's own numbering: 0 = SD, 1 = USB
-   bool Running = (CurrentIOHandler == IOH_VDrive || CurrentIOHandler == IOH_VDriveSwift);
+   bool Running = VD_IsHandler(CurrentIOHandler);
    char Msg[64];
    char Json[2 * MaxNamePathLength + 160];
    if (!Running)

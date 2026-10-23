@@ -113,7 +113,9 @@ struct stcIOHandlers {
 struct EEPROMStub { uint8_t m[8192]; uint8_t read(int a) { return m[a]; } void write(int a, uint8_t v) { m[a] = v; } };
 extern EEPROMStub EEPROM;
 enum { eepAdVDriveDevs = 4235, eepAdNextIOHndlr = 6 };
-enum { IOH_None = 0, IOH_Swiftlink, IOH_VDrive, IOH_VDriveSwift, IOH_Other };   // only the order within the real enum is irrelevant here
+#define Fab04_REU
+enum { IOH_None = 0, IOH_Swiftlink, IOH_REU, IOH_VDrive, IOH_VDriveSwift, IOH_VDriveSwiftREU, IOH_Other };   // only the order within the real enum is irrelevant here
+extern bool (*fBusSnoop)(uint16_t Address, bool R_Wn);
 
 enum { rwRegPwrUpDefaults2 = 8, rpud2AltBtnActionMask = 0b00111000, rpud2AltBtnAutoLaunch = 0, rpud2AltBtnPause = 0b00001000, rpud2AltBtnNone = 0b00100000 };
 #define Fab04_SpecialButton

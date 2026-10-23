@@ -42,8 +42,8 @@ void vio_io1_write(vio_hot_t *h, uint8_t off, uint8_t val)
     }
 }
 
-uint8_t vio_io2_read(const vio_hot_t *h, uint8_t off) { return h->window[off]; }
-void    vio_io2_write(vio_hot_t *h, uint8_t off, uint8_t val) { h->window[off] = val; }
+uint8_t vio_io2_read(const vio_hot_t *h, uint8_t off) { return h->window[off & (VIO_WIN - 1)]; }
+void    vio_io2_write(vio_hot_t *h, uint8_t off, uint8_t val) { h->window[off & (VIO_WIN - 1)] = val; }
 
 /* ---- fast paths, built from the byte-level commands ---- */
 VD_COLD static int bus(vio_t *v, uint8_t c, uint8_t a, uint8_t *data)
@@ -58,7 +58,7 @@ VD_COLD static void send_name_open(vio_t *v, uint8_t dev, uint8_t sa)
 {
     bus(v, VD_LISTEN, dev, 0);
     bus(v, VD_SECOND, sa, 0);
-    for (unsigned i = 0; i < v->h->len; i++) bus(v, VD_CIOUT, v->h->window[i], 0);
+    for (unsigned i = 0; i < v->h->len && i < VIO_WIN; i++) bus(v, VD_CIOUT, v->h->window[i], 0);
     bus(v, VD_UNLSN, 0, 0);
 }
 
@@ -96,7 +96,7 @@ VD_COLD static void fload_blk(vio_t *v)
     if (v->fl_eof) { close_chan(v, v->fl_dev, 0xE0); v->fl_active = 0; return; }
     int eof = 0;
     bus(v, VD_TALK, v->fl_dev, 0); bus(v, VD_TKSA, 0x60, 0);
-    while (n < 255) {
+    while (n < VIO_WIN) {
         int st = bus(v, VD_ACPTR, 0, &d);
         if (st & 0x02) { eof = 1; break; }
         v->h->window[n++] = d;
@@ -124,7 +124,7 @@ VD_COLD static void fsave_blk(vio_t *v)
 {
     if (!v->fs_active) return;
     bus(v, VD_LISTEN, v->fs_dev, 0); bus(v, VD_SECOND, 0x61, 0);
-    for (unsigned i = 0; i < v->h->len; i++) bus(v, VD_CIOUT, v->h->window[i], 0);
+    for (unsigned i = 0; i < v->h->len && i < VIO_WIN; i++) bus(v, VD_CIOUT, v->h->window[i], 0);
     bus(v, VD_UNLSN, 0, 0);
 }
 
