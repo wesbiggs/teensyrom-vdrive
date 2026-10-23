@@ -240,11 +240,11 @@ index 99d0514..50f7cc1 100644
  #ifdef FeatTCPListen
     if (NetListenEnable)
     {
-@@ -401,6 +483,7 @@ void loop()
- FLASHMEM void SetUpMainMenuROM()
- {
-    PendingfBusSnoop = fBusSnoop = NULL;
-+   FnetPollHold = false;
+@@ -404,6 +486,7 @@ FLASHMEM void SetUpMainMenuROM()
  #ifdef Fab04_GlobalKernalReplace
     fKernRepl = NULL;
  #endif
++   FnetPollHold = false;
+    SetDMADeassert;
+    SetIRQDeassert;
+    SetNMIDeassert;

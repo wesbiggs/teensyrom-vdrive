@@ -44,16 +44,18 @@ edit("Source/Teensy/SerUSBIO.ino",
 edit("Source/Teensy/SerUSBIO.ino",
      "FLASHMEM bool ReceiveFileName(RegMenuTypes* DriveType, char *FileNamePath)\n",
      open(sys.argv[3]).read() + "\nFLASHMEM bool ReceiveFileName(RegMenuTypes* DriveType, char *FileNamePath)\n")
+# Inserted after the ASIDAllowed statement and not by rewriting the "Busy!" test below it: upstream PRs add lines inside
+# that test (the RTC command's refusal), and a hunk that rewrites its condition would not apply on top of them.
 edit("Source/Teensy/SerUSBIO.ino",
-     "   if (CurrentIOHandler != IOH_TeensyROM && !ASIDAllowed)\n",
-     "   //VDrive running a C64 program: directory listings (so a client can browse for an image to mount) once the drive is quiet\n"
-     "   bool VDriveListing = false;\n"
+     "       TokenVal == CopyFileToken     || TokenVal == DeleteFileToken);\n",
+     "       TokenVal == CopyFileToken     || TokenVal == DeleteFileToken);\n"
      "#ifdef Fab04_VDrive\n"
-     "   VDriveListing = VD_IsHandler(CurrentIOHandler) &&\n"
-     "      (TokenVal == GetDirectoryToken || TokenVal == GetDirNDJSONToken);\n"
-     "   if (VDriveListing)\n   {\n      char Msg[64];\n      if (VDrive_RemoteQuiet(Msg, sizeof Msg))\n      {\n         SendU16(FailToken);\n         CmdChannel->printf(\"%s\\n\", Msg);\n         return;\n      }\n   }\n"
-     "#endif\n\n"
-     "   if (CurrentIOHandler != IOH_TeensyROM && !ASIDAllowed && !VDriveListing)\n")
+     "   //VDrive running a C64 program: directory listings (so a client can browse for an image to mount) once the drive is quiet;\n"
+     "   //  ASIDAllowed is only read by the Busy! test below, so it doubles as \"allowed while a program runs\"\n"
+     "   if (VD_IsHandler(CurrentIOHandler) && (TokenVal == GetDirectoryToken || TokenVal == GetDirNDJSONToken))\n   {\n"
+     "      char Msg[64];\n      if (VDrive_RemoteQuiet(Msg, sizeof Msg))\n      {\n         SendU16(FailToken);\n         CmdChannel->printf(\"%s\\n\", Msg);\n         return;\n      }\n"
+     "      ASIDAllowed = true;\n   }\n"
+     "#endif\n")
 edit(f"{C}/Common_Defs.h",
      "   eepAdNext          = 4235, // Next address to be used\n",
      "   eepAdVDriveDevs    = 4235, // (2:uint8_t x2)  VDrive KERNAL device numbers of the SD / USB units, 0 = default (VD_DEV0/1)\n"
@@ -61,18 +63,21 @@ edit(f"{C}/Common_Defs.h",
 edit("Source/Teensy/Teensy.ino",
      "   //future use:\n",
      "#ifdef Fab04_VDrive\n   EEPROM.write(eepAdVDriveDevs, 0);   //VDrive device numbers: 0 = defaults (8/9)\n   EEPROM.write(eepAdVDriveDevs+1, 0);\n#endif\n\n   //future use:\n")
+# The enum and table entries go *before* the Kernal Replace entries, not after: the lines after them (IOH_Debug and the
+# "last manually selectable" comment) are what upstream's open GeoRAM PRs rewrite, and a hunk with those lines as context
+# would not apply on top of them. (Include order is separate and stays after IOH_KernalReplace.c, which IOH_VDrive.c needs.)
 edit(f"{C}/Menu_Regs.h",
      "   #ifdef Fab04_KernalReplace\n      IOH_KernalReplace,\n   #endif  \n",
-     "   #ifdef Fab04_KernalReplace\n      IOH_KernalReplace,\n   #endif  \n"
-     "   #ifdef Fab04_VDrive\n      IOH_VDrive,\n      IOH_VDriveSwift,\n   #ifdef Fab04_REU\n      IOH_VDriveSwiftREU,\n   #endif\n   #endif  \n")
+     "   #ifdef Fab04_VDrive\n      IOH_VDrive,\n      IOH_VDriveSwift,\n   #ifdef Fab04_REU\n      IOH_VDriveSwiftREU,\n   #endif\n   #endif  \n"
+     "   #ifdef Fab04_KernalReplace\n      IOH_KernalReplace,\n   #endif  \n")
 edit(f"{C}/IOHandlers.h",
      '   #ifdef Fab04_KernalReplace\n      #include "IO_Handlers/IOH_KernalReplace.c"\n   #endif    \n',
      '   #ifdef Fab04_KernalReplace\n      #include "IO_Handlers/IOH_KernalReplace.c"\n   #endif    \n'
      '   #ifdef Fab04_VDrive\n      #include "IO_Handlers/IOH_VDrive.c"\n   #endif    \n')
 edit(f"{C}/IOHandlers.h",
      "   #ifdef Fab04_KernalReplace\n      &IOHndlr_KernalReplace,      //IOH_KernalReplace,\n   #endif  \n",
-     "   #ifdef Fab04_KernalReplace\n      &IOHndlr_KernalReplace,      //IOH_KernalReplace,\n   #endif  \n"
-     "   #ifdef Fab04_VDrive\n      &IOHndlr_VDrive,             //IOH_VDrive,\n      &IOHndlr_VDriveSwift,        //IOH_VDriveSwift,\n   #ifdef Fab04_REU\n      &IOHndlr_VDriveSwiftREU,     //IOH_VDriveSwiftREU,\n   #endif\n   #endif  \n")
+     "   #ifdef Fab04_VDrive\n      &IOHndlr_VDrive,             //IOH_VDrive,\n      &IOHndlr_VDriveSwift,        //IOH_VDriveSwift,\n   #ifdef Fab04_REU\n      &IOHndlr_VDriveSwiftREU,     //IOH_VDriveSwiftREU,\n   #endif\n   #endif  \n"
+     "   #ifdef Fab04_KernalReplace\n      &IOHndlr_KernalReplace,      //IOH_KernalReplace,\n   #endif  \n")
 edit(f"{C}/IOHandlers.h",
      '      #include "IO_Handlers/IOH_Swiftlink.c"\n',
      '      #include "IO_Handlers/IOH_Swiftlink.c"\n'
@@ -86,10 +91,15 @@ edit(f"{C}/IO_Handlers/StatusFunctions.c",
      "   if (NextIOHndlr == IOH_KernalReplace)\n   {\n      InitHndlr_KERNALReplace_PreStart(); //separate function so it doesn't get called twice\n",
      "   if (NextIOHndlr == IOH_KernalReplace\n#ifdef Fab04_VDrive\n       || VD_IsHandler(NextIOHndlr)\n#endif\n      )\n   {\n      InitHndlr_KERNALReplace_PreStart(); //separate function so it doesn't get called twice\n"
      "#ifdef Fab04_VDrive\n      if (VD_IsHandler(NextIOHndlr)) VDrive_PreStart(); //SD/USB probing now, while the C64 still waits\n#endif\n")
+# Added as a case of its own ahead of upstream's, instead of rewriting upstream's IOHandlerInit() line: an open upstream PR
+# strips that line's trailing space, which would break a hunk that has it as context.
 edit("Source/Teensy/IOHandlers.ino",
-     "      IOHandlerInit(MenuSource[SelItemFullIdx].IOHndlrAssoc); \n",
-     "#ifdef Fab04_VDrive\n      IOHandlerInit(VDriveSwift_Remap(MenuSource[SelItemFullIdx].IOHndlrAssoc));   //SwiftLink programs keep the virtual drive\n#else\n"
-     "      IOHandlerInit(MenuSource[SelItemFullIdx].IOHndlrAssoc); \n#endif\n")
+     "   PendingfBusSnoop = NULL; //clean slate for whatever InitHndlr below is about to stage\n",
+     "   PendingfBusSnoop = NULL; //clean slate for whatever InitHndlr below is about to stage\n"
+     "#ifdef Fab04_VDrive\n"
+     "   if (IO1[rWRegCurrMenuWAIT] == rmtTeensy && MenuSource[SelItemFullIdx].IOHndlrAssoc != IOH_None)\n   {\n"
+     "      IOHandlerInit(VDriveSwift_Remap(MenuSource[SelItemFullIdx].IOHndlrAssoc));   //SwiftLink programs keep the virtual drive\n      return;\n   }\n"
+     "#endif\n")
 PY
 cp "$HERE/firmware/IOH_VDrive.c" "$HERE/firmware/IOH_VDriveSwift.c" "$HERE/firmware/IOH_VDriveSwiftREU.c" "$C/IO_Handlers/"
 mkdir -p "$C/vdrive"

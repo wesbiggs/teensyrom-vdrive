@@ -1,21 +1,23 @@
 diff --git a/Source/Teensy/IOHandlers.ino b/Source/Teensy/IOHandlers.ino
-index 6024ccd..2f5cbbf 100644
+index 6024ccd..cc42b6a 100644
 --- a/Source/Teensy/IOHandlers.ino
 +++ b/Source/Teensy/IOHandlers.ino
-@@ -47,7 +47,11 @@ void IOHandlerSelectInit()
+@@ -44,6 +44,13 @@ void IOHandlerNextInit()
+ void IOHandlerSelectInit()
+ { //called after cart loaded, PRG x-fer finished, or exit to basic (rsIOHWSelInit)
+    PendingfBusSnoop = NULL; //clean slate for whatever InitHndlr below is about to stage
++#ifdef Fab04_VDrive
++   if (IO1[rWRegCurrMenuWAIT] == rmtTeensy && MenuSource[SelItemFullIdx].IOHndlrAssoc != IOH_None)
++   {
++      IOHandlerInit(VDriveSwift_Remap(MenuSource[SelItemFullIdx].IOHndlrAssoc));   //SwiftLink programs keep the virtual drive
++      return;
++   }
++#endif
     if (IO1[rWRegCurrMenuWAIT] == rmtTeensy && MenuSource[SelItemFullIdx].IOHndlrAssoc != IOH_None)
     {
        Printf_dbg("IO Handler set by Teensy Menu\n");
-+#ifdef Fab04_VDrive
-+      IOHandlerInit(VDriveSwift_Remap(MenuSource[SelItemFullIdx].IOHndlrAssoc));   //SwiftLink programs keep the virtual drive
-+#else
-       IOHandlerInit(MenuSource[SelItemFullIdx].IOHndlrAssoc); 
-+#endif
-    }
-    else IOHandlerNextInit();
- }
 diff --git a/Source/Teensy/MinimalBoot/Common/Common_Defs.h b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
-index 7feae53..14eaf1c 100644
+index 358ffff..d1dbc1a 100644
 --- a/Source/Teensy/MinimalBoot/Common/Common_Defs.h
 +++ b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
 @@ -14,6 +14,7 @@
@@ -31,7 +33,7 @@ index 7feae53..14eaf1c 100644
  
  
 -#define TRVersion              "0.9"    //*VERSION*
-+#define TRVersion              "0.9.0.28"    //*VERSION*  (stock 0.9 + VDrive rev 28)
++#define TRVersion              "0.9.0.29"    //*VERSION*  (stock 0.9 + VDrive rev 29)
  #ifdef Fab04_Features
     char strVersionNumber[] = "TeensyROM+ v" TRVersion; 
  #else
@@ -64,7 +66,7 @@ index 7feae53..14eaf1c 100644
     #define BigBufSize          1000
  #else
 diff --git a/Source/Teensy/MinimalBoot/Common/IOHandlers.h b/Source/Teensy/MinimalBoot/Common/IOHandlers.h
-index 88bc75b..453106d 100644
+index 88bc75b..a04fb7f 100644
 --- a/Source/Teensy/MinimalBoot/Common/IOHandlers.h
 +++ b/Source/Teensy/MinimalBoot/Common/IOHandlers.h
 @@ -114,6 +114,9 @@ struct stcIOHandlers
@@ -90,20 +92,20 @@ index 88bc75b..453106d 100644
        #include "IO_Handlers/IOH_ASID.c"
  #endif
     #include "IO_Handlers/IOH_None.c"
-@@ -156,6 +165,13 @@ stcIOHandlers* IOHandler[] =  //Synch order/qty with enum enumIOHandlers
+@@ -154,6 +163,13 @@ stcIOHandlers* IOHandler[] =  //Synch order/qty with enum enumIOHandlers
+    #ifdef Fab04_REU
+       &IOHndlr_REU,                //IOH_REU,
     #endif  
-    #ifdef Fab04_KernalReplace
-       &IOHndlr_KernalReplace,      //IOH_KernalReplace,
-+   #endif  
 +   #ifdef Fab04_VDrive
 +      &IOHndlr_VDrive,             //IOH_VDrive,
 +      &IOHndlr_VDriveSwift,        //IOH_VDriveSwift,
 +   #ifdef Fab04_REU
 +      &IOHndlr_VDriveSwiftREU,     //IOH_VDriveSwiftREU,
 +   #endif
++   #endif  
+    #ifdef Fab04_KernalReplace
+       &IOHndlr_KernalReplace,      //IOH_KernalReplace,
     #endif  
-       &IOHndlr_Debug,              //IOH_Debug, 
-       
 diff --git a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_KernalReplace.c b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_KernalReplace.c
 index d7213cf..c2557a1 100644
 --- a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_KernalReplace.c
@@ -1392,23 +1394,23 @@ index 6c82c20..995e7e8 100644
        #ifdef DbgCycAdjLog      
           if (BigBuf != NULL)
 diff --git a/Source/Teensy/MinimalBoot/Common/Menu_Regs.h b/Source/Teensy/MinimalBoot/Common/Menu_Regs.h
-index 166ecfe..d607166 100644
+index 166ecfe..d9b7bfb 100644
 --- a/Source/Teensy/MinimalBoot/Common/Menu_Regs.h
 +++ b/Source/Teensy/MinimalBoot/Common/Menu_Regs.h
-@@ -436,6 +436,13 @@ enum enumIOHandlers //Synch order/qty with IOHandler[] (IOHandlers.h)
+@@ -434,6 +434,13 @@ enum enumIOHandlers //Synch order/qty with IOHandler[] (IOHandlers.h)
+    #ifdef Fab04_REU
+       IOH_REU,
     #endif 
-    #ifdef Fab04_KernalReplace
-       IOH_KernalReplace,
-+   #endif  
 +   #ifdef Fab04_VDrive
 +      IOH_VDrive,
 +      IOH_VDriveSwift,
 +   #ifdef Fab04_REU
 +      IOH_VDriveSwiftREU,
 +   #endif
++   #endif  
+    #ifdef Fab04_KernalReplace
+       IOH_KernalReplace,
     #endif  
-       IOH_Debug, //last manually selectable, see LastSelectableIOH
- 
 diff --git a/Source/Teensy/MinimalBoot/Common/vdrive/d64.c b/Source/Teensy/MinimalBoot/Common/vdrive/d64.c
 new file mode 100644
 index 0000000..76a7235
@@ -4247,10 +4249,10 @@ index 0000000..5c0f76c
 +#endif
 +#endif
 diff --git a/Source/Teensy/SerUSBIO.ino b/Source/Teensy/SerUSBIO.ino
-index 92480e7..1179306 100644
+index db13b88..647b921 100644
 --- a/Source/Teensy/SerUSBIO.ino
 +++ b/Source/Teensy/SerUSBIO.ino
-@@ -600,6 +600,12 @@ FLASHMEM void ProcessCommand()
+@@ -605,6 +605,12 @@ FLASHMEM void ProcessCommand()
        case FWCheckToken: //Check firmware type
           SendU16(FWFullToken);
           return;   
@@ -4263,17 +4265,14 @@ index 92480e7..1179306 100644
     }
  
  
-@@ -610,7 +616,24 @@ FLASHMEM void ProcessCommand()
+@@ -614,6 +620,21 @@ FLASHMEM void ProcessCommand()
+        TokenVal == GetDirectoryToken || TokenVal == GetDirNDJSONToken ||
         TokenVal == SendFileToken     || TokenVal == PostFileToken     ||
         TokenVal == CopyFileToken     || TokenVal == DeleteFileToken);
- 
--   if (CurrentIOHandler != IOH_TeensyROM && !ASIDAllowed)
-+   //VDrive running a C64 program: directory listings (so a client can browse for an image to mount) once the drive is quiet
-+   bool VDriveListing = false;
 +#ifdef Fab04_VDrive
-+   VDriveListing = VD_IsHandler(CurrentIOHandler) &&
-+      (TokenVal == GetDirectoryToken || TokenVal == GetDirNDJSONToken);
-+   if (VDriveListing)
++   //VDrive running a C64 program: directory listings (so a client can browse for an image to mount) once the drive is quiet;
++   //  ASIDAllowed is only read by the Busy! test below, so it doubles as "allowed while a program runs"
++   if (VD_IsHandler(CurrentIOHandler) && (TokenVal == GetDirectoryToken || TokenVal == GetDirNDJSONToken))
 +   {
 +      char Msg[64];
 +      if (VDrive_RemoteQuiet(Msg, sizeof Msg))
@@ -4282,14 +4281,13 @@ index 92480e7..1179306 100644
 +         CmdChannel->printf("%s\n", Msg);
 +         return;
 +      }
++      ASIDAllowed = true;
 +   }
 +#endif
-+
-+   if (CurrentIOHandler != IOH_TeensyROM && !ASIDAllowed && !VDriveListing)
+ 
+    if (CurrentIOHandler != IOH_TeensyROM && !ASIDAllowed)
     {
-       SendU16(FailToken);
-       CmdChannel->print("Busy!\n");
-@@ -805,6 +828,82 @@ FLASHMEM void LaunchFile()
+@@ -810,6 +831,82 @@ FLASHMEM void LaunchFile()
     }
  }
  
@@ -4373,7 +4371,7 @@ index 92480e7..1179306 100644
  {
     uint32_t RecDrive;
 diff --git a/Source/Teensy/Teensy.ino b/Source/Teensy/Teensy.ino
-index 99d0514..14060ce 100644
+index eae8a57..02582b8 100644
 --- a/Source/Teensy/Teensy.ino
 +++ b/Source/Teensy/Teensy.ino
 @@ -54,6 +54,16 @@ uint8_t RAM_Image[RAM_ImageSize]; //Main RAM1 file storage buffer
@@ -4472,14 +4470,14 @@ index 99d0514..14060ce 100644
  #ifdef FeatTCPListen
     if (NetListenEnable)
     {
-@@ -401,6 +483,7 @@ void loop()
- FLASHMEM void SetUpMainMenuROM()
- {
-    PendingfBusSnoop = fBusSnoop = NULL;
-+   FnetPollHold = false;
+@@ -404,6 +486,7 @@ FLASHMEM void SetUpMainMenuROM()
  #ifdef Fab04_GlobalKernalReplace
     fKernRepl = NULL;
  #endif
++   FnetPollHold = false;
+    SetDMADeassert;
+    SetIRQDeassert;
+    SetNMIDeassert;
 @@ -527,6 +610,11 @@ FLASHMEM void SetEEPDefaults()
     EEPROM.write(eepAdMIDISettings, 0xff);  //see RegMIDISettingsMasks
     EEPROM.write(eepAdMIDISettings2, 0x0f); //see RegMIDISettingsMasks2
