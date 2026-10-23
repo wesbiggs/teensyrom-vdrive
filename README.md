@@ -36,7 +36,7 @@ The C128 is not yet supported, and tape (device 1) no longer works because its K
 
 The "VDrive+SwiftLink" Special IO runs the virtual drive and the SwiftLink / Turbo232 modem together. When the default Special IO is VDrive or VDrive+SwiftLink, menu programs paired with plain SwiftLink (CCGMS, Retromate, Simple SwiftLink Term) start with it, so launching one does not drop the drive. `.crt` SwiftLink/Turbo232 images are left alone and run with the C64's own KERNAL. It costs SwiftLink's normal start-up RAM (about 355 KB of RAM2 buffers, drive menu freed), so it is a separate Special IO.
 
-The "VDrive+Swift+REU" Special IO adds an REU (RAM Expansion Unit) to those two. SwiftLink's buffers leave room for a **128 KB** REU (a 1700), not 512 KB; software that insists on a bigger one will refuse it. When it is the default Special IO, menu programs paired with SwiftLink or with the REU start with it; otherwise REU programs keep the plain 512 KB REU. Not yet tried on a real C64.
+The "VDrive+Swift+REU" Special IO adds an REU (RAM Expansion Unit) to those two. SwiftLink's buffers leave room for a **128 KB** REU (a 1700), not 512 KB; software that insists on a bigger one will refuse it. When it is the default Special IO, menu programs paired with SwiftLink or with the REU start with it; otherwise REU programs keep the plain 512 KB REU.
 
 ## Using it
 

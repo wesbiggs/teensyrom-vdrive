@@ -77,9 +77,8 @@ Firmware integration and usage: `firmware/README.md`.
 * 0.9.0.26: `MD:`/`RD:` folders on the card with nothing mounted (host `mkdir`/`rmdir`; docs/DESIGN.md 31). Unit and glue host tests.
 * 0.9.0.28: Special IO "VDrive+Swift+REU" (`firmware/IOH_VDriveSwiftREU.c`, docs/DESIGN.md 32): drive + SwiftLink + a 128 KB REU (RAM1 image + leftover RAM2). The IO2 window shrank to
   128 bytes at `$DF80` for every VDrive handler (REU registers at `$DF00-$DF7F`); names of 128+ characters fall back to the byte-level open. The REU's `$FF00` trigger would
-  replace `KernalCheck` on `fBusSnoop`: `IO2Hndlr_VDriveSwiftREU` hands it back (`VDREU_Snoop`). Host tests, VICE, firmware build; **not on hardware**. **KERNAL images built before
-  this change no longer match the firmware: rebuild and re-copy `kernal-tr.bin`.** First hardware run: `BUSTEST`, REU-Checker (expect 128 KB) with an image mounted, a `$FF00`-trigger
-  REU program, CCGMS alongside, RAM2 free after the three inits.
+  replace `KernalCheck` on `fBusSnoop`: `IO2Hndlr_VDriveSwiftREU` hands it back (`VDREU_Snoop`). Host tests, VICE, firmware build; **works on a real C64 (owner, 2026-10-23)**. **KERNAL images built before
+  this change no longer match the firmware: rebuild and re-copy `kernal-tr.bin`.**
 * Known open risks: C128 not supported (see above); tape (device 1) intentionally broken (its code space was reclaimed).
 
 ## Layout
