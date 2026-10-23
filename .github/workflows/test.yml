@@ -1,0 +1,49 @@
+# make test on every push and pull request: unit tests, firmware host test, py65 and the two VICE runs (basic, scan).
+# Same setup as a cloud session (tools/cloud_setup.sh, CLAUDE.md "Testing in the cloud"): VICE's own ROMs, fetched at run time, never committed.
+# A green run is host + VICE only, not a hardware result.
+name: test
+
+on:
+  push:
+    branches: [main, bleeding-edge]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # setup-python, so py65 lands where `python3 -I` finds it (-I skips the user site that pip would use with the system Python)
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Cache VICE ROMs
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/vice
+          key: vice-roms-v1
+
+      - name: Install toolchain and ROMs
+        run: |
+          pip install -q py65
+          tools/cloud_setup.sh
+          eval "$(tools/cloud_setup.sh --env)"
+          echo "$PWD/build/cloud-bin" >> "$GITHUB_PATH"
+          echo "STOCK=$STOCK" >> "$GITHUB_ENV"
+
+      - name: make test
+        run: xvfb-run -a make test STOCK="$STOCK"
+
+      - name: Hardware KERNAL image (tape-space limit assert)
+        run: make build/kernal-tr.bin STOCK="$STOCK"
+
+      - name: Utilities
+        run: make util
