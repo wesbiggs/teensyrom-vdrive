@@ -23,7 +23,16 @@ and `VERIFY` without a device number use device 8, as on the SX-64.
    ```
    make build/kernal-tr.bin STOCK=/path/to/kernal-901227-03.bin     # 8192 bytes, mailbox at $DE10, window at $DF80
    ```
-   Copy it to the SD card or USB drive.
+   Copy it to the SD card or USB drive. To check that you built the same image as this repo (SHA-256, `shasum -a 256` or `sha256sum`):
+
+   | File | SHA-256 |
+   |---|---|
+   | stock `kernal-901227-03.bin` (input) | `83c60d47047d7beab8e5b7bf6f67f80daa088b7a6a27de0d7e016f6484042721` |
+   | `kernal-tr.bin` from this revision | `cab3608f434fd29c1137c3e75227a5102e7a7fd0e373a84c7ea42f2363db5bb4` |
+   | `kernal-tr.bin` last run on a real C64 (0.9.0.28, commit `bf3c74c`; same patches through `9270008`) | `e1db8e02b6cab9f6eb99a597a1c04f2b5a67fac914a36dc1e4259d7272f53af2` |
+
+   A different stock hash means a different ROM dump; the patches may not fit it. The "this revision" row is checked by `make test`.
+   The two `kernal-tr.bin` rows differ when this revision has KERNAL changes not yet run on hardware (see [CLAUDE.md](CLAUDE.md), Status).
 2. Patch the firmware source (TeensyROM checkout, FW ≥ 0.9 layout) and build the TR+ target:
    ```
    cd /path/to/TeensyROM && git apply /path/to/teensyrom-vdrive/firmware/teensyrom-vdrive.patch
