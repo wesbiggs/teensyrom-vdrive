@@ -24,6 +24,8 @@ segs = sorted({m for s in srcs for m in re.findall(r'\.segment\s+"P_([0-9A-Fa-f]
 
 if "EA32" in segs:   # the border flash retargets the IRQ routine's `JSR $FFEA` (UDTIM): refuse to patch a ROM that does not have it
     assert stock[0xEA31 - 0xE000:0xEA34 - 0xE000] == bytes([0x20, 0xEA, 0xFF]), "no JSR $FFEA at $EA31: not a 901227-03 KERNAL?"
+if "E1DA" in segs:   # the default LOAD/SAVE device is the operand of `LDX #$01` at $E1D9
+    assert stock[0xE1D9 - 0xE000:0xE1DB - 0xE000] == bytes([0xA2, 0x01]), "no LDX #$01 at $E1D9: not a 901227-03 KERNAL?"
 
 with tempfile.TemporaryDirectory() as t:
     t = pathlib.Path(t)

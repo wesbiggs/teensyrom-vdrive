@@ -15,7 +15,8 @@ It has two halves:
 ## Status
 Works on a real C64 with a TR+ for the core path (directory, LOAD, SAVE, VERIFY, error channel); newer features are tested on the host and
 in VICE only. See the Status section of [CLAUDE.md](CLAUDE.md) for exactly what has and has not been checked on hardware.
-The C128 is not yet supported, and tape (device 1) no longer works because its KERNAL code space was reused.
+The C128 is not yet supported, and tape (device 1) no longer works because its KERNAL code space was reused; in its place `LOAD`, `SAVE`
+and `VERIFY` without a device number use device 8, as on the SX-64.
 
 ## Installing
 1. Build the patched KERNAL from your own 901227-03 dump (the ROM itself is not in this repo):
@@ -51,6 +52,7 @@ The examples here use `8` as an illustration only, and work the same on both SD 
 | `LOAD"$",8 : LIST` | List the mounted image (or current folder if none mounted) |
 | `LOAD"NAME",8` | Load a BASIC file |
 | `LOAD"NAME",8,1` | Load a binary file |
+| `LOAD"NAME"` | Same as `LOAD"NAME",8` (also `SAVE`, `VERIFY`): device 8 is the default, as on the SX-64. It is whatever answers at 8, the SD drive or a real drive |
 | `SAVE"NAME",8` | Save a BASIC file |
 | `SAVE"@0:NAME",8` | Save a BASIC file, replacing an existing one |
 | `VERIFY"NAME",8` | Verify a BASIC file |

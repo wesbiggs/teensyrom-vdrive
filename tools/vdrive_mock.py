@@ -402,6 +402,16 @@ def main(kernal, scenario="basic"):
         run('NEW\r')
         run('LOAD"SAVEME",8\r', "READY.")
         run('LIST\r', 'PRINT"V2"')
+        # no device number: 8, as on the SX-64 (stock: 1, the tape); "\x93" clears the screen so an earlier listing can't pass for this one
+        run('NEW\r')
+        run('\x93LOAD"SAVEME"\r', "SEARCHING FOR SAVEME", absent="PRESS PLAY")
+        run('\x93LIST\r', 'PRINT"V2"')
+        run('\x93VERIFY"SAVEME"\r', "OK", absent="PRESS PLAY")
+        run('10 PRINT"V3"\r')
+        run('\x93SAVE"@0:SAVEME"\r', "SAVING @0:SAVEME", absent="PRESS RECORD")
+        run('NEW\r')
+        run('\x93LOAD"SAVEME",8\r', "READY.")
+        run('\x93LIST\r', 'PRINT"V3"')
 
         # --- sequential file round trip ---
         run('NEW\r')

@@ -62,6 +62,11 @@ C_FREE   = 15
 .segment "P_EA32"
         .word irq_border
 
+; ---- default device for LOAD/SAVE/VERIFY without a number: 8, as on the SX-64 (stock: 1, the tape, whose code we reclaimed) ----
+; BASIC's parameter routine at $E1D4 does `LDX #$01` at $E1D9 before SETLFS; this is its operand.
+.segment "P_E1DA"
+        .byte 8
+
 ; ---- hooks over the stock entry points (3 bytes each) ----------------------
 .segment "P_ED09"
         jmp hk_talk
