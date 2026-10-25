@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """The border-flash routine (irq_border, patches/vdrive.s) run in a 6502 simulator (py65; skipped when it is not installed).
 
-The KERNAL is assembled onto a synthetic 8 KB image that only has the `JSR $FFEA` at $EA31 the patch retargets, so no Commodore
-ROM is needed. $DE18 (the BORDER register) answers from a script, $D020 / $9C are plain memory."""
+The KERNAL is assembled onto a synthetic 8 KB image that only has the bytes tools/build.py checks (the `JSR $FFEA` at $EA31 the
+patch retargets, the `LDX #$01` at $E1D9 of the default-device patch), so no Commodore ROM is needed. $DE18 (the BORDER register) answers from a script, $D020 / $9C are plain memory."""
 import pathlib, subprocess, sys, tempfile
 
 try:
@@ -11,7 +11,7 @@ except ImportError:
     print("SKIP py65 not installed (pip install py65): irq_border not simulated"); sys.exit(0)
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-stock = bytearray(8192); stock[0xA31:0xA34] = bytes([0x20, 0xEA, 0xFF])
+stock = bytearray(8192); stock[0xA31:0xA34] = bytes([0x20, 0xEA, 0xFF]); stock[0x1D9:0x1DB] = bytes([0xA2, 0x01])
 with tempfile.TemporaryDirectory() as t:
     t = pathlib.Path(t); (t / "stock.bin").write_bytes(stock)
     subprocess.run([sys.executable, "-I", str(ROOT / "tools/build.py"), str(t / "stock.bin"), str(t / "k.bin")], check=True, capture_output=True)
