@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.9.0.28
 
 ### Added
 - "VDrive+Swift+REU" Special IO: the virtual drive, SwiftLink and a 128 KB REU at the same time (firmware 0.9.0.28, `docs/DESIGN.md` section 32). With it as the default Special IO, menu programs paired with SwiftLink or the REU get it. Host tests, VICE, a firmware build, and works on a real C64.

@@ -21,6 +21,7 @@ Firmware integration and usage: `firmware/README.md`.
   scratch / rename / `N:`, paths (`LOAD"$/dir/image.d64"`, `$==`), auto-mount and remembered mounts (`/.vdrive` sidecar), VDrive+SwiftLink, remote get/set with
   `trvdrive` while a program runs, `trls` while a program runs, the image swap, and the sidecar reporting with the TR menu showing (`"running":false`).
   Also: *Quest for the King* (`VAULTTEST` clean, plays and loads/saves) and CCGMS over TCP (see the Kernal Replace fixes below).
+  The automatic bus scan with a real 1541-II on the bus, DIP-switched to several device numbers in turn: the SD/USB drives took the free numbers as documented.
 * **`VDCOPY` (util/, `make util`):** pure machine code (`util/vdcopy.s`; first a BASIC program with a machine-code chunk loop, rewritten because the BASIC directory read and per-file work were slow) copying files in 2 KB chunks between any two units (real drive, SD, USB; either direction); tested in VICE with a true-drive 1541 at 8 and the SD drive at 9
   (`vdrive_mock.py scan`: copy all, skip existing, replace, list/range selection, SD to USB, SD to 1541 and back, 1541 to USB; byte-exact PRG and SEQ), **on hardware (owner): the BASIC version worked vdrive to vdrive and vdrive to 1541; the machine-code rewrite is not on hardware yet**. Building it found a real-drive bug: the UNLSN hook at `$EDFE` overwrote the
   operand of the `BIT` that stock UNTLK falls through, so the real drive never got UNTALK (garbled bytes in `GET#` after the first `CLRCHN`). `hk_untlk` now spells the whole routine out. Any KERNAL image built before
@@ -29,7 +30,7 @@ Firmware integration and usage: `firmware/README.md`.
   Taps on the TR+ Alt button (setting "None" only) cycle `/vdrive-config.txt` (SD: one tap, USB: two taps within 1 s); border flash through the new `BORDER` register `$DE18` and `irq_border` in the KERNAL IRQ routine. Rebuild `kernal-tr.bin` and re-copy it with the firmware.
 * **VDrive Config.prg (0.9.0.18, `util/vdconfig.bas`, docs/DESIGN.md 23): NOT run on a C64 or in VICE (no ROM in the cloud session); host-tested only** in `tests/test_vdconfig.py` (a small BASIC V2 interpreter, `tests/basic_interp.py`,
   against a drive model), plus the new `"!CONFIG"` / `"!STATE"` host text channels in `tests/test_vio.py` and `tests/fw_host`. First hardware run: check cursor keys, the colour cells, the browser listing of a large folder and `GET#` of the listing.
-* **Not yet checked on hardware:** the bus scan with a real 1541 on the bus (the SD drive must become 9; `PEEK(56854)`; a first access that is a `LOAD`; the time of the first access),
+* **Not yet checked on hardware:** the time the bus scan adds to the first access,
   `.d81` mounting on the card, `.d71` at all, `STATUS` compared with a real drive, IRQ/STOP-key interplay during loads.
 * **BASIC test programs** (`tests/basic/`, built into `build/testdisk/vdtest.d64` by `make testdisk`) run inside VICE in `make test` and on the C64; they
   found two real bugs that unit tests missed: `CIOUT` must return `A` = the byte sent (CHROUT tail-jumps into it; BASIC's PRINT broke after a
@@ -161,7 +162,7 @@ The full `make test`, VICE runs included, works in a cloud session; do not skip 
 * PETSCII quirk when building fixtures with `c1541`: give it lower-case names to get unshifted (default-mode upper-case) PETSCII.
 
 ## Next steps
-1. **Finish bring-up**: the "Not yet checked on hardware" list under Status (bus scan with a real drive, `.d81`/`.d71`, `STATUS`, IRQ/STOP-key during loads). The core path has passed, so the items below can
+1. **Finish bring-up**: the "Not yet checked on hardware" list under Status (`.d81`/`.d71`, `STATUS`, IRQ/STOP-key during loads). The core path has passed, so the items below can
    start once the owner agrees; mind that the patch changes under any build in progress.
 2. **Create new images**: done in 0.9.0.24 (`N:FILE.D64,ID` with nothing mounted; docs/DESIGN.md 29), not on hardware yet: check the time a D81 takes
    on a USB stick against the KERNAL's ~1.6 s mailbox wait.
