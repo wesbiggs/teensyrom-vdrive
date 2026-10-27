@@ -59,8 +59,8 @@ The C64's ability to read the 8 KB of RAM under KERNAL ROM ($E000-$FFFF) is used
 
    Build with `arduino-cli` and the Teensy core `teensy:avr@1.61.0` (library `CRC32@2.0.1`). **Do not use Teensyduino 1.62.0**: SD reads
    stall with it. The easiest way to flash is to copy the resulting `.hex` to the SD card and select it in the TR menu (flashing over USB needs
-   the Teensy's program button, since the TR has no soft reboot). The build is stamped `<stock>.<rev>`, e.g. `0.9.0.32`: that number shows in
-   the C64 menu title and in the hex file name (`TeensyROM+_0.9.0.32_full.hex`), so you can tell a VDrive build from a stock `0.9` one.
+   the Teensy's program button, since the TR has no soft reboot). The build is stamped `<stock>.<rev>`, e.g. `0.9.0.33`: that number shows in
+   the C64 menu title and in the hex file name (`TeensyROM+_0.9.0.33_full.hex`), so you can tell a VDrive build from a stock `0.9` one.
 3. On the C64: in the TR file browser select the image and press `<Shift-K>`; in Settings choose Special IO
    **VDrive KERNAL** (`a`/`A`); then start BASIC (`F2`) or launch a PRG.
 
@@ -102,6 +102,7 @@ The examples here use `8` as an illustration only, and work the same on both SD 
 | `OPEN15,8,15,"CD:←"` | Unmount the image (← is the left-arrow key, top left; `$5F`, shown as `_` on a PC) |
 | `OPEN15,8,15,"CD:/"` | Unmount and move to the folder root |
 | `OPEN15,8,15,"CD:/GAMES/G.D81"` | Paths work: absolute (leading `/`) or relative, folders and an image in one go |
+| `OPEN15,8,15,"CD//GAMES/:G.D81"` | The CMD HD / sd2iec forms work too: `CD//` (root), `CD//GAMES` (from the root), `CD/GAMES` and `CD/GAMES/:SUB` (relative), `CD_`; see "CMD paths" below |
 | `OPEN15,8,15,"S:OLD*"` | Scratch |
 | `OPEN15,8,15,"N:NAME,ID"` | Format the mounted disk |
 | `OPEN15,8,15,"N:NAME.D64,ID"` | With nothing mounted: create a new blank image (`.D64`, `.D71` or `.D81`) in the current folder (or `N:/DIR/NAME.D64`), mount it and format it with disk name `NAME` (ID `00` if left out). Never replaces an existing file (63). A `.D81` on a slow USB stick may take longer than the KERNAL waits (about 1.6 s; not measured yet) |
@@ -123,6 +124,22 @@ before are restored when the listing is closed). `$==` is what selects.
 | `LOAD"$==GAMES",8` | `CD:` into the folder and list it; it stays selected |
 | `LOAD"$==DEMO.D64",8` | Mount the image and list it |
 | `LOAD"$==/GAMES/DEMO.D64/S*",8` | Mount the image and list the matching files |
+
+#### CMD paths
+The CMD HD syntax (also used by sd2iec) puts a path in front of a colon: `//` starts at the card root, a single `/` at the current
+folder, and the path ends with `/` before the colon. The drive / partition number in front is ignored. This works in `LOAD`/`SAVE`/`OPEN`
+names, `$` listings, `CD`, `MD`, `RD` and `N`. Our own syntax stays as it was where CMD has no path: after the colon and in names
+without one, a leading `/` is the card root (`CD:/GAMES`, `LOAD"$/GAMES/G.D64"`).
+
+| Command | Result |
+|---|---|
+| `LOAD"//GAMES/G.D64/:START",8,1` | Load a file from an image, from the root |
+| `LOAD"/G.D64/:START",8,1` | The same, relative to the current folder |
+| `LOAD"$//GAMES/:*",8` | List a folder by path (only lists, like `$/GAMES/`) |
+| `OPEN15,8,15,"CD/GAMES"` | Relative: into `GAMES` of the current folder (before this release `CD/GAMES` went from the root; use `CD//GAMES` or `CD:/GAMES` for that) |
+| `OPEN15,8,15,"CD0//GAMES/:G.D64"` | Mount an image by path |
+| `OPEN15,8,15,"MD//GAMES/:NEW"` | Make a folder elsewhere; the current folder does not change |
+| `OPEN15,8,15,"N//GAMES/:NEW.D64,ID"` | Create a new image in another folder (with nothing mounted) |
 | `LOAD"$==T",8` | Enter a folder called `T` (or `P`) |
 
 `$==path` (also `$:==path`, `$0:==path`) always means a path, even without a `/` or an image suffix. A single `=`, as in `$=T` / `$=P`, stays a
@@ -192,7 +209,7 @@ With the TR menu showing (no program running) the same commands show and change 
 | `V` validate | Rebuilds the BAM from the files (REL side sectors included); unclosed files are deleted, as on a real drive |
 | `L:name` lock, `W-1` / `W-0` write protect | CMD-drive syntax. `L` toggles the lock flag (`<`, the file cannot be scratched); `W-1` makes the mounted image read-only until `W-0` or the next mount |
 | Plain files on the card | With nothing mounted, `LOAD"GAME.PRG",8` (also `"GAME"`, `"GA*"`, `"DIR/GAME.PRG"`) loads the file itself; reading only (`SAVE` answers 74), one plain file open per drive (a second answers 70) |
-| `MD:NAME` / `RD:NAME` | With nothing mounted: make / remove (empty) folders on the card. With an image mounted (D81 partitions): not supported |
+| `MD:NAME` / `RD:NAME` | With nothing mounted: make / remove (empty) folders on the card, also through a CMD path (`MD//GAMES/:NEW`, `RD/OLD/:X`). With an image mounted (D81 partitions): not supported |
 | `C:new=old` copy | Also joins files: `C:new=a,b,c` (up to 8); the new file has the first source's type |
 | Direct sector access | `OPEN n,8,n,"#"` takes a 256-byte buffer channel; on channel 15 `U1:n 0 t s` (or `UA`) reads a sector into it, `U2`/`UB` writes it back (`B-R`/`B-W` do the same as `U1`/`U2`), `B-P:n,pos` sets the buffer pointer, `B-A`/`B-F` allocate and free a sector in the BAM (`B-A` on a used sector answers `65` with the next free one). D64, D71 and D81; needs an image mounted |
 

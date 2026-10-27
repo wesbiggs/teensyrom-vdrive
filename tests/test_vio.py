@@ -591,6 +591,73 @@ class HostTests(unittest.TestCase):
         self.cmd15(b"CD:INNER.D64/FILE"); self.assertTrue(self.status().startswith("33,SYNTAX ERROR"))
         self.cmd15(b"CD:NOPE/X.D64"); self.assertTrue(self.status().startswith("62,FILE NOT FOUND"))
 
+    # ---- CMD path syntax ("//" = root, "/a/" = relative, path before the colon) ----
+    def test_cmd_cd_forms(self):
+        ok = "00, OK,00,00\r"
+        self.cmd15(b"CD//SUB"); self.assertEqual(self.status(), ok); self.assertEqual(self.cwd, self.tmp / "sub")
+        self.cmd15(b"CD/INNER.D64"); self.assertEqual(self.status(), ok)          # relative: in sub
+        self.assertEqual(self.mounted, ["inner.d64"])
+        self.cmd15(b"CD_"); self.assertEqual(self.unmounted, [0]); self.assertEqual(self.cwd, self.tmp / "sub")
+        self.cmd15(b"CD/SUB"); self.assertTrue(self.status().startswith("62,"))  # relative, so not the root's SUB
+        self.cmd15(b"CD/"); self.assertEqual(self.status(), ok); self.assertEqual(self.cwd, self.tmp / "sub")   # the current folder
+        self.cmd15(b"CD//"); self.assertEqual(self.cwd, self.tmp)
+        self.cmd15(b"CD/SUB"); self.assertEqual(self.cwd, self.tmp / "sub")
+        self.cmd15(b"CD//:SUB"); self.assertEqual(self.status(), ok); self.assertEqual(self.cwd, self.tmp / "sub")
+        self.cmd15(b"CD0//SUB/:INNER.D64"); self.assertEqual(self.status(), ok)
+        self.assertEqual(self.mounted[-1], "inner.d64"); self.assertEqual(self.cwd, self.tmp / "sub")
+        self.cmd15(b"CD//"); self.cmd15(b"CD/SUB/:INNER.D64"); self.assertEqual(self.status(), ok)
+        self.cmd15(b"CD//"); self.cmd15(b"CD/SUB/INNER.D64"); self.assertEqual(self.status(), ok)      # no colon: the same
+        self.assertEqual(self.mounted, ["inner.d64"] * 4)
+        self.cmd15(b"CD//"); self.cmd15(b"CD:/SUB"); self.assertEqual(self.cwd, self.tmp / "sub")      # ours: "/" after the colon = root
+        self.cmd15(b"CD:/"); self.assertEqual(self.cwd, self.tmp)
+
+    def test_cmd_path_in_names(self):
+        self.put_file(self.tmp / "sub" / "inner.d64", "HELLO", b"\x01\x08hello")
+        self.cmd15(b"CD:SUB"); self.status()
+        self.assertEqual(self.io.fast_load(8, b"//SUB/INNER.D64/:HELLO")[2], b"hello")
+        self.cmd15(b"CD//")
+        self.assertEqual(self.io.fast_load(8, b"/SUB/INNER.D64/:HELLO")[2], b"hello")    # relative, from the root
+        self.assertEqual(self.io.fast_load(8, b"/:HELLO")[2], b"hello")                  # "/" = here (inside the image)
+        self.cmd15(b"CD//")
+        d = self.io.fast_load(8, b"/SUB/:INNER.D64")[2]; self.assertIn(b"INNER", d)     # an image by name: its directory
+        self.assertEqual(self.cwd, self.tmp)
+        self.assertEqual(self.io.fast_save(8, b"0//SUB/INNER.D64/:NEW", 0x0801, b"abc"), 0)
+        self.assertEqual(self.io.fast_load(8, b"NEW")[2], b"abc")
+
+    def test_cmd_path_in_listings(self):
+        d = self.io.fast_load(8, b"$//SUB/:*")[2]
+        self.assertIn(b'"INNER.D64"', d); self.assertNotIn(b'"README.PRG"', d); self.assertEqual(self.cwd, self.tmp)
+        d = self.io.fast_load(8, b"$0/SUB/:INN*")[2]; self.assertIn(b'"INNER.D64"', d)
+        d = self.io.fast_load(8, b"$//:R*")[2]; self.assertIn(b'"README.PRG"', d); self.assertNotIn(b'"SUB"', d)
+        d = self.io.fast_load(8, b"$//SUB/INNER.D64/:*")[2]; self.assertIn(b"INNER", d)
+        self.assertEqual(self.cwd, self.tmp); self.assertIn(b'"SD CARD', self.io.fast_load(8, b"$")[2])   # listings only list
+        self.assertEqual(self.pops, 4)
+
+    def test_cmd_md_rd_with_paths(self):
+        ok = "00, OK,00,00\r"
+        self.cmd15(b"MD//SUB/:NEW"); self.assertEqual(self.status(), ok)
+        self.assertTrue((self.tmp / "sub" / "new").is_dir()); self.assertEqual(self.cwd, self.tmp)   # made there, not entered
+        self.cmd15(b"MD/SUB/X"); self.assertEqual(self.status(), ok)                              # no colon: the name is last
+        self.assertTrue((self.tmp / "sub" / "x").is_dir())
+        self.cmd15(b"CD:SUB"); self.status()
+        self.cmd15(b"MD//:TOP"); self.assertEqual(self.status(), ok)
+        self.assertTrue((self.tmp / "top").is_dir()); self.assertEqual(self.cwd, self.tmp / "sub")
+        self.cmd15(b"MD/:HERE"); self.assertEqual(self.status(), ok); self.assertTrue((self.tmp / "sub" / "here").is_dir())
+        self.cmd15(b"MD/NOPE/:Y"); self.assertTrue(self.status().startswith("62,")); self.assertEqual(self.cwd, self.tmp / "sub")
+        self.cmd15(b"MD//SUB/INNER.D64/:Y"); self.assertTrue(self.status().startswith("33,"))   # not inside an image
+        self.assertIsNone(self.cur)
+        self.cmd15(b"RD//:TOP"); self.assertEqual(self.status(), ok); self.assertFalse((self.tmp / "top").exists())
+        self.cmd15(b"RD/:NEW"); self.assertEqual(self.status(), ok); self.assertFalse((self.tmp / "sub" / "new").exists())
+        self.cmd15(b"RD0//SUB/:X"); self.assertEqual(self.status(), ok); self.assertFalse((self.tmp / "sub" / "x").exists())
+        self.assertEqual(self.cwd, self.tmp / "sub")
+
+    def test_cmd_path_in_new_image(self):
+        self.cmd15(b"N//SUB:NEW.D64,NW"); self.assertEqual(self.status(), "00, OK,00,00\r")
+        self.assertTrue((self.tmp / "sub" / "new.d64").exists()); self.assertEqual(self.cwd, self.tmp / "sub")
+        self.cmd15(b"CD//")
+        self.cmd15(b"N0/SUB/:TWO.D64,TW"); self.assertEqual(self.status(), "00, OK,00,00\r")
+        self.assertTrue((self.tmp / "sub" / "two.d64").exists())
+
     def test_load_dollar_path_mounts_the_image_and_lists_it(self):
         rc, addr, d = self.io.fast_load(8, b"$/SUB/INNER.D64")
         self.assertEqual(rc, 0); self.assertIn(b"INNER", d); self.assertNotIn(b'"SD CARD', d)

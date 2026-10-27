@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.9.0.33
+
+### Added
+- CMD HD / sd2iec path syntax in names, listings and `CD`/`MD`/`RD`/`N`: a path before the colon, `//` = card root, a single `/` =
+  current folder (`LOAD"//GAMES/G.D64/:START"`, `LOAD"$//GAMES/:*"`, `CD//GAMES`, `CD/SUB/:INNER`, `CD0//:GAMES`,
+  `MD//GAMES/:NEW`, `N//GAMES/:NEW.D64,ID`; `docs/DESIGN.md` section 36). `MD`/`RD` with a path leave the current folder as it was.
+  Unit tests; not in VICE or on hardware.
+
+### Changed
+- **`CD/NAME` (no colon) is now relative**, as on a CMD drive; before it started at the card root. `CD:/NAME`, `CD//NAME` and
+  `LOAD"$/GAMES/..."` still start at the root. `CD/` alone is now the current folder (nothing happens) instead of the root.
+
 ## v0.9.0.32
 
 ### Added
