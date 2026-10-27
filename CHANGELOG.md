@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.9.0.30
+
+### Changed
+- The TeensyROM patch is rebased onto upstream `5728ddc9` (196 commits, mostly GEOS: GeoRAM Special IO, RAM bank refactor,
+  USB mouse, TR block I/O). Only a context line moved in `firmware/kernalreplace-fixes.patch` (`DMAWaitAssertReady` in `ISRs.c`);
+  the patch still applies with the open upstream PRs (#60, #62, #63) merged. GeoRAM sits after Debug in the Special IO list, so
+  stored VDrive defaults keep their index. Firmware build only; not run on hardware.
+
 ## v0.9.0.29
 
 ### Added

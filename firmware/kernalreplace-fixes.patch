@@ -1,8 +1,8 @@
 diff --git a/Source/Teensy/MinimalBoot/Common/Common_Defs.h b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
-index 7feae53..76fedaa 100644
+index 2122be4..81dee91 100644
 --- a/Source/Teensy/MinimalBoot/Common/Common_Defs.h
 +++ b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
-@@ -177,6 +177,8 @@ bool (*fBusSnoop)(uint16_t Address, bool R_Wn) = NULL;    //Bus snoop routine, r
+@@ -183,6 +183,8 @@ bool (*fBusSnoop)(uint16_t Address, bool R_Wn) = NULL;    //Bus snoop routine, r
  bool (*PendingfBusSnoop)(uint16_t Address, bool R_Wn) = NULL;  //staged by an IO handler's InitHndlr instead of touching fBusSnoop directly
  volatile bool HandshakeReady = false;    //true once IOHandlerInit has completed the current IO handler swap
  
@@ -86,7 +86,7 @@ index d7213cf..c2557a1 100644
  }
  
 diff --git a/Source/Teensy/MinimalBoot/Common/IO_Handlers/Swift_ATcommands.c b/Source/Teensy/MinimalBoot/Common/IO_Handlers/Swift_ATcommands.c
-index dc0b583..d0a7c48 100644
+index 24be470..4d34d53 100644
 --- a/Source/Teensy/MinimalBoot/Common/IO_Handlers/Swift_ATcommands.c
 +++ b/Source/Teensy/MinimalBoot/Common/IO_Handlers/Swift_ATcommands.c
 @@ -410,7 +410,7 @@ FLASHMEM ATRespCode AT_Hook(char* CmdArg)
@@ -112,11 +112,11 @@ index dc0b583..d0a7c48 100644
 +   return r;
 +}
 diff --git a/Source/Teensy/MinimalBoot/Common/ISRs.c b/Source/Teensy/MinimalBoot/Common/ISRs.c
-index 6c82c20..995e7e8 100644
+index 0425e49..c6dc4f9 100644
 --- a/Source/Teensy/MinimalBoot/Common/ISRs.c
 +++ b/Source/Teensy/MinimalBoot/Common/ISRs.c
 @@ -55,6 +55,10 @@ void DMAWaitAssertReady()
-    DMA_State = DMA_S_TransferReady;
+    DMA_State = DMA_AutoRun ? DMA_S_TransferExecuting : DMA_S_TransferReady;
  }
  
 +#ifdef LATE_ISR_TRACE
@@ -141,10 +141,10 @@ index 6c82c20..995e7e8 100644
        #ifdef DbgCycAdjLog      
           if (BigBuf != NULL)
 diff --git a/Source/Teensy/Teensy.ino b/Source/Teensy/Teensy.ino
-index 99d0514..50f7cc1 100644
+index 0b07c07..5082e0f 100644
 --- a/Source/Teensy/Teensy.ino
 +++ b/Source/Teensy/Teensy.ino
-@@ -54,6 +54,16 @@ uint8_t RAM_Image[RAM_ImageSize]; //Main RAM1 file storage buffer
+@@ -55,6 +55,16 @@ uint8_t RAM_Image[RAM_ImageSize]; //Main RAM1 file storage buffer
  volatile uint8_t BtnPressed = false; 
  volatile uint8_t EmulateVicCycles = false;
  uint8_t CurrentIOHandler = IOH_None;
@@ -161,7 +161,7 @@ index 99d0514..50f7cc1 100644
  StructMenuItem *DriveDirMenu = NULL;
  uint16_t NumDrvDirMenuItems = 0;
  char DriveDirPath[MaxPathLength];
-@@ -376,6 +386,78 @@ void loop()
+@@ -377,6 +387,78 @@ void loop()
     if (IO1[rwRegPwrUpDefaults2] & rpud2TRContEnabled)
        if (USBHostSerial.available()) ServiceSerial(&USBHostSerial);
  
@@ -240,7 +240,7 @@ index 99d0514..50f7cc1 100644
  #ifdef FeatTCPListen
     if (NetListenEnable)
     {
-@@ -404,6 +486,7 @@ FLASHMEM void SetUpMainMenuROM()
+@@ -405,6 +487,7 @@ FLASHMEM void SetUpMainMenuROM()
  #ifdef Fab04_GlobalKernalReplace
     fKernRepl = NULL;
  #endif

@@ -59,8 +59,8 @@ The C64's ability to read the 8 KB of RAM under KERNAL ROM ($E000-$FFFF) is used
 
    Build with `arduino-cli` and the Teensy core `teensy:avr@1.61.0` (library `CRC32@2.0.1`). **Do not use Teensyduino 1.62.0**: SD reads
    stall with it. The easiest way to flash is to copy the resulting `.hex` to the SD card and select it in the TR menu (flashing over USB needs
-   the Teensy's program button, since the TR has no soft reboot). The build is stamped `<stock>.<rev>`, e.g. `0.9.0.29`: that number shows in
-   the C64 menu title and in the hex file name (`TeensyROM+_0.9.0.29_full.hex`), so you can tell a VDrive build from a stock `0.9` one.
+   the Teensy's program button, since the TR has no soft reboot). The build is stamped `<stock>.<rev>`, e.g. `0.9.0.30`: that number shows in
+   the C64 menu title and in the hex file name (`TeensyROM+_0.9.0.30_full.hex`), so you can tell a VDrive build from a stock `0.9` one.
 3. On the C64: in the TR file browser select the image and press `<Shift-K>`; in Settings choose Special IO
    **VDrive KERNAL** (`a`/`A`); then start BASIC (`F2`) or launch a PRG.
 
