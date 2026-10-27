@@ -124,7 +124,10 @@ def main(kernal, scenario="basic"):
                            check=True, capture_output=True)
         drives = ["-drive8type", "1541", "-drive8truedrive", "-drive9type", "0", "-drive10type", "1541", "-drive10truedrive", "-drive11type", "0",
                   "-8", str(workdir / "real8.d64"), "-10", str(workdir / "real10.d64")]
-    vice = subprocess.Popen(["x64sc", "-warp", *drives, "-kernal", kernal,
+    # -config + -default: start from VICE's defaults, not the user's vicerc (another VICE session saved e.g. Drive8Type=1581 with
+    # TrapDevice8 there, which put a virtual drive at 8 and moved the SD drive to 9); a blank config file here also catches SaveResourcesOnExit
+    (workdir / "vicerc").write_text("")
+    vice = subprocess.Popen(["x64sc", "-config", str(workdir / "vicerc"), "-default", "-warp", *drives, "-kernal", kernal,
                              "-binarymonitor", "-binarymonitoraddress", "ip4://127.0.0.1:6502"],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
