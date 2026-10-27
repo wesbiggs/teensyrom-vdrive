@@ -8,7 +8,7 @@ real IEC code, so physical drives keep working. LOAD/SAVE have block-transfer fa
 second, the first free numbers from 8 up: the KERNAL probes the real bus on the first disk access of a run) or fixed from BASIC with
 `OPEN15,8,15,"U0>"+CHR$(n)` (kept in EEPROM, `CHR$(0)` = automatic, no reflash). Names and `CD` take paths: `LOAD"$/GAMES/G.D64",8`.
 
-Full design and per-milestone notes: `docs/DESIGN.md` (sections 1-33, in order of construction).
+Full design and per-milestone notes: `docs/DESIGN.md` (sections 1-34, in order of construction).
 Firmware integration and usage: `firmware/README.md`.
 
 ## Status (read this first)
@@ -80,6 +80,8 @@ Firmware integration and usage: `firmware/README.md`.
   128 bytes at `$DF80` for every VDrive handler (REU registers at `$DF00-$DF7F`); names of 128+ characters fall back to the byte-level open. The REU's `$FF00` trigger would
   replace `KernalCheck` on `fBusSnoop`: `IO2Hndlr_VDriveSwiftREU` hands it back (`VDREU_Snoop`). Host tests, VICE, firmware build; **works on a real C64 (owner, 2026-10-23)**. **KERNAL images built before
   this change no longer match the firmware: rebuild and re-copy `kernal-tr.bin`.**
+* 0.9.0.31: Special IO "VDrive+REU" (`firmware/IOH_VDriveREU.c`, docs/DESIGN.md 34): drive + the full 512 KB REU, no SwiftLink. Holds the IO2 split and `VDREU_Snoop` that
+  VDrive+Swift+REU now shares (`IO2Hndlr_VDriveREU`). With any VDrive default, REU menu programs get it. Host tests, firmware build; **not on hardware yet**.
 * Default device 8 for `LOAD`/`SAVE`/`VERIFY` without a number, as on the SX-64 (`P_E1DA` in `patches/vdrive.s`, docs/DESIGN.md 33). KERNAL only; VICE `basic` run; **not on hardware yet**. Rebuild `kernal-tr.bin`.
 * Known open risks: C128 not supported (see above); tape (device 1) intentionally broken (its code space was reclaimed).
 
@@ -95,7 +97,7 @@ util/            VDCOPY: vdcopy.s (all machine code, BASIC SYS stub at $0801, ta
 patches/        ca65 sources overlaid on the stock KERNAL by tools/build.py; segment name P_XXXX = load address
   vdrive.s        serial entry hooks, fast LOAD ($F4C8) / SAVE ($F605), bus scan, code placed in reclaimed tape space $F8E2-$FB8D (666 of 683 bytes used; `irq_border` for the border flash included, the build asserts the limit)
   banner.s        proof patch (changes the power-on banner)
-firmware/       TeensyROM integration: IOH_VDrive.c (Special IO), IOH_VDriveSwift.c / IOH_VDriveSwiftREU.c (combined Special IOs) and
+firmware/       TeensyROM integration: IOH_VDrive.c (Special IO), IOH_VDriveSwift.c / IOH_VDriveREU.c / IOH_VDriveSwiftREU.c (combined Special IOs) and
                 teensyrom-vdrive.patch (git apply onto TeensyROM)
 tools/          build.py (patch overlay), make_tr_patch.sh (regenerate the TeensyROM patch), vdrive_mock.py (VICE mock),
                 d64py.py (ctypes wrappers incl. register-level VIO), xref.py (reference finder over a disassembly)
@@ -138,7 +140,7 @@ The full `make test`, VICE runs included, works in a cloud session; do not skip 
   (written for #39 and #61-#70, all merged by `5728ddc9`; open at that rebase: #60, #62, #63): the VDrive entries in the `enumIOHandlers` / `IOHandler[]` lists sit *before* the Kernal Replace entries (upstream appends GeoRAM after `IOH_Debug`),
   the Busy-refusal bypass in `SerUSBIO.ino` is a block after the `ASIDAllowed` statement (not a rewrite of the `if`), the menu remap in `IOHandlers.ino` is a case ahead of upstream's call, and `FnetPollHold = false` follows the `#endif`
   in `SetUpMainMenuROM()`. Test a regenerated patch with `git apply --check` on `git archive origin/main` and on `git merge-tree --write-tree origin/main pr/N` trees. The Special IO list order is VDrive, VDrive+Swift,
-  VDrive+Swift+REU, Kernal Replace, Debug (0.9.0.29): a stored default Special IO (`eepAdNextIOHndlr`, an index) of Kernal Replace from an older build now selects a VDrive entry.
+  VDrive+Swift+REU, VDrive+REU, Kernal Replace, Debug (0.9.0.31): a stored default Special IO (`eepAdNextIOHndlr`, an index) of Kernal Replace from an older build now selects a VDrive entry.
 * **Published KERNAL hash:** the README's Installing section lists the SHA-256 of `kernal-tr.bin` built from the 901227-03 ROM; `make test-hash` (part of `make test`) fails when a patch or `tools/build.py` changes the image and the "from this revision" row was not updated. Update the "last run on a real C64" row only when the owner reports a hardware run of that image.
 * **No Commodore ROM bytes in the repo.** Only patches. `build/` is ignored for that reason; keep it that way.
 * **The ctypes tests load `build/libd64.dylib`.** After editing `d64/*.c` run `make build/libd64.dylib` (or `make test`) first, or you

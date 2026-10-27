@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.9.0.31
+
+### Added
+- Special IO **VDrive+REU**: the virtual drive and the full **512 KB** REU together (VDrive+Swift+REU only has room for 128 KB;
+  `docs/DESIGN.md` section 34). With any VDrive Special IO as the default, menu programs paired with the REU now start with it
+  instead of the plain REU (or the 128 KB one of VDrive+Swift+REU), so they keep the drive. Host tests and firmware build; not on hardware.
+
+### Changed
+- The Special IO list is VDrive, VDrive+SwiftLink, VDrive+Swift+REU, VDrive+REU, Kernal Replace, Debug:
+  **if your stored default Special IO was Kernal Replace, choose it again in Settings.**
+
 ## v0.9.0.30
 
 ### Changed

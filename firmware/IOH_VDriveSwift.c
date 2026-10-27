@@ -21,17 +21,19 @@ stcIOHandlers IOHndlr_VDriveSwift =
   &CycleHndlr_SwiftLink,    //called at the end of EVERY c64 cycle
 };
 
-// When the user's default Special IO is a VDrive one, programs that the menu pairs with plain SwiftLink (CCGMS, ...) get the
-// combined handler instead, so launching them does not drop the virtual drive. With "VDrive+Swift+REU" as the default, REU
-// programs get it too (with "VDrive" or "VDrive+SwiftLink" they keep the plain 512 KB REU: the combined one is smaller).
+// When the user's default Special IO is a VDrive one, programs that the menu pairs with plain SwiftLink (CCGMS, ...) or the REU
+// get a combined handler instead, so launching them does not drop the virtual drive: SwiftLink programs VDrive+SwiftLink, REU
+// programs VDrive+REU (the full 512 KB REU, IOH_VDriveREU.c). With "VDrive+Swift+REU" as the default, SwiftLink programs get
+// that one (its REU is only 128 KB, but they may want both).
 FLASHMEM uint8_t VDriveSwift_Remap(uint8_t ioh)
 {
    uint8_t pref = EEPROM.read(eepAdNextIOHndlr);
+   if (!VD_IsHandler(pref)) return ioh;
 #ifdef Fab04_REU
-   if (pref == IOH_VDriveSwiftREU) return (ioh == IOH_Swiftlink || ioh == IOH_REU) ? IOH_VDriveSwiftREU : ioh;
+   if (ioh == IOH_REU) return IOH_VDriveREU;
+   if (pref == IOH_VDriveSwiftREU) return (ioh == IOH_Swiftlink) ? IOH_VDriveSwiftREU : ioh;
 #endif
-   if (ioh != IOH_Swiftlink) return ioh;
-   return (pref == IOH_VDrive || pref == IOH_VDriveSwift) ? IOH_VDriveSwift : ioh;
+   return (ioh == IOH_Swiftlink) ? IOH_VDriveSwift : ioh;
 }
 
 FLASHMEM void InitHndlr_VDriveSwift()

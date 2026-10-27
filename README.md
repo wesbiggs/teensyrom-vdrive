@@ -54,20 +54,22 @@ The C64's ability to read the 8 KB of RAM under KERNAL ROM ($E000-$FFFF) is used
    cd /path/to/TeensyROM && git apply /path/to/teensyrom-vdrive/firmware/teensyrom-vdrive.patch
    ```
    The patch adds `Fab04_VDrive` (enabled next to `Fab04_KernalReplace` in `Common_Defs.h`), a new Special IO
-   `IOH_VDrive` ("VDrive KERNAL"), `IOH_VDriveSwift` ("VDrive+SwiftLink") and `IOH_VDriveSwiftREU` ("VDrive+Swift+REU"), the library under `MinimalBoot/Common/vdrive/`, and one condition in
+   `IOH_VDrive` ("VDrive KERNAL"), `IOH_VDriveSwift` ("VDrive+SwiftLink") and `IOH_VDriveSwiftREU` ("VDrive+Swift+REU"), `IOH_VDriveREU` ("VDrive+REU"), the library under `MinimalBoot/Common/vdrive/`, and one condition in
    `KERNALPreStart()` so the KERNAL image is loaded when this Special IO is selected.
 
    Build with `arduino-cli` and the Teensy core `teensy:avr@1.61.0` (library `CRC32@2.0.1`). **Do not use Teensyduino 1.62.0**: SD reads
    stall with it. The easiest way to flash is to copy the resulting `.hex` to the SD card and select it in the TR menu (flashing over USB needs
-   the Teensy's program button, since the TR has no soft reboot). The build is stamped `<stock>.<rev>`, e.g. `0.9.0.30`: that number shows in
-   the C64 menu title and in the hex file name (`TeensyROM+_0.9.0.30_full.hex`), so you can tell a VDrive build from a stock `0.9` one.
+   the Teensy's program button, since the TR has no soft reboot). The build is stamped `<stock>.<rev>`, e.g. `0.9.0.31`: that number shows in
+   the C64 menu title and in the hex file name (`TeensyROM+_0.9.0.31_full.hex`), so you can tell a VDrive build from a stock `0.9` one.
 3. On the C64: in the TR file browser select the image and press `<Shift-K>`; in Settings choose Special IO
    **VDrive KERNAL** (`a`/`A`); then start BASIC (`F2`) or launch a PRG.
 
 
 The "VDrive+SwiftLink" Special IO runs the virtual drive and the SwiftLink / Turbo232 modem together. When the default Special IO is VDrive or VDrive+SwiftLink, menu programs paired with plain SwiftLink (CCGMS, Retromate, Simple SwiftLink Term) start with it, so launching one does not drop the drive. `.crt` SwiftLink/Turbo232 images are left alone and run with the C64's own KERNAL. It costs SwiftLink's normal start-up RAM (about 355 KB of RAM2 buffers, drive menu freed), so it is a separate Special IO.
 
-The "VDrive+Swift+REU" Special IO adds an REU (RAM Expansion Unit) to those two. SwiftLink's buffers leave room for a **128 KB** REU (a 1700), not 512 KB; software that insists on a bigger one will refuse it. When it is the default Special IO, menu programs paired with SwiftLink or with the REU start with it; otherwise REU programs keep the plain 512 KB REU.
+The "VDrive+REU" Special IO runs the virtual drive and an REU (RAM Expansion Unit) together, with the same **512 KB** REU as the plain "512KB REU" Special IO. When the default Special IO is any VDrive one, menu programs paired with the REU start with it, so launching one does not drop the drive.
+
+The "VDrive+Swift+REU" Special IO has all three. SwiftLink's buffers leave room for a **128 KB** REU (a 1700), not 512 KB; software that insists on a bigger one will refuse it. When it is the default Special IO, menu programs paired with SwiftLink start with it (REU programs get VDrive+REU and its 512 KB, as above).
 
 ## Using it
 

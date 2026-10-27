@@ -40,7 +40,7 @@ stcIOHandlers IOHndlr_VDrive =
 
 // The VDrive Special IOs: PreStart, the remote control and the listings while a program runs treat them all alike.
 #ifdef Fab04_REU
-   #define VD_IsHandler(h) ((h) == IOH_VDrive || (h) == IOH_VDriveSwift || (h) == IOH_VDriveSwiftREU)
+   #define VD_IsHandler(h) ((h) == IOH_VDrive || (h) == IOH_VDriveSwift || (h) == IOH_VDriveSwiftREU || (h) == IOH_VDriveREU)
 #else
    #define VD_IsHandler(h) ((h) == IOH_VDrive || (h) == IOH_VDriveSwift)
 #endif
@@ -972,7 +972,7 @@ FASTRUN void IO1Hndlr_VDrive(uint8_t Address, bool R_Wn)
 FASTRUN void IO2Hndlr_VDrive(uint8_t Address, bool R_Wn)
 {
    Address -= VIO_WIN_OFS;                                 // window at $DF80-$DFFF; $DF00-$DF7F wraps past it: open bus
-   if (!vioReady || Address >= VIO_WIN) return;           // (the REU's registers in IOH_VDriveSwiftREU.c)
+   if (!vioReady || Address >= VIO_WIN) return;           // (the REU's registers in IOH_VDriveREU.c)
    if (R_Wn) DataPortWriteWaitLog(vioHot.window[Address]);   // straight from the struct, as in IO1Hndlr_VDrive
    else
    {

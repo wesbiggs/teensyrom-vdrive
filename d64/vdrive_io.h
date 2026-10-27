@@ -4,7 +4,7 @@
  *                                                  +6 DEV0 (R)  +7 DEV1 (R): IEC device number of the SD / USB drive now (0 = none)
  *                                                  +8 BORDER (R): request for the KERNAL's IRQ routine, see VIO_BRD_* (disk-switch feedback)
  *   IO2 ($DF80): 128-byte window (RW): file name in, data blocks in/out. $DF00-$DF7F is not ours: the REU's registers live
- *                there in the "VDrive+Swift+REU" handler (IOH_VDriveSwiftREU.c); the plain handlers leave it unanswered.
+ *                there in the "VDrive+REU" and "VDrive+Swift+REU" handlers (IOH_VDriveREU.c); the others leave it unanswered.
  *
  * ISR side (vio_io*_read/write) is O(1) and never touches storage. Everything
  * else runs from vio_poll() in the main loop. Portable C: host tests and the

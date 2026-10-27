@@ -68,7 +68,7 @@ edit("Source/Teensy/Teensy.ino",
 # would not apply on top of them. (Include order is separate and stays after IOH_KernalReplace.c, which IOH_VDrive.c needs.)
 edit(f"{C}/Menu_Regs.h",
      "   #ifdef Fab04_KernalReplace\n      IOH_KernalReplace,\n   #endif  \n",
-     "   #ifdef Fab04_VDrive\n      IOH_VDrive,\n      IOH_VDriveSwift,\n   #ifdef Fab04_REU\n      IOH_VDriveSwiftREU,\n   #endif\n   #endif  \n"
+     "   #ifdef Fab04_VDrive\n      IOH_VDrive,\n      IOH_VDriveSwift,\n   #ifdef Fab04_REU\n      IOH_VDriveSwiftREU,\n      IOH_VDriveREU,\n   #endif\n   #endif  \n"
      "   #ifdef Fab04_KernalReplace\n      IOH_KernalReplace,\n   #endif  \n")
 edit(f"{C}/IOHandlers.h",
      '   #ifdef Fab04_KernalReplace\n      #include "IO_Handlers/IOH_KernalReplace.c"\n   #endif    \n',
@@ -76,13 +76,13 @@ edit(f"{C}/IOHandlers.h",
      '   #ifdef Fab04_VDrive\n      #include "IO_Handlers/IOH_VDrive.c"\n   #endif    \n')
 edit(f"{C}/IOHandlers.h",
      "   #ifdef Fab04_KernalReplace\n      &IOHndlr_KernalReplace,      //IOH_KernalReplace,\n   #endif  \n",
-     "   #ifdef Fab04_VDrive\n      &IOHndlr_VDrive,             //IOH_VDrive,\n      &IOHndlr_VDriveSwift,        //IOH_VDriveSwift,\n   #ifdef Fab04_REU\n      &IOHndlr_VDriveSwiftREU,     //IOH_VDriveSwiftREU,\n   #endif\n   #endif  \n"
+     "   #ifdef Fab04_VDrive\n      &IOHndlr_VDrive,             //IOH_VDrive,\n      &IOHndlr_VDriveSwift,        //IOH_VDriveSwift,\n   #ifdef Fab04_REU\n      &IOHndlr_VDriveSwiftREU,     //IOH_VDriveSwiftREU,\n      &IOHndlr_VDriveREU,          //IOH_VDriveREU,\n   #endif\n   #endif  \n"
      "   #ifdef Fab04_KernalReplace\n      &IOHndlr_KernalReplace,      //IOH_KernalReplace,\n   #endif  \n")
 edit(f"{C}/IOHandlers.h",
      '      #include "IO_Handlers/IOH_Swiftlink.c"\n',
      '      #include "IO_Handlers/IOH_Swiftlink.c"\n'
      '   #ifdef Fab04_VDrive\n      #include "IO_Handlers/IOH_VDriveSwift.c"   //needs IOH_VDrive.c and IOH_Swiftlink.c above\n'
-     '   #ifdef Fab04_REU\n      #include "IO_Handlers/IOH_VDriveSwiftREU.c"   //needs IOH_VDriveSwift.c and IOH_REU.c above\n   #endif\n   #endif\n')
+     '   #ifdef Fab04_REU\n      #include "IO_Handlers/IOH_VDriveREU.c"        //needs IOH_VDrive.c and IOH_REU.c above\n      #include "IO_Handlers/IOH_VDriveSwiftREU.c"   //needs IOH_VDriveSwift.c and IOH_VDriveREU.c above\n   #endif\n   #endif\n')
 edit(f"{C}/IO_Handlers/StatusFunctions.c",
      "      NextIOHndlr = MenuSource[SelItemFullIdx].IOHndlrAssoc;\n",
      "      NextIOHndlr = MenuSource[SelItemFullIdx].IOHndlrAssoc;\n"
@@ -101,7 +101,8 @@ edit("Source/Teensy/IOHandlers.ino",
      "      IOHandlerInit(VDriveSwift_Remap(MenuSource[SelItemFullIdx].IOHndlrAssoc));   //SwiftLink programs keep the virtual drive\n      return;\n   }\n"
      "#endif\n")
 PY
-cp "$HERE/firmware/IOH_VDrive.c" "$HERE/firmware/IOH_VDriveSwift.c" "$HERE/firmware/IOH_VDriveSwiftREU.c" "$C/IO_Handlers/"
+cp "$HERE/firmware/IOH_VDrive.c" "$HERE/firmware/IOH_VDriveSwift.c" "$HERE/firmware/IOH_VDriveREU.c" "$HERE/firmware/IOH_VDriveSwiftREU.c" \
+   "$C/IO_Handlers/"
 mkdir -p "$C/vdrive"
 cp "$HERE"/d64/d64.c "$HERE"/d64/d64.h "$HERE"/d64/vdrive.c "$HERE"/d64/vdrive.h \
    "$HERE"/d64/vdrive_io.c "$HERE"/d64/vdrive_io.h "$HERE"/d64/vd_cfg.h "$C/vdrive/"
