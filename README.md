@@ -59,8 +59,8 @@ The C64's ability to read the 8 KB of RAM under KERNAL ROM ($E000-$FFFF) is used
 
    Build with `arduino-cli` and the Teensy core `teensy:avr@1.61.0` (library `CRC32@2.0.1`). **Do not use Teensyduino 1.62.0**: SD reads
    stall with it. The easiest way to flash is to copy the resulting `.hex` to the SD card and select it in the TR menu (flashing over USB needs
-   the Teensy's program button, since the TR has no soft reboot). The build is stamped `<stock>.<rev>`, e.g. `0.9.0.31`: that number shows in
-   the C64 menu title and in the hex file name (`TeensyROM+_0.9.0.31_full.hex`), so you can tell a VDrive build from a stock `0.9` one.
+   the Teensy's program button, since the TR has no soft reboot). The build is stamped `<stock>.<rev>`, e.g. `0.9.0.32`: that number shows in
+   the C64 menu title and in the hex file name (`TeensyROM+_0.9.0.32_full.hex`), so you can tell a VDrive build from a stock `0.9` one.
 3. On the C64: in the TR file browser select the image and press `<Shift-K>`; in Settings choose Special IO
    **VDrive KERNAL** (`a`/`A`); then start BASIC (`F2`) or launch a PRG.
 
@@ -150,7 +150,7 @@ The accepted range is 8-30 (a number outside that range, or the other unit's num
 unit by the scan; every other device number keeps using the real IEC code. However, if you set one of the VDrives to the same number as a real device, the real device will be hidden and inaccessible.
 
 ### Images and mount points
-Image formats: `.d64` (35/40 tracks), `.d71` (1571, 70 tracks) and `.d81` (1581; root directory only, no sub-directories) are recognised by file size and extension; files may carry the trailing error-info bytes, but they are ignored (no read errors 21-29 come from the image).
+Image formats: `.d64` (35/40 tracks), `.d71` (1571, 70 tracks) and `.d81` (1581; root directory only, no sub-directories) are recognised by file size and extension; files may carry the trailing error-info bytes (one per sector, as copiers and VICE write them), and a read of a sector they mark bad fails as on a real drive: `20`-`24`, `27`, `29` or `74` with the sector's track and sector on the error channel (`docs/DESIGN.md` section 35).
 Opening a `.dXX` in the TeensyROM menu and launching a program from it mounts that image automatically on device 8 (SD) or 9 (USB), so the program's own LOADs find its files; `CD:←` unmounts it. The last mounted image of each drive is also remembered in a hidden `/.vdrive` file on that card and mounted again at the next start (any unmount forgets it).
 The USB drive works the same. Any other device number uses the real IEC bus untouched.
 
@@ -203,7 +203,7 @@ With the TR menu showing (no program running) the same commands show and change 
 | File names longer than 16 characters | Hidden in host listings |
 | Running programs with their own fastloaders | No `M-R`/`M-W`/`M-E`, so programs that upload code to the drive (or probe its ROM to detect the drive type) cannot run |
 | `U3`-`U8` user jumps, `B-E` | Need drive code |
-| Copy protection that checks for bad sectors | Error-info bytes in images are ignored |
+| Copy protection that checks for bad sectors | Read errors from the image's error-info bytes are emulated (`U1`, `LOAD`, `GET#`); protections that time the drive, read raw GCR, or check the drive's memory (`M-R`) still fail. Writing a bad sector does not repair it |
 
 ## Utilities
 

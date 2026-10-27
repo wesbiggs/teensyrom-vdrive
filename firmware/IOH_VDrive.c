@@ -56,6 +56,7 @@ struct stcVDUnit
    File     dir;             // host directory being listed
    File     plain;           // plain file being read with nothing mounted (LOAD"GAME.PRG")
    d64_t    d;
+   uint8_t *errTab;          // the image's error table (malloc, RAM2) when it marks any sector bad; NULL = none
    bool     mounted;
    bool     dirty;
    bool     quiet;           // temporary selection for a listing by path: leave the /.vdrive sidecar alone
@@ -147,12 +148,31 @@ FLASHMEM static void VD_SidecarSave(stcVDUnit *u, const char *path)
 }
 
 // ---- host services for vdrive.c (CD:, host directory listing) --------------------------------
+// Bad sectors: an image with one error byte per sector after the data (175,531 / 197,376 / 351,062 / 822,400 bytes) gets the
+// table copied to the heap when any byte in it is a read error, so a bad sector costs no extra card access; all-OK tables
+// (the usual case) are dropped. No memory: the image mounts without it.
+FLASHMEM static void VD_LoadErrTab(stcVDUnit *u, uint32_t size)
+{
+   u->errTab = NULL; u->d.errtab = NULL;
+   long off = d64_errtab_offset(&u->d, size);
+   if (off < 0 || !u->img.seek((uint32_t)off)) return;
+   int n = d64_sectors(&u->d), nbad = 0;
+   uint8_t *t = (uint8_t *)malloc(n);
+   if (!t) return;
+   if (u->img.read(t, n) != n) { free(t); return; }
+   for (int i = 0; i < n; i++) if (d64_errcode(t[i])) nbad++;
+   if (!nbad) { free(t); return; }
+   u->errTab = t; u->d.errtab = t;
+   Printf_dbg("VDrive: error table, %d bad sectors\n", nbad);
+}
+
 FLASHMEM static void VD_Unmount(void *ctx, int unit)
 {
    stcVDUnit *u = &vdUnit[unit];
    VD_Flush(u);
    if (u->mounted) u->img.close();
    u->mounted = false;
+   free(u->errTab); u->errTab = NULL; u->d.errtab = NULL;
    VD_SidecarClear(u);                                   // an explicit unmount forgets the image (a new mount re-writes it)
 }
 
@@ -175,6 +195,7 @@ FLASHMEM static int VD_Mount(void *ctx, int unit, const char *name, d64_t **out)
    if (!u->img) return 62;
    if (d64_open_size(&u->d, VD_ReadSector, u, size)) { u->img.close(); return 74; }   // format (d64 / d71 / d81) comes from the size
    u->d.write = writable ? VD_WriteSector : NULL;
+   VD_LoadErrTab(u, size);
    u->mounted = true; u->dirty = false;
    strlcpy(u->imgName, name, sizeof u->imgName);
    *out = &u->d;
@@ -520,7 +541,8 @@ FLASHMEM void VDrive_PreStart()
    vdrive_set_host(&vio->vd, &host);
    VD_LoadDevices();
 
-   for (int i = 0; i < 2; i++) { vdUnit[i].mounted = false; vdUnit[i].dirty = false; vdUnit[i].quiet = false; vdUnit[i].cwd[0] = 0; }
+   for (int i = 0; i < 2; i++) { vdUnit[i].mounted = false; vdUnit[i].dirty = false; vdUnit[i].quiet = false; vdUnit[i].cwd[0] = 0;
+                                 free(vdUnit[i].errTab); vdUnit[i].errTab = NULL; }
    vdUnit[0].fs = &SD;
    vdUnit[1].fs = &firstPartition;
    vdrive_attach(&vio->vd, 0, NULL, SDFullInit());

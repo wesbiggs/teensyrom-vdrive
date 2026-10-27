@@ -369,3 +369,24 @@ A fifth Special IO, `IOH_VDriveREU` ("VDrive+REU", `firmware/IOH_VDriveREU.c`), 
 - **List order.** The enum and table entry sits after `IOH_VDriveSwiftREU` (under `Fab04_REU`), so the stored index of the four existing VDrive entries stays, but Kernal Replace and Debug move down by one again: a stored default of Kernal Replace now selects VDrive+REU.
 
 Tested: `tests/fw_host` (wiring, IO1 split, init and poll order, the alt-button choice, the `$FF00` snoop hand-back through the shared handler, the remap for every default), the full `make test`, `git apply --check` on pristine upstream `5728ddc9`, and the TR+ firmware build. Not run on hardware: check that REU-Checker reports 512 KB with VDrive+REU while an image is mounted, an REU program with the `$FF00` trigger, and the RAM2 free count on the serial console after init.
+
+## 35. Bad sectors from the image's error table (0.9.0.32; unit and glue host tests, not in VICE or on hardware)
+
+Disk copiers and VICE store a copy-protected disk's read errors as one byte per sector after the data: 683 bytes after a 35-track `.d64` (175,531 bytes), 768 after a 40-track one (197,376), 1,366 after a `.d71` (351,062), 3,200 after a `.d81` (822,400). The files were already accepted, but the table was ignored. Now `d64_t.errtab` points at it, and `rd()` (every sector read the engine makes) checks the sector's byte after fetching the data:
+
+| byte | 0, 1 | 2 | 3 | 4 | 5 | 6 | 9 | 11 | 15 | 7, 8, 10, other |
+|---|---|---|---|---|---|---|---|---|---|---|
+| DOS error | none | 20 | 21 | 22 | 23 | 24 | 27 | 29 `DISK ID MISMATCH` | 74 `DRIVE NOT READY` | none (25 / 26 / 28 are write errors) |
+
+A read error returns `D64_E_BADSEC` and stores the first one in `d64_t.bad` / `bad_t` / `bad_s`. The sector's data is still in the buffer, as in VICE (on a 1541 that is true for `23`, not for errors where the sector never arrives; a protection that checks the buffer contents after `20`-`22` would see the image's bytes). Most engine paths collapse errors to `-1`, so the drive layer (`read_err()` in `vdrive.c`, also reached from `err_from()` for `D64_E_IO` / `D64_E_BADSEC`) puts the stored code and sector on the error channel and clears it, else it reports what it did before (`21` for `U1` and REL reads, `74` otherwise). Each `LISTEN` / `TALK` to the unit clears a stored bad sector that some earlier step read and did not report (the clean-up reads of a failed write, a host-side read), so it cannot turn up on an unrelated operation.
+
+What a bad sector does:
+- `U1` / `B-R`: the status channel says e.g. `23,READ ERROR,17,00`; the buffer holds the image's data.
+- A file read (`GET#`, byte-level `LOAD`): bytes up to the bad sector, then a time-out (`ST` bit 1); the status channel names the sector. A bad first sector sends nothing, so `LOAD` says `FILE NOT FOUND` as on a 1541. The fast `LOAD` ends the load at the bad sector with `ST` = `$42` (EOI + time-out; the KERNAL ends the load normally, and a program can check `ST`).
+- The directory or the BAM: the listing stops at the bad directory sector; `OPEN` / `SAVE` / `S:` etc. fail with the sector's error, nothing is written.
+
+Not emulated: write errors (a write to a bad sector succeeds and the sector still reads as bad, while on a 1541 rewriting a sector with `23` repairs it; `N:` does not clear the table either), `29` from an ID that differs from the header's (only the table's `11`), and anything that depends on timing, GCR or the drive's memory (no `M-R`/`M-E`).
+
+**Firmware:** at mount, `VD_LoadErrTab()` (`firmware/IOH_VDrive.c`) reads the table (one 683-3,200 byte read) and keeps a `malloc` copy (RAM2 heap) only if a byte in it is a read error, so the usual all-`01` table costs nothing and a bad sector costs no extra card access; unmount frees it. No memory: the image mounts without the table. The memory backend (`d64_open_mem`, tests and the VICE mock) points `errtab` into the image.
+
+Tested: `tests/test_vdrive.py` `BadSectorTests` (table offsets for every size, the byte-to-code map, `U1` status and data, a `LOAD` that stops at a bad third sector, a bad first sector, a bad directory sector, a bad BAM failing a `SAVE` with the image unchanged, no stale error, a D81), `tests/test_vio.py` (fast `LOAD` ends with `ST` = `$42` and the bus is clean afterwards), and `tests/fw_host` (an SD image with a bad sector keeps its table and reports `23,READ ERROR,17,00`; an all-OK table is dropped; unmount frees it).

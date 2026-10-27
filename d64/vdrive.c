@@ -10,7 +10,8 @@
 static const struct { uint8_t code; const char *msg; } MSGS[] = {
     {0, " OK"}, {1, "FILES SCRATCHED"}, {26, "WRITE PROTECT ON"}, {30, "SYNTAX ERROR"},
     {31, "SYNTAX ERROR"}, {33, "SYNTAX ERROR"}, {34, "SYNTAX ERROR"}, {62, "FILE NOT FOUND"}, {63, "FILE EXISTS"}, {64, "FILE TYPE MISMATCH"},
-    {21, "READ ERROR"}, {25, "WRITE ERROR"}, {50, "RECORD NOT PRESENT"}, {51, "OVERFLOW IN RECORD"}, {52, "FILE TOO LARGE"}, {65, "NO BLOCK"}, {66, "ILLEGAL TRACK OR SECTOR"}, {70, "NO CHANNEL"}, {72, "DISK FULL"}, {73, "TRVDRIVE V1.0"}, {74, "DRIVE NOT READY"},
+    {20, "READ ERROR"}, {21, "READ ERROR"}, {22, "READ ERROR"}, {23, "READ ERROR"}, {24, "READ ERROR"}, {27, "READ ERROR"},
+    {29, "DISK ID MISMATCH"}, {25, "WRITE ERROR"}, {50, "RECORD NOT PRESENT"}, {51, "OVERFLOW IN RECORD"}, {52, "FILE TOO LARGE"}, {65, "NO BLOCK"}, {66, "ILLEGAL TRACK OR SECTOR"}, {70, "NO CHANNEL"}, {72, "DISK FULL"}, {73, "TRVDRIVE V1.0"}, {74, "DRIVE NOT READY"},
 };
 
 VD_COLD static void set_err(vd_unit_t *u, uint8_t code, uint8_t t, uint8_t s)
@@ -33,8 +34,16 @@ VD_COLD static uint16_t status_text(vd_unit_t *u)
     return n;
 }
 
+/* A read failed: the bad sector the image's error table reported (code and track/sector, as a real drive shows them), else code. */
+VD_COLD static void read_err(vd_unit_t *u, uint8_t code, uint8_t t, uint8_t s)
+{
+    if (u->disk && u->disk->bad) { set_err(u, u->disk->bad, u->disk->bad_t, u->disk->bad_s); u->disk->bad = 0; }
+    else set_err(u, code, t, s);
+}
+
 VD_COLD static void err_from(vd_unit_t *u, int r)
 {
+    if (r == D64_E_BADSEC || r == D64_E_IO) { read_err(u, 74, 0, 0); return; }   /* a chain or directory walk collapses codes to -1 */
     switch (r) {
     case D64_E_FULL:    set_err(u, 72, 0, 0); break;
     case D64_E_EXISTS:  set_err(u, 63, 0, 0); break;
@@ -238,7 +247,7 @@ VD_COLD static void dir_gen(vdrive_t *v, int unit, vd_unit_t *u, vd_dirstream_t 
                 { char idn[3] = { (char)('0' + v->dev[unit] / 10 % 10), (char)('0' + v->dev[unit] % 10), 0 };   /* shows the device number */
                   d64_bas_header(&b, title, idn, "2A"); }
             } else {
-                if (d64_header(u->disk, name, id, dos) || d64_dir_first(u->disk, &d->it)) { d->phase = 3; return; }
+                if (d64_header(u->disk, name, id, dos) || d64_dir_first(u->disk, &d->it)) { read_err(u, 74, 0, 0); d->phase = 3; return; }
                 d64_bas_header(&b, name, id, dos);
             }
             d->phase = 1;
@@ -256,7 +265,7 @@ VD_COLD static void dir_gen(vdrive_t *v, int unit, vd_unit_t *u, vd_dirstream_t 
                 } else {
                     d64_entry_t e;
                     int r = d64_dir_next(u->disk, &d->it, &e);
-                    if (r < 0) { d->phase = 3; return; }       /* damaged directory: stop listing */
+                    if (r < 0) { read_err(u, 74, 0, 0); d->phase = 3; return; }   /* damaged directory: stop listing */
                     if (r == 0) break;
                     if (d->has_pat && !d64_match(e.name, d->pat)) continue;
                     d64_bas_entry(&b, e.blocks, e.name, DIRTYPES[e.type & 7], (e.type & 0x80) != 0, (e.type & 0x40) != 0);
@@ -407,11 +416,11 @@ VD_COLD static int rel_read(vd_unit_t *u, vd_rel_t *l, uint8_t *b, int *eoi)
         l->rlen = 1;
         for (uint8_t i = 0; i < l->f.reclen; i++) {
             uint8_t x;
-            if (d64_rel_get(u->disk, &l->f, base + i, &x)) { set_err(u, 21, 0, 0); return 0; }
+            if (d64_rel_get(u->disk, &l->f, base + i, &x)) { read_err(u, 21, 0, 0); return 0; }
             if (x) l->rlen = (uint8_t)(i + 1);
         }
     }
-    if (d64_rel_get(u->disk, &l->f, base + l->pos, b)) { set_err(u, 21, 0, 0); return 0; }
+    if (d64_rel_get(u->disk, &l->f, base + l->pos, b)) { read_err(u, 21, 0, 0); return 0; }
     l->pos++;
     if (l->pos >= l->rlen) { *eoi = 1; l->rec++; l->pos = 0; l->rlen = 0; }
     return 1;
@@ -666,7 +675,7 @@ VD_COLD static void cmd_block_io(vd_unit_t *u, const char *p, const char *end, i
         if (r == D64_E_RO) set_err(u, 26, t, s);
         else if (r) set_err(u, 25, t, s);
     } else {
-        if (d64_block_read(u->disk, t, s, c->u.b.buf)) set_err(u, 21, t, s);
+        if (d64_block_read(u->disk, t, s, c->u.b.buf)) read_err(u, 21, t, s);   /* a bad sector's data is still in the buffer */
         c->u.b.pos = 0;
     }
 }
@@ -883,6 +892,7 @@ VD_COLD static int read_byte(vdrive_t *v, int unit, vd_unit_t *u, vd_chan_t *c, 
 {
     if (c->mode == 1) {
         int n = d64_file_read(u->disk, &c->u.r, b, 1);
+        if (n < 0) read_err(u, 74, 0, 0);
         if (n <= 0) return 0;
         *eoi = d64_file_eof(&c->u.r);
         return 1;
@@ -941,6 +951,7 @@ VD_COLD int vdrive_mailbox(vdrive_t *v, uint8_t cmd, uint8_t arg, uint8_t *data,
         int unit = vdrive_unit_for(v, arg);
         if (unit >= 0) {
             v->act = (int8_t)unit;
+            if (v->unit[unit].disk) v->unit[unit].disk->bad = 0;   /* a bad sector some earlier step read and did not report */
             if (!v->unit[v->act].present) { v->act = 2; *st = ST_NODEV; }
             return 0;
         }

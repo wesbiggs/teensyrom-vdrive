@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.9.0.32
+
+### Added
+- Bad sectors from the image's error table: a `.d64` / `.d71` / `.d81` with the trailing error-info bytes (175,531 / 197,376 /
+  351,062 / 822,400 bytes) now fails reads of the sectors it marks bad, as a real drive does, so copy protection that reads a bad
+  sector with `U1` and checks the error channel works. Each byte maps to the DOS error (`2`..`6`, `9`, `11`, `15` = `20`..`24`, `27`,
+  `29`, `74`); the error channel shows it with the bad sector's track and sector (`23,READ ERROR,17,00`). A `U1` of a bad sector still
+  fills the buffer with the image's data, as VICE does. A `LOAD` or `GET#` stops at the bad sector (fast `LOAD`: `ST` = `$42`), and a bad
+  directory or BAM sector cuts the listing or fails the write. The write errors in the table (`25`, `26`, `28`) are not emulated, and
+  writing to a bad sector does not repair it. The firmware keeps the table in RAM2 (683 to 3,200 bytes) only when it marks a sector bad
+  (`docs/DESIGN.md` section 35). Unit and firmware glue host tests; not in VICE or on hardware.
+
 ## v0.9.0.31
 
 ### Added

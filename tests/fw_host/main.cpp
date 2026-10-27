@@ -409,6 +409,15 @@ int main(int argc, char **argv)
     check("... 1328 blocks free on a blank 1571 side-by-side count", d.find("BLOCKS FREE") != std::string::npos);
     check("path through an image: LOAD\"/BIG.D81/H81\"", fast_load(8, "/BIG.D81/H81", &rc) == std::string("\x01\x08") + "d81!" && rc == 0 && vdUnit[0].d.fmt == D64_FMT_D81);
     check("a saved D81 file is on the image after the flush (reopen)", (cmd15("CD:/"), cmd15("CD:BIG.D81"), fast_load(8, "SAVED81", &rc).size() == 5002));
+    cmd15("CD:/"); status15();
+    cmd15("CD:BAD.D64"); check("an image with an error table mounts, the table is kept (it marks a sector bad)", status15() == "00, OK,00,00\r" && vdUnit[0].errTab && vdUnit[0].d.errtab);
+    check("LOAD of a file starting on a bad sector fails", fast_load(8, "BADF", &rc).empty() && rc == 4);
+    check("... the error channel names the code and sector", status15() == "23,READ ERROR,17,00\r");
+    check("a file on good sectors of the same image loads", fast_load(8, "GOODF", &rc) == std::string("\x01\x08") + "good" && rc == 0 && status15() == "00, OK,00,00\r");
+    cmd15("CD:/"); check("unmount drops the table", status15() == "00, OK,00,00\r" && !vdUnit[0].errTab);
+    cmd15("CD:OKTAB.D64"); check("an all-OK error table is not kept", status15() == "00, OK,00,00\r" && vdUnit[0].mounted && !vdUnit[0].errTab);
+    check("... and the image lists", fast_load(8, "$").find("OKTAB") != std::string::npos);
+    cmd15("CD:/"); status15();
     cmd15("UI"); check("UI answers 73", status15().rfind("73,", 0) == 0);
     cmd15("CD:/"); status15();
 

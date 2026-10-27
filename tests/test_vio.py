@@ -97,6 +97,21 @@ class VioTests(unittest.TestCase):
         self.assertEqual(self.io.fast_load(11, b"X")[0], "notmine")
         self.assertEqual(self.io.fast_load(8, b"BIG")[0], 0)               # still works afterwards
 
+    def test_fast_load_stops_at_a_bad_sector_with_st_42(self):
+        raw = self.disk.dump()
+        e = [x for x in self.disk.entries() if x["name"] == b"BIG"][0]
+        t, s = e["track"], e["sector"]
+        off = LIB.d64_sector_offset(self.disk.d, t, s); t, s = raw[off], raw[off + 1]       # BIG's second sector
+        tab = bytearray([1] * 683); tab[LIB.d64_sector_offset(self.disk.d, t, s) // 256] = 5
+        io = VIO(); io.attach(0, Disk(raw + bytes(tab))); io.attach(1, None, present=False)
+        io.win_write(b"BIG")
+        self.assertEqual(io.call(F_LOAD_OPEN, 8, 3)[1], 0)
+        data, st = b"", 0
+        while not st & 0x40:
+            _, n, st = io.call(F_LOAD_BLK); data += io.win_read(n)
+        self.assertEqual((st, data), (0x42, self.files[b"BIG"][2:254]))
+        self.assertEqual(io.fast_load(8, b"HUGE")[0], 0)                    # the bus is clean afterwards
+
     def test_fast_load_directory(self):
         rc, addr, data = self.io.fast_load(8, b"$")
         self.assertEqual((rc, addr), (0, 0x0401))

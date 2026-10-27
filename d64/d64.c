@@ -49,7 +49,7 @@ VD_COLD static void geometry(d64_t *d, uint8_t tracks)
 VD_COLD static int mem_write(void *ctx, uint8_t t, uint8_t s, const uint8_t *buf)
 {
     d64_mem_t *m = (d64_mem_t *)ctx;
-    d64_t tmp = { 0, 0, 0, 0, 0, 0 };
+    d64_t tmp; memset(&tmp, 0, sizeof tmp);
     if (classify(m->len, &tmp.tracks, &tmp.fmt)) return -1;
     long off = d64_sector_offset(&tmp, t, s);
     if (off < 0 || (size_t)off + D64_SECTOR > m->len) return -1;
@@ -60,7 +60,7 @@ VD_COLD static int mem_write(void *ctx, uint8_t t, uint8_t s, const uint8_t *buf
 VD_COLD static int mem_read(void *ctx, uint8_t t, uint8_t s, uint8_t *buf)
 {
     d64_mem_t *m = (d64_mem_t *)ctx;
-    d64_t tmp = { 0, 0, 0, 0, 0, 0 };
+    d64_t tmp; memset(&tmp, 0, sizeof tmp);
     if (classify(m->len, &tmp.tracks, &tmp.fmt)) return -1;
     long off = d64_sector_offset(&tmp, t, s);
     if (off < 0 || (size_t)off + D64_SECTOR > m->len) return -1;
@@ -71,6 +71,7 @@ VD_COLD void d64_mem_init(d64_mem_t *m, uint8_t *data, size_t len) { m->data = d
 VD_COLD int d64_open(d64_t *d, d64_read_fn rd, void *ctx, uint8_t tracks)
 {
     d->read = rd; d->write = NULL; d->ctx = ctx; d->ro = 0;
+    d->errtab = NULL; d->bad = d->bad_t = d->bad_s = 0;
     geometry(d, tracks);
     return 0;
 }
@@ -80,18 +81,41 @@ VD_COLD int d64_open_size(d64_t *d, d64_read_fn rd, void *ctx, size_t size)
     if (classify(size, &tracks, &fmt)) return -1;
     return d64_open(d, rd, ctx, tracks);
 }
+VD_COLD int d64_sectors(const d64_t *d)
+{
+    int n = 0;
+    for (uint8_t t = 1; t <= d->tracks; t++) n += spt(d, t);
+    return n;
+}
+VD_COLD long d64_errtab_offset(const d64_t *d, size_t size)
+{
+    size_t n = (size_t)d64_sectors(d);
+    return size == n * (D64_SECTOR + 1) ? (long)(n * D64_SECTOR) : -1;
+}
+VD_COLD int d64_errcode(uint8_t e)
+{
+    static const uint8_t code[16] = { 0, 0, 20, 21, 22, 23, 24, 0, 0, 27, 0, 29, 0, 0, 0, 74 };
+    return e < 16 ? code[e] : 0;
+}
 VD_COLD int d64_open_mem(d64_t *d, d64_mem_t *m)
 {
     int r = d64_open_size(d, mem_read, m, m->len);
     if (r) return r;
     d->write = mem_write;
+    long eo = d64_errtab_offset(d, m->len);
+    if (eo >= 0) d->errtab = m->data + eo;
     return 0;
 }
 
 VD_COLD static int rd(d64_t *d, uint8_t t, uint8_t s, uint8_t *b)
 {
-    if (d64_sector_offset(d, t, s) < 0) return D64_E_IO;
-    return d->read(d->ctx, t, s, b) ? D64_E_IO : 0;
+    long off = d64_sector_offset(d, t, s);
+    if (off < 0) return D64_E_IO;
+    if (d->read(d->ctx, t, s, b)) return D64_E_IO;
+    int e = d->errtab ? d64_errcode(d->errtab[off / D64_SECTOR]) : 0;
+    if (!e) return 0;
+    if (!d->bad) { d->bad = (uint8_t)e; d->bad_t = t; d->bad_s = s; }
+    return D64_E_BADSEC;
 }
 VD_COLD static int wr(d64_t *d, uint8_t t, uint8_t s, const uint8_t *b)
 {

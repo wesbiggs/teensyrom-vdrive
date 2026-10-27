@@ -29,7 +29,8 @@ enum {
     D64_E_LOCKED = -7,   /* file is locked             -> DOS 26 */
     D64_E_NOTFOUND = -8, /* file not found             -> DOS 62 */
     D64_E_TYPE = -9,     /* file type mismatch         -> DOS 64 */
-    D64_E_TOOBIG = -10   /* REL file at its size limit -> DOS 52 */
+    D64_E_TOOBIG = -10,  /* REL file at its size limit -> DOS 52 */
+    D64_E_BADSEC = -11   /* the image's error table marks the sector bad: DOS code in d64_t.bad (20-24, 27, 29, 74) */
 };
 
 enum { D64_FMT_D64 = 0, D64_FMT_D71 = 1, D64_FMT_D81 = 2 };
@@ -41,6 +42,11 @@ typedef struct {
     uint8_t     tracks;          /* 35 or 40 (d64), 70 (d71), 80 (d81) */
     uint8_t     fmt;             /* D64_FMT_* */
     uint8_t     ro;              /* write protect set from the C64 (W-1): writes fail as on a read-only image; d64_open clears it */
+    /* Error table (the byte per sector some images carry after the data, as written by copiers / VICE): NULL = none. A read of a
+     * sector whose byte is a read error fails with D64_E_BADSEC, after the data was fetched into the buffer (as VICE does), and the
+     * first such failure is kept in bad / bad_t / bad_s until the caller clears bad. Writes ignore the table. d64_open clears it. */
+    const uint8_t *errtab;
+    uint8_t     bad, bad_t, bad_s;
 } d64_t;
 
 typedef struct {
@@ -105,6 +111,12 @@ void d64_mem_init(d64_mem_t *m, uint8_t *data, size_t len);
 int  d64_open_mem(d64_t *d, d64_mem_t *m);          /* image size selects the format */
 int  d64_open(d64_t *d, d64_read_fn rd, void *ctx, uint8_t tracks);   /* tracks: 35/40 = d64, 70 = d71, 80 = d81 */
 int  d64_open_size(d64_t *d, d64_read_fn rd, void *ctx, size_t file_size);   /* format from the file size (error bytes allowed); -1 if too small */
+/* Error table: d64_errtab_offset = where it starts in a file of this size (-1: the file has none; after d64_open_size), d64_sectors =
+ * the image's sector count (= the table's length). d64_open_mem sets errtab itself. d64_errcode: an error byte -> DOS code, 0 = no
+ * read error (1 = OK; 2..6, 9, 11, 15 = 20..24, 27, 29, 74; the write errors 25 / 26 / 28 and unknown bytes read fine). */
+long d64_errtab_offset(const d64_t *d, size_t file_size);
+int  d64_sectors(const d64_t *d);
+int  d64_errcode(uint8_t errbyte);
 
 int  d64_sectors_in_track(const d64_t *d, uint8_t track);   /* 0 if invalid */
 long d64_sector_offset(const d64_t *d, uint8_t track, uint8_t sector); /* byte offset in image, -1 if invalid */

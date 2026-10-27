@@ -94,17 +94,17 @@ VD_COLD static void fload_blk(vio_t *v)
     v->h->data = 0; v->h->st = 0x40;                       /* default: EOI, empty */
     if (!v->fl_active) return;
     if (v->fl_eof) { close_chan(v, v->fl_dev, 0xE0); v->fl_active = 0; return; }
-    int eof = 0;
+    int eof = 0, tmo = 0;
     bus(v, VD_TALK, v->fl_dev, 0); bus(v, VD_TKSA, 0x60, 0);
     while (n < VIO_WIN) {
         int st = bus(v, VD_ACPTR, 0, &d);
-        if (st & 0x02) { eof = 1; break; }
+        if (st & 0x02) { eof = 1; tmo = 1; break; }       /* a read error (bad sector): the load ends here, ST shows $42 */
         v->h->window[n++] = d;
         if (st & 0x40) { eof = 1; break; }
     }
     bus(v, VD_UNTLK, 0, 0);
     v->h->data = n;
-    v->h->st = eof ? 0x40 : 0;
+    v->h->st = (uint8_t)(eof ? (tmo ? 0x42 : 0x40) : 0);
     if (eof) { close_chan(v, v->fl_dev, 0xE0); v->fl_active = 0; }
 }
 

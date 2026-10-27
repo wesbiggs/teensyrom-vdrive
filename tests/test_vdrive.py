@@ -1,4 +1,4 @@
-import pathlib, random, shutil, subprocess, sys, tempfile, unittest
+import ctypes, pathlib, random, shutil, subprocess, sys, tempfile, unittest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / 'tools'))
 from d64py import LIB, Disk, VDrive, VD_LISTEN, VD_TALK, VD_CIOUT, VD_ACPTR
 
@@ -436,6 +436,124 @@ class VDriveTests(unittest.TestCase):
         vd = VDrive(); vd.attach(0, None, present=True)
         vd.open(8, 2, b"X")
         self.assertTrue(vd.status().startswith("74,DRIVE NOT READY"))
+
+
+class BadSectorTests(unittest.TestCase):
+    """Images with an error table (one byte per sector after the data): reads of a sector marked bad fail as on a real drive."""
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+        self.img = self.tmp / "d.d64"
+        subprocess.run(["c1541", "-format", "bad,bd", "d64", str(self.img)], capture_output=True, check=True)
+        self.first = b"\x01\x08" + bytes(range(256)) * 3                # 770 bytes: 4 sectors
+        (self.tmp / "first").write_bytes(self.first)
+        (self.tmp / "second").write_bytes(b"\x01\x08second")
+        c1541(self.img, "-write", str(self.tmp / "first"), "first", "-write", str(self.tmp / "second"), "second")
+        self.raw = self.img.read_bytes()
+        plain = Disk(self.raw)
+        self.chain = []                                                   # FIRST's sectors
+        t, s = plain.entries()[0]["track"], plain.entries()[0]["sector"]
+        while t:
+            self.chain.append((t, s)); off = LIB.d64_sector_offset(plain.d, t, s); t, s = self.raw[off], self.raw[off + 1]
+        self.plain = plain
+
+    def tearDown(self): shutil.rmtree(self.tmp)
+
+    def index(self, t, s): return LIB.d64_sector_offset(self.plain.d, t, s) // 256
+
+    def drive(self, bad, raw=None, n=683):
+        tab = bytearray([1] * n)
+        for (t, s), code in bad.items(): tab[self.index(t, s)] = code
+        self.disk = Disk((raw or self.raw) + bytes(tab))
+        self.vd = VDrive(); self.vd.attach(0, self.disk); self.vd.attach(1, None, present=False)
+        return self.vd
+
+    def cmd(self, text): self.vd.listen(8, 0x6F, text); return self.vd.status()
+
+    def test_error_table_offset_for_every_size(self):
+        for size, eo in ((174848, -1), (175531, 174848), (196608, -1), (197376, 196608), (349696, -1), (351062, 349696),
+                         (819200, -1), (822400, 819200), (175000, -1)):
+            with self.subTest(size=size):
+                d = ctypes.create_string_buffer(LIB.d64_sizeof_d64())
+                self.assertEqual(LIB.d64_open_size(d, None, None, ctypes.c_size_t(size)), 0)
+                self.assertEqual(LIB.d64_errtab_offset(d, ctypes.c_size_t(size)), eo)
+
+    def test_error_byte_codes(self):
+        expect = {0: 0, 1: 0, 2: 20, 3: 21, 4: 22, 5: 23, 6: 24, 7: 0, 8: 0, 9: 27, 10: 0, 11: 29, 12: 0, 15: 74, 16: 0, 255: 0}
+        self.assertEqual({e: LIB.d64_errcode(e) for e in expect}, expect)
+
+    def test_all_ok_table_reads_normally(self):
+        vd = self.drive({})
+        self.assertEqual(vd.load(8, b"FIRST"), self.first); self.assertEqual(vd.status(), "00, OK,00,00\r")
+
+    def test_load_stops_at_the_bad_sector_and_reports_it(self):
+        vd = self.drive({self.chain[2]: 5})
+        data = vd.load(8, b"FIRST")
+        self.assertEqual(data, self.first[:2 * 254])                     # the two good sectors before it
+        t, s = self.chain[2]
+        self.assertEqual(vd.status(), "23,READ ERROR,%02d,%02d\r" % (t, s))
+        self.assertEqual(vd.load(8, b"SECOND"), b"\x01\x08second"); self.assertEqual(vd.status(), "00, OK,00,00\r")
+
+    def test_first_sector_bad_sends_nothing(self):
+        vd = self.drive({self.chain[0]: 3})
+        vd.open(8, 2, b"FIRST")
+        data, last = vd.talk(8, 0x62)
+        self.assertEqual((data, last & 0x02), (b"", 0x02))
+        self.assertEqual(vd.status(), "21,READ ERROR,%02d,%02d\r" % self.chain[0])
+
+    def test_block_read_of_a_bad_sector_reports_it_and_keeps_the_data(self):
+        t, s = self.chain[1]
+        vd = self.drive({(t, s): 5})
+        vd.open(8, 5, b"#")
+        self.assertEqual(self.cmd(b"U1:5 0 %d %d" % (t, s)), "23,READ ERROR,%02d,%02d\r" % (t, s))
+        off = LIB.d64_sector_offset(self.disk.d, t, s)
+        self.assertEqual(vd.talk(8, 0x65)[0], self.raw[off:off + 256])
+        self.assertEqual(self.cmd(b"U1:5 0 18 0"), "00, OK,00,00\r")
+
+    def test_every_read_error_code_on_the_error_channel(self):
+        for byte, code in ((2, 20), (3, 21), (4, 22), (5, 23), (6, 24), (9, 27), (11, 29), (15, 74)):
+            with self.subTest(byte=byte):
+                vd = self.drive({(1, 0): byte}); vd.open(8, 5, b"#")
+                msg = {29: "DISK ID MISMATCH", 74: "DRIVE NOT READY"}.get(code, "READ ERROR")
+                self.assertEqual(self.cmd(b"U1:5 0 1 0"), "%02d,%s,01,00\r" % (code, msg))
+        for byte in (0, 7, 8, 10, 12):                                   # write errors and unknown bytes read fine
+            with self.subTest(byte=byte):
+                vd = self.drive({(1, 0): byte}); vd.open(8, 5, b"#")
+                self.assertEqual(self.cmd(b"U1:5 0 1 0"), "00, OK,00,00\r")
+
+    def test_bad_directory_sector_cuts_the_listing(self):
+        vd = self.drive({(18, 1): 2})
+        d = vd.load(8, b"$")
+        self.assertNotIn(b'"FIRST"', d)
+        self.assertEqual(vd.status(), "20,READ ERROR,18,01\r")
+        vd.open(8, 2, b"FIRST"); self.assertEqual(vd.status(), "20,READ ERROR,18,01\r")
+
+    def test_bad_bam_fails_a_save_and_leaves_the_image_alone(self):
+        vd = self.drive({(18, 0): 9})
+        before = self.disk.dump()
+        vd.save(8, b"NEW", b"\x01\x08new")
+        self.assertEqual(vd.status(), "27,READ ERROR,18,00\r")
+        self.assertEqual(self.disk.dump(), before)
+
+    def test_a_bad_sector_read_and_not_reported_does_not_stick(self):
+        vd = self.drive({self.chain[3]: 5})
+        vd.open(8, 2, b"FIRST"); vd.talk(8, 0x62, 10)                    # stops long before the bad sector
+        vd.close(8, 2)
+        self.assertEqual(vd.status(), "00, OK,00,00\r")
+        LIB.d64_block_read(self.disk.d, *self.chain[3], ctypes.create_string_buffer(256))   # host-side read, not reported
+        vd.open(8, 2, b"SECOND"); self.assertEqual(vd.talk(8, 0x62)[0], b"\x01\x08second")
+        self.assertEqual(vd.status(), "00, OK,00,00\r")
+
+    def test_d81_error_table(self):
+        img = self.tmp / "d.d81"
+        subprocess.run(["c1541", "-format", "bad,bd", "d81", str(img)], capture_output=True, check=True)
+        c1541(img, "-write", str(self.tmp / "first"), "first")
+        raw = img.read_bytes()
+        plain = Disk(raw); t, s = plain.entries()[0]["track"], plain.entries()[0]["sector"]
+        tab = bytearray([1] * 3200); tab[LIB.d64_sector_offset(plain.d, t, s) // 256] = 4
+        disk = Disk(raw + bytes(tab))
+        vd = VDrive(); vd.attach(0, disk); vd.attach(1, None, present=False)
+        self.assertEqual(vd.load(8, b"FIRST"), b"")
+        self.assertEqual(vd.status(), "22,READ ERROR,%02d,%02d\r" % (t, s))
 
 
 if __name__ == "__main__":
