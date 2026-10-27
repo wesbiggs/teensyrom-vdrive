@@ -21,7 +21,7 @@ Firmware integration and usage: `firmware/README.md`.
   scratch / rename / `N:`, paths (`LOAD"$/dir/image.d64"`, `$==`), auto-mount and remembered mounts (`/.vdrive` sidecar), VDrive+SwiftLink, remote get/set with
   `trvdrive` while a program runs, `trls` while a program runs, the image swap, and the sidecar reporting with the TR menu showing (`"running":false`).
   Also: *Quest for the King* (`VAULTTEST` clean, plays and loads/saves) and CCGMS over TCP (see the Kernal Replace fixes below).
-  The automatic bus scan with a real 1541-II on the bus, DIP-switched to several device numbers in turn: the SD/USB drives took the free numbers as documented.
+  `.d81` images on the card (mounted through the TR menu). The automatic bus scan with a real 1541-II on the bus, DIP-switched to several device numbers in turn: the SD/USB drives took the free numbers as documented.
 * **`VDCOPY` (util/, `make util`):** pure machine code (`util/vdcopy.s`; first a BASIC program with a machine-code chunk loop, rewritten because the BASIC directory read and per-file work were slow) copying files in 2 KB chunks between any two units (real drive, SD, USB; either direction); tested in VICE with a true-drive 1541 at 8 and the SD drive at 9
   (`vdrive_mock.py scan`: copy all, skip existing, replace, list/range selection, SD to USB, SD to 1541 and back, 1541 to USB; byte-exact PRG and SEQ), **on hardware (owner): the BASIC version worked vdrive to vdrive and vdrive to 1541; the machine-code rewrite is not on hardware yet**. Building it found a real-drive bug: the UNLSN hook at `$EDFE` overwrote the
   operand of the `BIT` that stock UNTLK falls through, so the real drive never got UNTALK (garbled bytes in `GET#` after the first `CLRCHN`). `hk_untlk` now spells the whole routine out. Any KERNAL image built before
@@ -31,7 +31,7 @@ Firmware integration and usage: `firmware/README.md`.
 * **VDrive Config.prg (0.9.0.18, `util/vdconfig.bas`, docs/DESIGN.md 23): NOT run on a C64 or in VICE (no ROM in the cloud session); host-tested only** in `tests/test_vdconfig.py` (a small BASIC V2 interpreter, `tests/basic_interp.py`,
   against a drive model), plus the new `"!CONFIG"` / `"!STATE"` host text channels in `tests/test_vio.py` and `tests/fw_host`. First hardware run: check cursor keys, the colour cells, the browser listing of a large folder and `GET#` of the listing.
 * **Not yet checked on hardware:** the time the bus scan adds to the first access,
-  `.d81` mounting on the card, `.d71` at all, `STATUS` compared with a real drive, IRQ/STOP-key interplay during loads.
+  `.d71` at all, `STATUS` compared with a real drive, IRQ/STOP-key interplay during loads.
 * **BASIC test programs** (`tests/basic/`, built into `build/testdisk/vdtest.d64` by `make testdisk`) run inside VICE in `make test` and on the C64; they
   found two real bugs that unit tests missed: `CIOUT` must return `A` = the byte sent (CHROUT tail-jumps into it; BASIC's PRINT broke after a
   number), and `U0>` must also be accepted with PRINT#'s trailing CR.
@@ -60,7 +60,7 @@ Firmware integration and usage: `firmware/README.md`.
     (`VDrive_RemoteStatus` / `VDrive_RemoteSet` in `firmware/IOH_VDrive.c`, dispatcher text in `firmware/vdrive_remote.inc`, docs/DESIGN.md 20). No 6502-side flag: channels live on the Teensy. Client: `trvdrive` in `../teensyrom-rcp`.
   * 0.9.0.12: slashes collapsed on mount and in `VD_PathFor` (the menu hands USB paths over with a doubled slash); with the menu showing, get reports the unit's `/.vdrive` image (`"running":false`)
     and set validates an image and rewrites the sidecar, so the next start mounts it.
-  * Auto-mount (0.9.0.2): a program launched from inside a `.d64` opened in the TR menu (`DriveDirPath` ends in `*`, menu source SD/USB) gets that image mounted by `VDrive_PreStart()` on the matching unit (SD=8, USB=9), its folder as the `CD:` directory.
+  * Auto-mount (0.9.0.2): a program launched from inside a `.d64`/`.d71`/`.d81` opened in the TR menu (the menu browses all three; owner tried `.d64` and `.d81`) (`DriveDirPath` ends in `*`, menu source SD/USB) gets that image mounted by `VDrive_PreStart()` on the matching unit (SD=8, USB=9), its folder as the `CD:` directory.
   * Remembered mounts (0.9.0.3): each unit keeps `/.vdrive` (dot-named, so TR 0.9+ and our listing hide it) on its own card, holding the last mounted image path. Written on every successful mount, removed on any unmount (`CD:_`, `CD:/`), read in `VDrive_PreStart()` when the launch did not come from a disk image on that unit. A missing/invalid image just starts unmounted.
 * **Bus timing margin (found with `tests/asm/bustest.s`, BUSTEST on the test disk):** on a real C64 the IO1/IO2 handlers answered late about once in 8000 (IO1) / 30000 (IO2)
   reads, giving bit-mixed or `$00` bytes (corrupt `SEQTEST`/`GETRAW`/directory listings); the stock ROM path was clean, so the cause is the number of cycles before the
@@ -73,7 +73,7 @@ Firmware integration and usage: `firmware/README.md`.
 * 0.9.0.21: append (`,A`; `d64_append`, a disk full restores the file; docs/DESIGN.md 26). Unit tests and `DOS2TEST` in VICE; not on hardware.
 * 0.9.0.22: `V`alidate rebuilds the BAM (`d64_validate`, splats deleted, REL side sectors kept; byte-identical to `c1541 -validate`; docs/DESIGN.md 27). Unit tests and `DOS2TEST` in VICE; not on hardware.
 * 0.9.0.23: `L:name` (toggle lock) and `W-1`/`W-0` (write protect, `d64_t.ro`), CMD syntax (docs/DESIGN.md 28). Unit tests and `DOS2TEST` in VICE; not on hardware.
-* 0.9.0.24: new images, `N:NAME.D64,ID` (or `.D71`/`.D81`) with nothing mounted (host callback `create`, glue `VD_Create`, `d64_format_blank`; docs/DESIGN.md 29). Unit and glue host tests.
+* 0.9.0.24: new images, `N:NAME.D64,ID` (or `.D71`/`.D81`) with nothing mounted (host callback `create`, glue `VD_Create`, `d64_format_blank`; docs/DESIGN.md 29). Unit and glue host tests; **works on hardware (owner)**. The time a D81 takes on a slow USB stick against the KERNAL's ~1.6 s mailbox wait is not measured.
 * 0.9.0.25: plain files on the card with nothing mounted (`LOAD"GAME.PRG"`, `"GAME"`, patterns, folder paths; host callbacks `plain_open`/`plain_read`/`plain_close`, channel mode 9; docs/DESIGN.md 30). Reading only. Unit and glue host tests.
 * 0.9.0.26: `MD:`/`RD:` folders on the card with nothing mounted (host `mkdir`/`rmdir`; docs/DESIGN.md 31). Unit and glue host tests.
 * 0.9.0.28: Special IO "VDrive+Swift+REU" (`firmware/IOH_VDriveSwiftREU.c`, docs/DESIGN.md 32): drive + SwiftLink + a 128 KB REU (RAM1 image + leftover RAM2). The IO2 window shrank to
@@ -162,9 +162,9 @@ The full `make test`, VICE runs included, works in a cloud session; do not skip 
 * PETSCII quirk when building fixtures with `c1541`: give it lower-case names to get unshifted (default-mode upper-case) PETSCII.
 
 ## Next steps
-1. **Finish bring-up**: the "Not yet checked on hardware" list under Status (`.d81`/`.d71`, `STATUS`, IRQ/STOP-key during loads). The core path has passed, so the items below can
+1. **Finish bring-up**: the "Not yet checked on hardware" list under Status (`.d71`, `STATUS`, IRQ/STOP-key during loads). The core path has passed, so the items below can
    start once the owner agrees; mind that the patch changes under any build in progress.
-2. **Create new images**: done in 0.9.0.24 (`N:FILE.D64,ID` with nothing mounted; docs/DESIGN.md 29), not on hardware yet: check the time a D81 takes
+2. **Create new images**: done in 0.9.0.24 (`N:FILE.D64,ID` with nothing mounted; docs/DESIGN.md 29), works on hardware; still to check: the time a D81 takes
    on a USB stick against the KERNAL's ~1.6 s mailbox wait.
 3. **BASIC utility** (~40 lines, kept as `.bas` text and converted with `petcat` in the Makefile): list the current directory, pick by number (mount an
    image, open a folder, `..`), "new image", "unmount", and show the device numbers (`PEEK(56854)`). Much of what it would do is now one `LOAD"$path"`.

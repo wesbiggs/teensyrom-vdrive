@@ -20,6 +20,11 @@ It has two halves:
 The test suite runs primarily on VICE, with the TeensyROM+ mocked. Not all combinations of real-world devices have been tested. It works on my real C64 NTSC breadbin with a TR+, with or without a real 1541-][ drive. See the Status section of [CLAUDE.md](CLAUDE.md) for exactly what has and has not been checked on hardware. Testers are welcome!
 Please raise a GitHub issue if you find a non-working configuration.
 
+Newer features pass the host tests and VICE but have **not yet been run on a real C64**: direct sector access, `C:` copy, REL files, append,
+`V` validate, `L:` / `W-` lock and write protect, plain files from the card, `MD:` / `RD:`, the Alt button, VDrive Config, the machine-code
+VDCOPY, the default device 8, and `.d71` images. The test disk (`make testdisk`, see
+[Building and testing](#building-and-testing)) has a BASIC test program for most of them.
+
 The original TR does not have the Kernal Replace functionality needed for this software, though it may be possible in the future to create a more limited TR-compatible version. 
 The C128 is not yet supported, but this is likely possible in the future.
 
@@ -51,6 +56,11 @@ The C64's ability to read the 8 KB of RAM under KERNAL ROM ($E000-$FFFF) is used
    The patch adds `Fab04_VDrive` (enabled next to `Fab04_KernalReplace` in `Common_Defs.h`), a new Special IO
    `IOH_VDrive` ("VDrive KERNAL"), `IOH_VDriveSwift` ("VDrive+SwiftLink") and `IOH_VDriveSwiftREU` ("VDrive+Swift+REU"), the library under `MinimalBoot/Common/vdrive/`, and one condition in
    `KERNALPreStart()` so the KERNAL image is loaded when this Special IO is selected.
+
+   Build with `arduino-cli` and the Teensy core `teensy:avr@1.61.0` (library `CRC32@2.0.1`). **Do not use Teensyduino 1.62.0**: SD reads
+   stall with it. The easiest way to flash is to copy the resulting `.hex` to the SD card and select it in the TR menu (flashing over USB needs
+   the Teensy's program button, since the TR has no soft reboot). The build is stamped `<stock>.<rev>`, e.g. `0.9.0.29`: that number shows in
+   the C64 menu title and in the hex file name (`TeensyROM+_0.9.0.29_full.hex`), so you can tell a VDrive build from a stock `0.9` one.
 3. On the C64: in the TR file browser select the image and press `<Shift-K>`; in Settings choose Special IO
    **VDrive KERNAL** (`a`/`A`); then start BASIC (`F2`) or launch a PRG.
 
@@ -92,9 +102,9 @@ The examples here use `8` as an illustration only, and work the same on both SD 
 | `OPEN15,8,15,"CD:/GAMES/G.D81"` | Paths work: absolute (leading `/`) or relative, folders and an image in one go |
 | `OPEN15,8,15,"S:OLD*"` | Scratch |
 | `OPEN15,8,15,"N:NAME,ID"` | Format the mounted disk |
-| `OPEN15,8,15,"N:NAME.D64,ID"` | With nothing mounted: create a new blank image (`.D64`, `.D71` or `.D81`) in the current folder (or `N:/DIR/NAME.D64`), mount it and format it with disk name `NAME` (ID `00` if left out). Never replaces an existing file (63) |
+| `OPEN15,8,15,"N:NAME.D64,ID"` | With nothing mounted: create a new blank image (`.D64`, `.D71` or `.D81`) in the current folder (or `N:/DIR/NAME.D64`), mount it and format it with disk name `NAME` (ID `00` if left out). Never replaces an existing file (63). A `.D81` on a slow USB stick may take longer than the KERNAL waits (about 1.6 s; not measured yet) |
 | `OPEN15,8,15,"R:NEW=OLD"` | Rename a file |
-| `OPEN15,8,15,"UI"` / `"UJ"` | Reset (status 73) |
+| `OPEN15,8,15,"UI"` / `"UJ"` / `"U9"` | Reset (status 73); `UI+` / `UI-` (bus speed) are accepted and do nothing |
 
 (Don't forget to `CLOSE15` with the above.)
 
@@ -114,7 +124,8 @@ before are restored when the listing is closed). `$==` is what selects.
 | `LOAD"$==T",8` | Enter a folder called `T` (or `P`) |
 
 `$==path` (also `$:==path`, `$0:==path`) always means a path, even without a `/` or an image suffix. A single `=`, as in `$=T` / `$=P`, stays a
-CBM listing modifier and is not a path. With an image mounted, a bare name is a file inside it; leave with `CD:←` (or use a path containing a `/`).
+CBM listing modifier and is not a path. With an image mounted, a bare name is a file inside it, and so is a name with a `/` in it (`A/B` is a legal CBM file name). Only a leading `/`,
+a component with an image suffix (`X.D64/`) or `..` makes it a path; leave the image with `CD:←`.
 
 ### Device numbers
 The KERNAL image contains no device numbers, so one image serves every setup. Device number assignment is automatic by default: on the first disk access of a run (the first `LISTEN` / `TALK` / `LOAD` / `SAVE`, so after the program has been
@@ -137,7 +148,7 @@ The accepted range is 8-30 (a number outside that range, or the other unit's num
 unit by the scan; every other device number keeps using the real IEC code. However, if you set one of the VDrives to the same number as a real device, the real device will be hidden and inaccessible.
 
 ### Images and mount points
-Image formats: `.d64` (35/40 tracks), `.d71` (1571, 70 tracks) and `.d81` (1581; root directory only, no sub-directories) are recognised by file size and extension; files may carry the trailing error-info bytes.
+Image formats: `.d64` (35/40 tracks), `.d71` (1571, 70 tracks) and `.d81` (1581; root directory only, no sub-directories) are recognised by file size and extension; files may carry the trailing error-info bytes, but they are ignored (no read errors 21-29 come from the image).
 Opening a `.dXX` in the TeensyROM menu and launching a program from it mounts that image automatically on device 8 (SD) or 9 (USB), so the program's own LOADs find its files; `CD:←` unmounts it. The last mounted image of each drive is also remembered in a hidden `/.vdrive` file on that card and mounted again at the next start (any unmount forgets it).
 The USB drive works the same. Any other device number uses the real IEC bus untouched.
 
@@ -178,16 +189,19 @@ With the TR menu showing (no program running) the same commands show and change 
 | REL files | `OPEN 2,8,2,"NAME,L,"+CHR$(len)`, `P` positioning, `PRINT#` one record, `INPUT#`/`GET#`; D64/D71 up to 720 blocks, D81 with super side sectors |
 | `V` validate | Rebuilds the BAM from the files (REL side sectors included); unclosed files are deleted, as on a real drive |
 | `L:name` lock, `W-1` / `W-0` write protect | CMD-drive syntax. `L` toggles the lock flag (`<`, the file cannot be scratched); `W-1` makes the mounted image read-only until `W-0` or the next mount |
-| Plain files on the card | With nothing mounted, `LOAD"GAME.PRG",8` (also `"GAME"`, `"GA*"`, `"DIR/GAME.PRG"`) loads the file itself; reading only |
+| Plain files on the card | With nothing mounted, `LOAD"GAME.PRG",8` (also `"GAME"`, `"GA*"`, `"DIR/GAME.PRG"`) loads the file itself; reading only (`SAVE` answers 74), one plain file open per drive (a second answers 70) |
 | `MD:NAME` / `RD:NAME` | With nothing mounted: make / remove (empty) folders on the card. With an image mounted (D81 partitions): not supported |
 | `C:new=old` copy | Also joins files: `C:new=a,b,c` (up to 8); the new file has the first source's type |
+| Direct sector access | `OPEN n,8,n,"#"` takes a 256-byte buffer channel; on channel 15 `U1:n 0 t s` (or `UA`) reads a sector into it, `U2`/`UB` writes it back (`B-R`/`B-W` do the same as `U1`/`U2`), `B-P:n,pos` sets the buffer pointer, `B-A`/`B-F` allocate and free a sector in the BAM (`B-A` on a used sector answers `65` with the next free one). D64, D71 and D81; needs an image mounted |
 
 ### Not yet supported
 | Feature | Notes |
 |---|---|
 | Writing plain files to the card (`SAVE` with nothing mounted) | Mount an image (or create one with `N:NAME.D64,ID`) |
 | File names longer than 16 characters | Hidden in host listings |
-| Running programs with their own fastloaders | No `M-W`/`M-E`, so programs that upload code to the drive cannot run |
+| Running programs with their own fastloaders | No `M-R`/`M-W`/`M-E`, so programs that upload code to the drive (or probe its ROM to detect the drive type) cannot run |
+| `U3`-`U8` user jumps, `B-E` | Need drive code |
+| Copy protection that checks for bad sectors | Error-info bytes in images are ignored |
 
 ## Utilities
 
@@ -226,10 +240,17 @@ The KERNAL image is built from your own stock ROM, so no Commodore ROM bytes are
 make build/kernal-tr.bin STOCK=/path/to/kernal-901227-03.bin
 ```
 
+### Test disk for real hardware
+`make testdisk` builds `build/testdisk/vdtest.d64` with the BASIC test programs from `tests/basic/` (the same ones `make test` runs in VICE)
+and `VDCOPY`. Copy it to the SD card, mount it with `OPEN15,8,15,"CD:VDTEST.D64":CLOSE15`, then `LOAD"$",8` to see the programs. Each one
+prints its results; please include them in an issue if one fails. `tests/basic/README.md` says what each program checks.
+
 ## Further Documentation
 * [firmware/README.md](firmware/README.md): how the firmware glue and the KERNAL patches work.
 * [docs/DESIGN.md](docs/DESIGN.md): the design, one section per milestone, including alternatives considered (section 19).
 * [CLAUDE.md](CLAUDE.md): project notes, status and gotchas for contributors.
+* [CONTRIBUTING.md](CONTRIBUTING.md): branches (`main` vs `bleeding-edge`), tests and project rules.
+* [CHANGELOG.md](CHANGELOG.md): changes by firmware revision.
 
 ## License
 MIT License, see [LICENSE](LICENSE), the same license as the TeensyROM firmware this patches. A firmware build combines both, so keep both copyright notices when distributing one.
