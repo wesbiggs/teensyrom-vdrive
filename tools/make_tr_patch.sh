@@ -7,11 +7,13 @@ HERE="$(cd "$(dirname "$0")/.." && pwd)"
 C=Source/Teensy/MinimalBoot/Common
 W="$(mktemp -d)"; trap 'rm -rf "$W"' EXIT
 mkdir -p "$W/$C/IO_Handlers"
-for f in Common_Defs.h Menu_Regs.h IOHandlers.h ISRs.c IO_Handlers/StatusFunctions.c IO_Handlers/IOH_KernalReplace.c IO_Handlers/Swift_ATcommands.c; do cp "$TR/$C/$f" "$W/$C/$f"; done
+for f in Common_Defs.h Menu_Regs.h IOHandlers.h ISRs.c IO_Handlers/StatusFunctions.c IO_Handlers/IOH_KernalReplace.c IO_Handlers/Swift_ATcommands.c IO_Handlers/IOH_Swiftlink.c; do cp "$TR/$C/$f" "$W/$C/$f"; done
 mkdir -p "$W/Source/Teensy"; cp "$TR/Source/Teensy/Teensy.ino" "$TR/Source/Teensy/IOHandlers.ino" "$TR/Source/Teensy/SerUSBIO.ino" "$W/Source/Teensy/"
 cd "$W"; git init -q; git add -A; git -c user.name=x -c user.email=x@x commit -qm base
 # fixes to upstream Kernal Replace (RAM under the KERNAL, fast image copy, late-ISR counters): applied before the edits below
 git apply "$HERE/firmware/kernalreplace-fixes.patch"
+# fix to upstream SwiftLink: Tx bytes coalesced, never a blocking client.write() (it hung loop() with the stack polled from there)
+git apply "$HERE/firmware/swiftlink-tx-fix.patch"
 
 python3 -I - "$C" "$HERE/firmware/REV" "$HERE/firmware/vdrive_remote.inc" <<'PY'
 import sys

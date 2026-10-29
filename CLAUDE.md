@@ -85,6 +85,9 @@ Firmware integration and usage: `firmware/README.md`.
 * 0.9.0.33: CMD HD / sd2iec path syntax (`[n]//dir/:name`, `[n]/dir/:name`) in names, `$`, `CD`, `MD`/`RD`, `N` (`cmd_path` in `vdrive.c`, docs/DESIGN.md 36). A path before a colon is CMD (single `/` = here), after the colon or without one ours (leading `/` = root); `CD/X` changed to relative. Unit tests; not in VICE or on hardware.
 * Default device 8 for `LOAD`/`SAVE`/`VERIFY` without a number, as on the SX-64 (`P_E1DA` in `patches/vdrive.s`, docs/DESIGN.md 33). KERNAL only; VICE `basic` run; **not on hardware yet**. Rebuild `kernal-tr.bin`.
 * 0.9.0.32: bad sectors from the image's error table (the trailing error-info bytes): reads of a sector marked bad fail with its DOS code (`d64_t.errtab`, `D64_E_BADSEC`, `d64_t.bad`, `read_err()` in `vdrive.c`; the firmware keeps a RAM2 copy only when the table marks something bad; docs/DESIGN.md 35). Write errors (25/26/28) not emulated; a write does not repair a bad sector. Unit and glue host tests; **not in VICE or on hardware yet**.
+* 0.9.0.34: SwiftLink Tx fix to upstream (`firmware/swiftlink-tx-fix.patch`, applied by `make_tr_patch.sh` after the Kernal Replace fixes). NativeEthernet's `client.write()` busy-waits for send-buffer space;
+  with the stack polled from `loop()` (0.9.0.14) a full buffer hung `loop()` for good (no retransmits; SkinnyAI's 8 KB POST stalled after a lost segment, `~/tr.pcap`). Tx bytes now go
+  into a 256-byte buffer, sent after a 2 ms pause / 20 ms / full, never more than `availableForWrite()`; while it is full Tx stays not empty. **Works on hardware (owner, 2026-10-29)**: the stalled 8 KB uploads complete.
 * Known open risks: C128 not supported (see above); tape (device 1) intentionally broken (its code space was reclaimed).
 
 ## Layout
