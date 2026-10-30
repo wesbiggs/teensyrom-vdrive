@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+- `VDrive Config.prg` is now machine code (`util/vdconfig.s`, assembled by `make util`; no petcat needed) instead of BASIC: the same screen and
+  keys, but reading the list, the directory listings of the browser and every redraw no longer crawl through BASIC string handling.
+  It now reads the device numbers after a first bus access (as VDCOPY does), so with a real drive on the bus it talks to the numbers the
+  bus scan gave the SD / USB units, not their defaults. `tests/test_vdconfig.py` runs the real PRG in py65 (`tests/c64_sim.py` answers its
+  KERNAL calls) against the same drive model; not on a C64 or in VICE yet.
+
 ## v0.9.0.33
 
 ### Added

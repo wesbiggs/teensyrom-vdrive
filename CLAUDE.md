@@ -28,8 +28,8 @@ Firmware integration and usage: `firmware/README.md`.
   that fix must be rebuilt (`make build/kernal-tr.bin`). Lesson: a hook that overwrites bytes at an entry point inside another routine's operand needs every fall-through into those bytes checked.
 * **Alt-button disk switching (0.9.0.17, `docs/DESIGN.md` 22): host-tested only (`tests/fw_host`, the 6502 routine under py65 in a scratch script), NOT on hardware, not run in VICE (no ROM in the cloud session).**
   Taps on the TR+ Alt button (setting "None" only) cycle `/vdrive-config.txt` (SD: one tap, USB: two taps within 1 s); border flash through the new `BORDER` register `$DE18` and `irq_border` in the KERNAL IRQ routine. Rebuild `kernal-tr.bin` and re-copy it with the firmware.
-* **VDrive Config.prg (0.9.0.18, `util/vdconfig.bas`, docs/DESIGN.md 23): NOT run on a C64 or in VICE (no ROM in the cloud session); host-tested only** in `tests/test_vdconfig.py` (a small BASIC V2 interpreter, `tests/basic_interp.py`,
-  against a drive model), plus the new `"!CONFIG"` / `"!STATE"` host text channels in `tests/test_vio.py` and `tests/fw_host`. First hardware run: check cursor keys, the colour cells, the browser listing of a large folder and `GET#` of the listing.
+* **VDrive Config.prg (0.9.0.18; machine code since, `util/vdconfig.s`, docs/DESIGN.md 23): NOT run on a C64 or in VICE; host-tested only** in `tests/test_vdconfig.py` (the real PRG in py65, `tests/c64_sim.py`
+  answering its KERNAL calls, against a drive model), plus the new `"!CONFIG"` / `"!STATE"` host text channels in `tests/test_vio.py` and `tests/fw_host`. First hardware run: check cursor keys, the colour cells, the browser listing of a large folder and `GET#` of the listing.
 * **Not yet checked on hardware:** the time the bus scan adds to the first access,
   `.d71` at all, `STATUS` compared with a real drive, IRQ/STOP-key interplay during loads.
 * **BASIC test programs** (`tests/basic/`, built into `build/testdisk/vdtest.d64` by `make testdisk`) run inside VICE in `make test` and on the C64; they
@@ -98,7 +98,7 @@ d64/            portable C99 library, also compiled as C++ by the firmware (keep
   vdrive_io.c/.h  mailbox register engine (ISR-side O(1) accessors + vio_poll), the fast LOAD/SAVE commands and the bus-scan protocol
   vd_cfg.h        build knobs: VD_COLD (FLASHMEM), VD_NSLOT, VD_DEV0/VD_DEV1 defaults
 util/            VDCOPY: vdcopy.s (all machine code, BASIC SYS stub at $0801, tables BSS at $2000; tools/make_util.py assembles it);
-                VDrive Config: vdconfig.bas (BASIC, tokenised with petcat by tools/make_util.py into build/util/"VDrive Config.prg")
+                VDrive Config: vdconfig.s (all machine code, same stub/BSS scheme, BSS $2000-$4FFF; tools/make_util.py assembles it into build/util/"VDrive Config.prg")
 patches/        ca65 sources overlaid on the stock KERNAL by tools/build.py; segment name P_XXXX = load address
   vdrive.s        serial entry hooks, fast LOAD ($F4C8) / SAVE ($F605), bus scan, code placed in reclaimed tape space $F8E2-$FB8D (666 of 683 bytes used; `irq_border` for the border flash included, the build asserts the limit)
   banner.s        proof patch (changes the power-on banner)
@@ -107,7 +107,7 @@ firmware/       TeensyROM integration: IOH_VDrive.c (Special IO), IOH_VDriveSwif
 tools/          build.py (patch overlay), make_tr_patch.sh (regenerate the TeensyROM patch), vdrive_mock.py (VICE mock),
                 d64py.py (ctypes wrappers incl. register-level VIO), xref.py (reference finder over a disassembly)
 tests/          test_d64*.py, test_vdrive.py, test_vio.py (unit), fw_host/ (glue vs host stubs), devcfg.c,
-                test_vdconfig.py + basic_interp.py (VDrive Config in a BASIC interpreter model), test_irq_border.py (py65)
+                test_vdconfig.py + c64_sim.py (VDrive Config's PRG in py65, KERNAL calls answered in Python), test_irq_border.py (py65)
 build/          generated, git-ignored (kernal images derived from the ROM, libd64.dylib, disassembly)
 ```
 
@@ -115,8 +115,8 @@ build/          generated, git-ignored (kernal images derived from the ROM, libd
 * `make test` — everything (rebuilds `build/libd64.dylib`, runs unit tests, device-number check, firmware host test, two VICE runs: `basic` and
   `scan`, the latter with true-drive 1541s at 8 and 10; about 4 minutes).
 * `make test-border` — the `irq_border` 6502 routine in py65 (skipped without `pip install py65`; also part of `make test`).
-* `make util` — `build/util/vdcopy.prg`, the file copy utility between any two units (also on the test disk), and `build/util/VDrive Config.prg` (needs petcat).
-* `make test-vdconfig` — VDrive Config in the BASIC interpreter model (pure Python; also part of `make test`).
+* `make util` — `build/util/vdcopy.prg`, the file copy utility between any two units (also on the test disk), and `build/util/VDrive Config.prg`.
+* `make test-vdconfig` — VDrive Config's PRG in py65 against a drive model (skipped without py65; also part of `make test`).
 * `make build/kernal-tr.bin STOCK=/path/to/kernal-901227-03.bin` — hardware image (mailbox `$DE10`, window `$DF80`).
   `STOCK` defaults to VICE's bundled ROM under Homebrew. `make build/kernal-banner.bin`, `build/kernal-stock.bin` are bring-up images.
 * `tools/make_tr_patch.sh /path/to/TeensyROM` — regenerate `firmware/teensyrom-vdrive.patch` after changing `firmware/IOH_VDrive.c`

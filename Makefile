@@ -35,7 +35,7 @@ test-devcfg:
 test-fw:
 	python3 -I tests/fw_host/run.py
 
-test-vdconfig:   # VDrive Config.prg (util/vdconfig.bas) in a small BASIC interpreter against a drive model
+test-vdconfig:   # VDrive Config.prg (util/vdconfig.s) in py65 with its KERNAL calls answered by a drive model (skipped without py65)
 	python3 -I tests/test_vdconfig.py
 
 test-border:   # the border-flash routine in a 6502 simulator (skipped without py65)

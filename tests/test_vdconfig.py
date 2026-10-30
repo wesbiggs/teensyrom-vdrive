@@ -1,16 +1,26 @@
 #!/usr/bin/env python3
-"""util/vdconfig.bas (VDrive Config.prg) run in the small BASIC interpreter (tests/basic_interp.py) against a model of the drive.
+"""VDrive Config.prg (util/vdconfig.s, machine code) run in py65 (tests/c64_sim.py answers its KERNAL calls) against a model of the drive.
 
 The model follows d64/vdrive.c and firmware/IOH_VDrive.c: "!CONFIG[,W]" / "!STATE" host text files, "$path" listings by path (they do not change
 what is mounted), "CD:" with paths, the error channel, and the rule that closing channel 15 closes every channel of the unit. The real channel
 code is tested in tests/fw_host; this tests the program's logic, screen layout and keystrokes."""
-import pathlib, re, sys, unittest
+import pathlib, re, sys, tempfile, unittest
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from basic_interp import Basic, BasicError
+try:
+    import py65  # noqa: F401
+except ImportError:
+    print("SKIP py65 not installed (pip install py65): VDrive Config not run"); sys.exit(0)
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-SRC = (ROOT / "util" / "vdconfig.bas").read_text()
+sys.path.insert(0, str(ROOT / "tests")); sys.path.insert(0, str(ROOT / "tools"))
+from c64_sim import C64
+import make_util
+
+with tempfile.TemporaryDirectory() as _t:
+    PRG = make_util.build_config(_t).read_bytes()
+
+
+class DriveError(Exception): pass
 UP, DOWN, RET, DEL, LEFTARROW = 145, 17, 13, 20, 95
 IMG = b"d64"
 
@@ -87,14 +97,14 @@ class FakeDrive:
 
     # ---- the interpreter's I/O interface ----
     def open(self, lf, dev, sa, name):
-        if dev not in self.units: raise BasicError("device not present %d" % dev)
-        if lf in self.chans: raise BasicError("FILE OPEN lf=%d" % lf)
+        if dev not in self.units: raise DriveError("device not present %d" % dev)
+        if lf in self.chans: raise DriveError("FILE OPEN lf=%d" % lf)
         u = self.unit(dev)
         if sa == 15:
             self.chans[lf] = Chan("cmd", dev)
             if name: self.command(dev, name)
             return
-        if any(c.dev == dev and c.name == str(sa) for c in self.chans.values()): raise BasicError("secondary %d busy on %d" % (sa, dev))
+        if any(c.dev == dev and c.name == str(sa) for c in self.chans.values()): raise DriveError("secondary %d busy on %d" % (sa, dev))
         if name.startswith("$"):
             spec = name[1:].lower()
             if "/" in spec:
@@ -130,15 +140,14 @@ class FakeDrive:
 
     def get(self, lf):
         c = self.chans.get(lf)
-        if c is None or c.kind != "r": self.st = 66; return ""
-        if c.pos >= len(c.data): self.st = 66; return ""
+        if c is None or c.kind != "r" or c.pos >= len(c.data): self.st = 66; return 13
         b = c.data[c.pos]; c.pos += 1
         self.st = 64 if c.pos >= len(c.data) else 0
-        return chr(b) if b else ""
+        return b
 
     def getline(self, lf):
         c = self.chans[lf]
-        if c.kind != "cmd": raise BasicError("INPUT# from a data channel")
+        if c.kind != "cmd": raise DriveError("status read from a data channel")
         u = self.unit(c.dev); s = u.status; self.set_status(u, 0); return s
 
     def put(self, lf, text):
@@ -147,7 +156,7 @@ class FakeDrive:
         elif c.kind == "w":
             u = self.unit(c.dev)
             u.files[c.target] += text.replace("\r", "\n").lower().encode()
-        else: raise BasicError("PRINT# to a read channel")
+        else: raise DriveError("write to a read channel")
 
 
 def make_sd():
@@ -169,7 +178,7 @@ class T(unittest.TestCase):
             if usb_cfg is not None: ufiles["/vdrive-config.txt"] = usb_cfg.encode()
         self.drive = FakeDrive(files, ufiles)
         if mounted: self.drive.units[8].mounted = mounted; self.drive.units[8].cwd = mounted.rpartition("/")[0]
-        self.b = Basic(SRC, self.drive, {56854: devs[0], 56855: devs[1], 53280: 14, 53281: 6, 646: 14})
+        self.b = C64(PRG, self.drive, {56854: devs[0], 56855: devs[1], 53280: 14, 53281: 6, 646: 14})
         self.assertEqual(self.b.run(), "key")
         return self.b
 
@@ -371,7 +380,7 @@ class T(unittest.TestCase):
 
     def test_no_drive_at_all(self):
         self.drive = FakeDrive({})
-        self.b = Basic(SRC, self.drive, {56854: 0, 56855: 0})
+        self.b = C64(PRG, self.drive, {56854: 0, 56855: 0})
         self.assertEqual(self.b.run(), "end")
         self.assertIn("NOT ACTIVE", self.b.screen.text())
 
@@ -428,6 +437,39 @@ class T(unittest.TestCase):
         self.assertEqual((self.b.mem[53280], self.b.mem[53281], self.b.mem[646]), (14, 6, 14))
         self.assertEqual(self.drive.chans, {})
         self.assertTrue(self.b.screen.row(0).endswith("BYE") or "BYE" in self.b.screen.text())
+
+    def test_reads_device_numbers_after_the_bus_scan(self):
+        # $DE16 holds the default 8 until the first bus access runs the scan, which (a real drive at 8) moves the SD unit to 9
+        self.drive = FakeDrive(make_sd() | {"/vdrive-config.txt": CONFIG.encode()})
+        self.drive.units = {9: self.drive.units.pop(8)}
+        self.b = C64(PRG, self.drive, {56854: 8, 56855: 0})
+        listen = self.b.listen
+        def scan():
+            self.b.mem[56854] = 9; listen()
+        self.b.listen = scan; self.b.traps[0xFFB1] = scan
+        self.assertEqual(self.b.run(), "key")
+        self.assertEqual(self.row(1), "SD  9: (NOTHING MOUNTED)")
+        self.assertEqual(self.row(3), "LIST: SD (4 ENTRIES)")
+        self.keys(RET)
+        self.assertEqual(self.drive.units[9].mounted, "/games/zork.d64")
+
+    def test_too_long_to_save(self):
+        cfg = "/a.d64, 1, 1\r\n/b.d64, 2, 2\r\n" + "".join("# %s\r\n" % ("x" * 76) for _ in range(25))
+        self.start(cfg=cfg)
+        self.keys("+")
+        self.assertEqual(self.row(20), "LIST TOO LONG TO SAVE")
+        self.assertEqual(self.config(), cfg.lower())
+        self.assertTrue((self.entry(4) or ())[:2] == tuple(["1", "/B.D64"]), self.row(4))     # changed on the screen, as before
+
+    def test_long_file_keeps_its_lines(self):
+        lines = ["# comment %d with a \" quote" % i for i in range(60)] + ["/x%02d.d64, %d, %d" % (i, i % 16, i % 21) for i in range(20)]
+        cfg = "\n".join(lines) + "\n"
+        self.start(cfg=cfg)
+        self.assertEqual(self.row(3), "LIST: SD (20 ENTRIES)")
+        self.keys(DOWN, DOWN, "+", "d", "y")
+        want = lines[:60] + ["/x%02d.d64, %d, %d" % (i, i % 16, i % 21) for i in (0, 1, 3, 4)] + lines[65:]
+        self.assertEqual(self.config().split("\n")[:-1], want)
+        self.assertEqual(self.row(20), "SAVED")
 
     def test_never_closes_the_command_channel_while_working(self):
         self.start()
