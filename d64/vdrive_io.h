@@ -21,7 +21,9 @@
  * so lazily, on the first transaction of a run (the VDrive handler only becomes active once the program has been loaded): that
  * command is answered with SCANREQ instead of being executed; the KERNAL sends SCAN, then FREE for each number where its
  * LISTEN found nobody, until the answer says nobody is waiting, and then repeats the original command. Asked once only: a
- * KERNAL that does not understand SCANREQ just times out on that one call and the defaults stay. */
+ * KERNAL that does not understand SCANREQ just times out on that one call and the defaults stay.
+ * The TR menu probes the bus itself before it starts a program (vio_probe_begin / vio_probe_free, the same steps driven from the
+ * menu's registers), so DEV0/DEV1 are right from the program's first instruction; after that probe nothing more is asked. */
 #ifndef VDRIVE_IO_H
 #define VDRIVE_IO_H
 #include "vdrive.h"
@@ -51,7 +53,8 @@ enum {
     VIO_FSAVE_BLK  = 12,   /* LEN bytes (at most VIO_WIN) from window are appended to the file */
     VIO_FSAVE_CLOSE= 13,   /* DATA: 0 ok else DOS error code */
     VIO_SCAN       = 14,   /* start of the reset-time bus scan: releases the automatic units' numbers. DATA = units that need a number */
-    VIO_FREE       = 15    /* ARG = a device number nobody answered at; it goes to the next unit that needs one. DATA = units still waiting */
+    VIO_FREE       = 15,   /* ARG = a device number nobody answered at; it goes to the next unit that needs one. DATA = units still waiting */
+    VIO_MENU       = 16    /* back to the TR menu: answered OK, then the Teensy writes back what is unsaved and resets the C64 into its menu */
 };
 
 /* Registers + window: the only memory the bus ISR reads or writes (~140 bytes). Keep in DTCM. */
@@ -66,6 +69,7 @@ typedef struct {
     vio_hot_t *h;
     uint8_t fl_active, fl_eof, fl_dev, fs_active, fs_dev;
     uint8_t scan_state;                /* 0 not needed, 1 to be requested, 2 requested, 3 done */
+    uint8_t menu_req;                  /* VIO_MENU was received (see vio_take_menu) */
 } vio_t;
 
 void    vio_init(vio_t *v, vio_hot_t *hot);
@@ -75,6 +79,9 @@ uint8_t vio_io2_read(const vio_hot_t *h, uint8_t off);          /* ISR; off = wi
 void    vio_io2_write(vio_hot_t *h, uint8_t off, uint8_t val);  /* ISR */
 int     vio_poll(vio_t *v);                  /* 1 if a command was processed */
 int     vio_arm_scan(vio_t *v);              /* call once the units and pinned numbers are set: 1 if the KERNAL will be asked to scan the bus */
+int     vio_probe_begin(vio_t *v);           /* the menu's probe before launch: releases the automatic numbers, no SCANREQ afterwards; returns units that need a number */
+int     vio_probe_free(vio_t *v, uint8_t dev);   /* nobody answered at dev during that probe (as VIO_FREE); returns units still waiting */
+int     vio_take_menu(vio_t *v);             /* 1 once after VIO_MENU: the host should return to its menu */
 void    vio_publish_devices(vio_t *v);       /* copy the current device numbers to the DEV0/DEV1 registers (call after vdrive_set_devices) */
 
 size_t  vio_sizeof(void);

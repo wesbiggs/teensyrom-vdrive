@@ -1,7 +1,7 @@
 import ctypes, pathlib, random, shutil, subprocess, sys, tempfile, unittest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / 'tools'))
 from d64py import (LIB, Disk, VIO, VDrive, WIN_SIZE, F_LOAD_OPEN, F_LOAD_BLK, F_SAVE_OPEN, F_SAVE_BLK, F_SAVE_CLOSE,
-                   R_STAT, R_DEV0, R_DEV1, F_SCAN, F_FREE, BUSY, OK, NOTMINE, SCANREQ)
+                   R_STAT, R_DEV0, R_DEV1, F_SCAN, F_FREE, F_MENU, BUSY, OK, NOTMINE, SCANREQ)
 
 LISTEN, TALK, SECOND, TKSA, CIOUT, ACPTR, UNLSN, UNTLK = range(1, 9)
 
@@ -931,6 +931,33 @@ class DeviceNumberTests(unittest.TestCase):
         self.assertEqual((need, self.devs()), (0, (8, 9)))
         self.io.call(F_SCAN); self.io.call(F_FREE, 5)   # out of range: ignored
         self.assertEqual(self.devs(), (0, 0))
+
+    # ---- the TR menu's probe before launch: same steps, then no SCANREQ ----
+    def test_menu_probe_settles_the_numbers_before_the_program_runs(self):
+        self.assertEqual(self.io.arm_scan(), 1)
+        self.assertEqual(self.io.probe_begin(), 2)
+        self.assertEqual(self.devs(), (0, 0))                                    # released, as for SCAN
+        self.assertEqual(self.io.probe_free(9), 1); self.assertEqual(self.devs(), (9, 0))      # 8 answered: a real drive
+        self.assertEqual(self.io.probe_free(10), 0); self.assertEqual(self.devs(), (9, 10))
+        nm, _, _ = self.io.call(LISTEN, 9); self.assertFalse(nm)                # the first transaction runs, no SCANREQ
+        self.assertEqual(self.io.stat, OK)
+
+    def test_menu_probe_keeps_pins_and_absent_units(self):
+        self.io.set_devices(9, 0)
+        self.io.arm_scan()
+        self.assertEqual(self.io.probe_begin(), 1)
+        self.assertEqual(self.io.probe_free(8), 0); self.assertEqual(self.devs(), (9, 8))
+        io = VIO(); io.attach(0, None, present=False); io.attach(1, None, present=True)
+        self.assertEqual(io.probe_begin(), 1)
+        self.assertEqual(io.probe_free(8), 0)
+        self.assertEqual((io.r(R_DEV0), io.r(R_DEV1)), (0, 8))
+
+    def test_menu_command_is_answered_and_reported_once(self):
+        self.assertEqual(self.io.take_menu(), 0)
+        nm, _, _ = self.io.call(F_MENU)
+        self.assertFalse(nm); self.assertEqual(self.io.stat, OK)
+        self.assertEqual(self.io.take_menu(), 1)
+        self.assertEqual(self.io.take_menu(), 0)
 
     def test_pin_survives_and_zero_means_automatic(self):
         self.hook_save()

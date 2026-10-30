@@ -39,6 +39,7 @@ The Alt button disk switching (`SpecialBtn_VDrive`, `VD_SwitchNext`, `/vdrive-co
   whether the transaction is for one of the virtual drives; "not mine" replays the displaced instructions into the stock routine.
 * `LOAD` (`$F4C8`) and `SAVE` (`$F605`) get block-transfer fast paths (any device is offered to the Teensy first; ~one extra mailbox round trip when the device is a real drive); `VERIFY` takes the stock path.
 * The first LISTEN / TALK / LOAD / SAVE of a run may be answered with the token `$3C`: `vcall` then runs the bus scan (`bus_scan`, ~100 bytes) and repeats the command.
+  Since 0.9.0.35 the TR menu probes the bus before the launch (`firmware/vdrive_probe.asm` in `MainMenu.asm`, docs/DESIGN.md 37), so this is only the fallback.
 * The mailbox answer is a token (`$5A` / `$A5`); a bad or missing answer in the middle of a transfer aborts it with an error. ~1 s mailbox time-out at the start of a transaction falls back to the stock IEC code, so the image is harmless if the handler isn't active.
 * Space comes from the cassette bit-timing code `$F8E2-$FB8D`: **tape I/O (device 1) no longer works.**
 

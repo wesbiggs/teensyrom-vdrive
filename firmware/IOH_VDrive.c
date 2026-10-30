@@ -20,6 +20,7 @@
 #include "../vdrive/vdrive_io.c"
 
 void VDrive_PreStart();   // called from KERNALPreStart(), see StatusFunctions.c
+bool VDrive_ProbeStep();  // likewise, first: the menu's bus probe (below)
 uint8_t VDriveSwift_Remap(uint8_t ioh);   // IOH_VDriveSwift.c; used by KERNALPreStart() and IOHandlerSelectInit()
 void InitHndlr_VDrive();
 void PollingHndlr_VDrive();
@@ -459,6 +460,7 @@ FLASHMEM static void VD_LoadDevices()
 // LOAD from device 8/9 finds its files. Any other launch re-mounts what the unit had mounted last.
 extern char DriveDirPath[];
 extern volatile uint8_t* IO1;     // defined in IOH_TeensyROM.c, which is included after this file
+extern volatile uint8_t BtnPressed;   // Teensy.ino: the menu button; loop() then resets the C64 into the TR menu
 
 // path = "/a/b/X.D64" (ASCII, no trailing '*'): folder becomes the unit's cwd, then the image is mounted.
 FLASHMEM static int VD_MountPath(int unit, const char *rawPath)   // 0 ok, else a DOS error code
@@ -517,6 +519,8 @@ void InitHndlr_KernalReplace();   // re-stages the KERNAL bus hook (IOH_KernalRe
 // All storage access (SD/USB probing, sizing) happens here, called from KERNALPreStart() while the C64 is still
 // waiting for the TR ("WaitForTRDots"). Doing it later is unsafe: SD reads mask interrupts, and once the replacement
 // KERNAL is live every C64 instruction fetch from $E000-$FFFF depends on the bus ISR running.
+FLASHMEM static void VD_ProbeBegin();
+
 FLASHMEM void VDrive_PreStart()
 {
 #ifdef VD_ALLOC_HEAP
@@ -549,13 +553,55 @@ FLASHMEM void VDrive_PreStart()
    vdrive_attach(&vio->vd, 1, NULL, USBFileSystemWait());
    VD_StartupMount(0, IO1[rWRegCurrMenuWAIT] == rmtSD);
    VD_StartupMount(1, IO1[rWRegCurrMenuWAIT] == rmtUSBDrive);
-   int scanPending = vio_arm_scan(vio);   // automatic numbers: the KERNAL probes the real bus on the run's first disk access
+   int scanPending = vio_arm_scan(vio);   // automatic numbers: probed by the menu next (else by the KERNAL on the first disk access)
    vio_publish_devices(vio);
    vioReady = true;                 // only now may the bus handlers answer
    Serial.printf("VDrive: dev %d (SD) %s, dev %d (USB) %s%s\n",
                  vio->vd.dev[0], vio->vd.unit[0].present ? "ready" : "absent",
                  vio->vd.dev[1], vio->vd.unit[1].present ? "ready" : "absent",
-                 scanPending ? " (numbers are settled by the first bus scan)" : "");
+                 scanPending ? " (numbers are settled by the bus probe)" : "");
+   if (scanPending) VD_ProbeBegin();
+}
+
+// ---- the menu's bus probe before launch (MainMenu.asm, VDriveProbe; docs/DESIGN.md 37) -------------------------------------
+// Only the 6502 can see which numbers real drives hold. The TR menu probes the bus right after this PreStart, so DEV0/DEV1
+// are right from the program's first instruction (the KERNAL's own scan, on the first disk access, is the fallback and is
+// not asked for after this one). It probes with the C64's own KERNAL: the replacement is held back until the probe ends,
+// since its serial hooks would talk to the mailbox, which is not live while the menu runs.
+// The menu clears rwRegScratch before PreStart; a nonzero answer there asks for the probe. For each number from 8 up that
+// no drive answers, the menu writes it to rwRegScratch and runs PreStart again; the answer is how many units still wait
+// (0: done). VD_ProbeEnd (0xff: the menu ran out of numbers) also ends it. Every end hooks the replacement KERNAL back in.
+#define VD_ProbeEnd 0xff
+static bool vdProbing = false;
+static bool (*vdProbeSnoop)(uint16_t Address, bool R_Wn) = NULL;
+
+FLASHMEM static void VD_ProbeBegin()
+{
+   int need = vio_probe_begin(vio);
+   IO1[rwRegScratch] = (uint8_t)need;
+   if (!need) return;
+   vdProbeSnoop = fBusSnoop;        // KernalCheck, as InitHndlr_KERNALReplace_PreStart() just hooked it (NULL if no image)
+   fBusSnoop = NULL;
+   vdProbing = true;
+}
+
+FLASHMEM static void VD_ProbeFinish()
+{
+   vdProbing = false;
+   HIRAM_State = HIRAM_State_Unknown;
+   fBusSnoop = vdProbeSnoop;
+   Serial.printf("VDrive: bus probe gave dev %d (SD), %d (USB)\n", vio->vd.dev[0], vio->vd.dev[1]);
+}
+
+// true: this PreStart call was a probe step, answered in rwRegScratch; false: an ordinary PreStart (rwRegScratch = 0)
+FLASHMEM bool VDrive_ProbeStep()
+{
+   uint8_t dev = IO1[rwRegScratch];
+   if (!vdProbing || dev == 0) { vdProbing = false; return false; }   // a new launch: a probe left over from a reset is dropped
+   int left = (dev == VD_ProbeEnd) ? 0 : vio_probe_free(vio, dev);
+   if (!left) VD_ProbeFinish();
+   IO1[rwRegScratch] = (uint8_t)left;
+   return true;
 }
 
 // Handler start (the C64 is already running): only re-stage the KERNAL bus hook. No storage access here.
@@ -564,6 +610,13 @@ void VD_AltPoll();
 
 FLASHMEM void InitHndlr_VDrive()
 {
+   if (vdProbing)                   // the menu did not finish the probe (not with this menu): numbers back, the KERNAL's own scan
+   {                                // settles them; InitHndlr_KernalReplace() below hooks the replacement KERNAL in
+      vdProbing = false;
+      VD_LoadDevices();
+      vio_arm_scan(vio);
+      vio_publish_devices(vio);
+   }
    InitHndlr_KernalReplace();
    VD_AltButtonInit();
 }
@@ -579,6 +632,11 @@ FLASHMEM void PollingHndlr_VDrive()
       Serial.printf("vd cmd=%u arg=%02x len=%u -> stat=%02x data=%02x st=%02x\n",
                     vioHot.cmd, vioHot.arg, vioHot.len, vioHot.stat, vioHot.data, vioHot.st);
 #endif
+   }
+   if (vio_take_menu(vio))          // VIO_MENU (VDrive Config's Q): write back what is unsaved, then the main loop resets into the menu
+   {
+      for (int i = 0; i < 2; i++) if (vdUnit[i].dirty) VD_Flush(&vdUnit[i]);
+      BtnPressed = true;
    }
    // Write back only when both the last sector write and the last mailbox command are old: SD access can mask
    // interrupts, and the C64 must not be mid-LOAD (reading our registers) when that happens.

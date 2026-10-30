@@ -24,11 +24,13 @@ stcIOHandlers IOHndlr_VDriveSwift =
 // When the user's default Special IO is a VDrive one, programs that the menu pairs with plain SwiftLink (CCGMS, ...) or the REU
 // get a combined handler instead, so launching them does not drop the virtual drive: SwiftLink programs VDrive+SwiftLink, REU
 // programs VDrive+REU (the full 512 KB REU, IOH_VDriveREU.c). With "VDrive+Swift+REU" as the default, SwiftLink programs get
-// that one (its REU is only 128 KB, but they may want both).
+// that one (its REU is only 128 KB, but they may want both). A program the menu pairs with plain VDrive (VDrive Config, in the
+// Utilities) runs with the default VDrive Special IO itself.
 FLASHMEM uint8_t VDriveSwift_Remap(uint8_t ioh)
 {
    uint8_t pref = EEPROM.read(eepAdNextIOHndlr);
    if (!VD_IsHandler(pref)) return ioh;
+   if (ioh == IOH_VDrive) return pref;                       // a VDrive program (VDrive Config) keeps the default's REU / SwiftLink
 #ifdef Fab04_REU
    if (ioh == IOH_REU) return IOH_VDriveREU;
    if (pref == IOH_VDriveSwiftREU) return (ioh == IOH_Swiftlink) ? IOH_VDriveSwiftREU : ioh;

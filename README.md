@@ -147,15 +147,14 @@ CBM listing modifier and is not a path. With an image mounted, a bare name is a 
 a component with an image suffix (`X.D64/`) or `..` makes it a path; leave the image with `CD:←`.
 
 ### Device numbers
-The KERNAL image contains no device numbers, so one image serves every setup. Device number assignment is automatic by default: on the first disk access of a run (the first `LISTEN` / `TALK` / `LOAD` / `SAVE`, so after the program has been
-loaded) the KERNAL probes the real serial bus at 8, 9, 10, ... and the SD drive takes the first free number, the USB drive the next
-(only units whose card / stick is present). With no other drive attached that is 8 and 9, and the probe costs a few milliseconds; with a
+The KERNAL image contains no device numbers, so one image serves every setup. Device number assignment is automatic by default: before
+it starts a program, the TeensyROM menu probes the real serial bus at 8, 9, 10, ... and the SD drive takes the first free number, the USB
+drive the next (only units whose card / stick is present). (A KERNAL image started some other way probes on its first disk access instead.) With no other drive attached that is 8 and 9, and the probe costs a few milliseconds; with a
 physical drive at 8 the SD drive becomes 9, and so on.
 
-`PEEK(56854)` (SD) and `PEEK(56855)` (USB) show the current numbers (0 = none;
-defaults until the first disk access), the directory header id shows it too (`0 "SD:/" 09 2A`), and the serial console prints the numbers
+`PEEK(56854)` (SD) and `PEEK(56855)` (USB) show the current numbers from the program's first instruction (0 = none), the directory header id shows it too (`0 "SD:/" 09 2A`), and the serial console prints the numbers
 at start-up. Nothing is probed when nothing needs a number (no card, or both numbers fixed). A drive that has not powered up yet when the
-first access happens looks like a gap, so fix the numbers if some device boots slowly (e.g. a Wi-Fi drive).
+program starts looks like a gap, so fix the numbers if some device boots slowly (e.g. a Wi-Fi drive).
 
 To fix a number, use the same command real drives use (stored in EEPROM; 0 or an invalid value = automatic):
 ```
@@ -238,16 +237,17 @@ removes the partial copy. RUN/STOP stops after the current chunk. A vdrive sourc
 REL files are not shown; names with `* , : = ?` are skipped.
 
 ### VDrive Config (the list editor)
-`VDrive Config.prg` (built by `make util` into `build/util/`; copy it to the card and start it from the TeensyROM menu with the VDrive handler) edits the Alt-button lists (see 'Changing the disk with the alt button' above) on the C64 and shows / changes what is mounted:
+`VDrive Config` (in the TeensyROM menu's Utilities, run with your default VDrive Special IO; also built by `make util` into `build/util/`) edits the Alt-button lists (see 'Changing the disk with the alt button' above) on the C64 and shows / changes what is mounted:
 ```
 RETURN mount the entry   B browse the card, mount any image   U unmount
 A add (browse, colour, flashes)   E edit   D delete   +/- move down/up
-T switch SD / USB list   R refresh   Q quit        (left arrow cancels an entry field)
+T switch SD / USB list   R refresh   Q back to the TeensyROM menu   (left arrow cancels an entry field)
 ```
 The top lines show the image mounted on each drive; `*` marks the list entry that is mounted. Changes to the list are saved immediately in `vdrive-config.txt`. Details: `docs/DESIGN.md` section 23.
 
 ## Building and testing
-Needs `cc65` (`ca65`/`ld65`), VICE (`x64sc`, `c1541`), a C/C++ compiler and Python 3.
+Needs `cc65` (`ca65`/`ld65`), VICE (`x64sc`, `c1541`), a C/C++ compiler and Python 3; ACME 0.97 for the menu's bus probe test (and, with
+node, for `tools/make_tr_patch.sh`).
 
 ```bash
 make test

@@ -20,6 +20,8 @@ static int g_fs_probes = 0;
 bool SDFullInit() { g_fs_probes++; return fs_::exists(SD.root); }
 bool USBFileSystemWait() { g_fs_probes++; return fs_::exists(firstPartition.root); }
 void InitHndlr_KernalReplace() {}
+uint8_t HIRAM_State = 0;
+volatile uint8_t BtnPressed = 0;
 
 #include "glue.c"          // = firmware/IOH_VDrive.c (with ../vdrive/*.c resolved by the build script)
 
@@ -89,6 +91,23 @@ static int call(uint8_t cmd, uint8_t arg = 0, uint8_t len = 0, uint8_t *st = nul
     return ((r1(VIO_STAT) == VIO_NOTMINE) ? 0x100 : 0) | r1(VIO_DATA);
 }
 
+// KERNALPreStart() as patched (a probe step first, else the PreStart) and then what the menu does after it (MainMenu.asm,
+// VDriveProbe): LISTEN + SECOND on 8, 9, ... with the C64's own KERNAL; each number without a real drive is offered
+static int g_probes = 0;                                   // probes the fake menu ran
+static void kernal_prestart() { if (!VDrive_ProbeStep()) { fBusSnoop = &KernalCheck; VDrive_PreStart(); } }   // + InitHndlr_KERNALReplace_PreStart()
+static void prestart(bool probe = true)
+{
+    IO1[rwRegScratch] = 0;
+    kernal_prestart();
+    if (!probe || !IO1[rwRegScratch]) return;
+    g_probes++;
+    for (int dev = 8; IO1[rwRegScratch]; dev++) {
+        if (dev <= 30 && g_real_drives.count(dev)) continue;
+        IO1[rwRegScratch] = dev <= 30 ? (uint8_t)dev : VD_ProbeEnd;
+        kernal_prestart();
+    }
+}
+
 static void put_name(const std::string &n) { for (size_t i = 0; i < n.size(); i++) ww((uint8_t)i, (uint8_t)n[i]); }
 
 static std::string fast_load(int dev, const std::string &name, int *rc = nullptr)
@@ -146,7 +165,7 @@ int main(int argc, char **argv)
     { FILE *f = fopen(argv[3], "rb"); char b[4096]; size_t n; while ((n = fread(b, 1, sizeof b, f)) > 0) hello_expect.append(b, n); fclose(f); }
 
     memset(EEPROM.m, 0xFF, sizeof EEPROM.m);               // erased flash: no setting stored yet
-    VDrive_PreStart();
+    prestart();
     check("pre-start probed SD and USB", g_fs_probes == 2);
     InitHndlr_VDrive();
     check("handler start does no storage access", g_fs_probes == 2);
@@ -342,28 +361,28 @@ int main(int argc, char **argv)
     check("device 8 -> not mine after renumbering", (nm & 0x100) != 0);
     nm = call(VD_LISTEN, 10); call(VD_UNLSN);
     check("device 10 is the SD unit", !(nm & 0x100));
-    VDrive_PreStart();                                     // 'power cycle'
-    check("numbers survive a restart (10/9)", vio->vd.dev[0] == 10 && vio->vd.dev[1] == 9);
+    prestart();                                     // 'power cycle'
+    check("numbers survive a restart (10; USB automatic, the probe gives it 8)", vio->vd.dev[0] == 10 && vio->vd.dev[1] == 8);
     EEPROM.m[eepAdVDriveDevs] = 7; EEPROM.m[eepAdVDriveDevs + 1] = 7;
-    VDrive_PreStart();
+    prestart();
     check("out-of-range/duplicate stored values fall back to defaults", vio->vd.dev[0] == 8 && vio->vd.dev[1] == 9);
     EEPROM.m[eepAdVDriveDevs] = 12; EEPROM.m[eepAdVDriveDevs + 1] = 12;
-    VDrive_PreStart();
-    check("duplicate stored values: the first is kept, the second becomes automatic", vio->vd.dev[0] == 12 && vio->vd.dev[1] == 9);
+    prestart();
+    check("duplicate stored values: the first is kept, the second becomes automatic (8)", vio->vd.dev[0] == 12 && vio->vd.dev[1] == 8);
 
     // ---- image opened in the TR menu is mounted at launch (DriveDirPath ends in '*') ----
     EEPROM.m[eepAdVDriveDevs] = 0xFF; EEPROM.m[eepAdVDriveDevs + 1] = 0xFF;
     fs_::remove(SD.root / ".vdrive"); fs_::remove(firstPartition.root / ".vdrive");     // forget everything remembered so far
     IO1[rWRegCurrMenuWAIT] = rmtSD; strcpy(DriveDirPath, "/SUB/INNER.D64*");
-    VDrive_PreStart();
+    prestart();
     check("menu image on SD auto-mounted on unit 0 in its folder", vdUnit[0].mounted && !vdUnit[1].mounted && strcmp(vdUnit[0].cwd, "/SUB") == 0 && vio->vd.unit[0].disk);
     check("auto-mounted image is listed", fast_load(8, "$").find("\"") != std::string::npos);
     cmd15("CD:/"); check("CD:/ then unmounts it", status15() == "00, OK,00,00\r" && !vdUnit[0].mounted && vdUnit[0].cwd[0] == 0);
     IO1[rWRegCurrMenuWAIT] = rmtUSBDrive; strcpy(DriveDirPath, "/USB.D64*");
-    VDrive_PreStart();
+    prestart();
     check("menu image on USB auto-mounted on unit 1", vdUnit[1].mounted && !vdUnit[0].mounted && fast_load(9, "$").find("USBDISK") != std::string::npos);
     IO1[rWRegCurrMenuWAIT] = rmtSD; strcpy(DriveDirPath, "/GONE.D64*");
-    VDrive_PreStart();
+    prestart();
     check("missing image: no mount, no stray cwd, no file created", !vdUnit[0].mounted && vdUnit[0].cwd[0] == 0 && !fs_::exists(SD.root / "GONE.D64"));
     check("... the USB unit still restores its own remembered image", vdUnit[1].mounted);
 
@@ -376,23 +395,23 @@ int main(int argc, char **argv)
     check("sidecar is not in the host listing", (cmd15("CD:_"), fast_load(8, "$").find(".VDRIVE") == std::string::npos));
     check("unmounting removes the sidecar", !fs_::exists(SD.root / ".vdrive"));
     cmd15("CD:/"); cmd15("CD:GAME.D64"); status15();
-    VDrive_PreStart();                                                                  // power cycle, launched from a non-disk menu
+    prestart();                                                                  // power cycle, launched from a non-disk menu
     check("restart re-mounts the remembered SD image", vdUnit[0].mounted && vdUnit[0].cwd[0] == 0 && fast_load(8, "$").find("GAMEDISK") != std::string::npos);
     check("... and the USB unit has none (never mounted since reset)", !vdUnit[1].mounted);
     IO1[rWRegCurrMenuWAIT] = rmtSD; strcpy(DriveDirPath, "/SUB/INNER.D64*");
-    VDrive_PreStart();
+    prestart();
     check("a menu image beats the remembered one, and becomes the remembered one", strcmp(vdUnit[0].cwd, "/SUB") == 0 && vdUnit[0].mounted);
     IO1[rWRegCurrMenuWAIT] = rmtTeensy;
-    VDrive_PreStart();
+    prestart();
     check("... on the following restart too", strcmp(vdUnit[0].cwd, "/SUB") == 0 && vdUnit[0].mounted);
     fs_::remove(SD.root / "SUB" / "INNER.D64");
-    VDrive_PreStart();
+    prestart();
     check("remembered image deleted: starts unmounted, cwd reset", !vdUnit[0].mounted && vdUnit[0].cwd[0] == 0 && !fs_::exists(SD.root / ".vdrive"));
 
     // ---- D71 / D81 images and paths in names ----
     EEPROM.m[eepAdVDriveDevs] = 0xFF; EEPROM.m[eepAdVDriveDevs + 1] = 0xFF;
     IO1[rWRegCurrMenuWAIT] = rmtTeensy; strcpy(DriveDirPath, "/");
-    VDrive_PreStart();
+    prestart();
     cmd15("CD:/"); status15();
     cmd15("CD:BIG.D81"); check("D81 mounts", status15() == "00, OK,00,00\r" && vdUnit[0].mounted && vdUnit[0].d.fmt == D64_FMT_D81 && vdUnit[0].d.tracks == 80);
     check("D81 listing", fast_load(8, "$").find("BIGDISK") != std::string::npos);
@@ -448,9 +467,50 @@ int main(int argc, char **argv)
     cmd15("N:/SUB/NEW2.D64"); check("N: with a folder path creates the image there", status15() == "00, OK,00,00\r" && fs_::file_size(SD.resolve("/sub/new2.d64")) == 174848);
     cmd15("CD:/"); status15();
 
-    // ---- bus scan: the fake KERNAL finds real drives at 8 and 9 and the glue hands out 10 / 11 on the first transaction ----
+    // ---- the menu's bus probe before launch: numbers right from the first instruction, no scan by the KERNAL ----
+    {
+        g_real_drives = {8, 10};
+        IO1[rwRegScratch] = 0;
+        kernal_prestart();
+        check("probe: PreStart asks the menu for a probe (2 units wait)", IO1[rwRegScratch] == 2);
+        check("probe: the C64's own KERNAL while it runs", fBusSnoop == nullptr);
+        check("probe: automatic numbers released", r1(VIO_DEV0) == 0 && r1(VIO_DEV1) == 0);
+        IO1[rwRegScratch] = 9; kernal_prestart();
+        check("probe: 9 free -> SD, one still waits", IO1[rwRegScratch] == 1 && r1(VIO_DEV0) == 9 && fBusSnoop == nullptr);
+        IO1[rwRegScratch] = 11; kernal_prestart();
+        check("probe: 11 free -> USB, done, the replacement KERNAL is back", IO1[rwRegScratch] == 0 && r1(VIO_DEV1) == 11 && fBusSnoop == &KernalCheck);
+        InitHndlr_VDrive();
+        g_scans = 0; nm = call(VD_LISTEN, 9); call(VD_UNLSN);
+        check("probe: no KERNAL scan afterwards, 9 is the SD unit", g_scans == 0 && !(nm & 0x100));
+        IO1[rwRegScratch] = 0; kernal_prestart();                       // the next launch: an ordinary PreStart again
+        check("probe: the next launch asks again", IO1[rwRegScratch] == 2 && fBusSnoop == nullptr);
+        IO1[rwRegScratch] = VD_ProbeEnd; kernal_prestart();              // the menu found no free number
+        check("probe: the menu's end marker hooks the KERNAL back in", IO1[rwRegScratch] == 0 && fBusSnoop == &KernalCheck);
+        IO1[rwRegScratch] = 0; kernal_prestart();
+        IO1[rwRegScratch] = 0; kernal_prestart();                       // a reset in mid-probe: the next launch starts afresh
+        check("probe: a launch after an unfinished probe asks again", IO1[rwRegScratch] == 2);
+        IO1[rwRegScratch] = VD_ProbeEnd; kernal_prestart();
+        g_real_drives.clear(); g_probes = 0;
+        prestart();
+        check("probe: empty bus -> 8 / 9, one probe", g_probes == 1 && r1(VIO_DEV0) == 8 && r1(VIO_DEV1) == 9 && fBusSnoop == &KernalCheck);
+        EEPROM.m[eepAdVDriveDevs] = 12; EEPROM.m[eepAdVDriveDevs + 1] = 13;
+        g_probes = 0; prestart();
+        check("probe: both numbers fixed -> no probe, KERNAL left hooked", g_probes == 0 && IO1[rwRegScratch] == 0 && fBusSnoop == &KernalCheck);
+        EEPROM.m[eepAdVDriveDevs] = 0xFF; EEPROM.m[eepAdVDriveDevs + 1] = 0xFF;
+        fBusSnoop = nullptr;
+    }
+
+    // ---- VIO_MENU (VDrive Config's Q): answered, then the main loop is told to reset into the TR menu ----
+    BtnPressed = 0;
+    raw_call(VIO_MENU, 0, 0);
+    check("menu command answered OK and the button flag set", r1(VIO_STAT) == VIO_OK && BtnPressed);
+    BtnPressed = 0; PollingHndlr_VDrive();
+    check("... once", !BtnPressed);
+
+    // ---- bus scan (fallback when the menu did not probe): the fake KERNAL finds real drives at 8 and 9 and the glue hands out
+    //      10 / 11 on the first transaction ----
     g_real_drives = {8, 9};
-    VDrive_PreStart();
+    prestart(false); InitHndlr_VDrive();
     check("scan pending after start-up", vio->scan_state == 1 && r1(VIO_DEV0) == 8 && r1(VIO_DEV1) == 9);
     g_scans = 0;
     nm = call(VD_LISTEN, 8);
@@ -461,14 +521,14 @@ int main(int argc, char **argv)
     check("the automatic numbers were not written to EEPROM", EEPROM.m[eepAdVDriveDevs] == 0xFF && EEPROM.m[eepAdVDriveDevs + 1] == 0xFF);
     check("device 10 serves the SD card", fast_load(10, "$").find("\"SD:/") != std::string::npos);
     g_real_drives.clear();
-    VDrive_PreStart(); call(VD_LISTEN, 8); call(VD_UNLSN);
+    prestart(false); InitHndlr_VDrive(); call(VD_LISTEN, 8); call(VD_UNLSN);
     check("empty bus again: back to 8 / 9", r1(VIO_DEV0) == 8 && r1(VIO_DEV1) == 9);
     EEPROM.m[eepAdVDriveDevs] = 12; EEPROM.m[eepAdVDriveDevs + 1] = 0;           // SD fixed to 12, USB automatic
     g_real_drives = {8};
-    VDrive_PreStart(); g_scans = 0; call(VD_LISTEN, 12); call(VD_UNLSN);
+    prestart(false); InitHndlr_VDrive(); g_scans = 0; call(VD_LISTEN, 12); call(VD_UNLSN);
     check("fixed SD number is kept, USB takes the first free one (9)", g_scans == 1 && r1(VIO_DEV0) == 12 && r1(VIO_DEV1) == 9);
     EEPROM.m[eepAdVDriveDevs] = 12; EEPROM.m[eepAdVDriveDevs + 1] = 13;
-    VDrive_PreStart(); g_scans = 0; call(VD_LISTEN, 12); call(VD_UNLSN);
+    prestart(false); InitHndlr_VDrive(); g_scans = 0; call(VD_LISTEN, 12); call(VD_UNLSN);
     check("both fixed: no scan at all", g_scans == 0 && r1(VIO_DEV0) == 12 && r1(VIO_DEV1) == 13);
 
     // ---- remote control: VDrive_RemoteStatus / VDrive_RemoteSet (the TCP 2112 get / set commands) ----
@@ -477,7 +537,7 @@ int main(int argc, char **argv)
         EEPROM.m[eepAdVDriveDevs] = 0xFF; EEPROM.m[eepAdVDriveDevs + 1] = 0xFF;
         fs_::remove(SD.root / ".vdrive"); fs_::remove(firstPartition.root / ".vdrive");
         IO1[rWRegCurrMenuWAIT] = rmtTeensy; DriveDirPath[0] = 0;
-        VDrive_PreStart();
+        prestart();
         fs_::copy_file(SD.root / "TWO.D71", SD.root / "SUB" / "COPY.D64", fs_::copy_options::overwrite_existing);   // a 1571 image under a .D64 name: the size decides
         char js[300], msg[64];
         auto has = [&](int unit, const char *needle) { return VDrive_RemoteStatus(unit, js, sizeof js) > 0 && strstr(js, needle) != nullptr; };
@@ -571,10 +631,10 @@ int main(int argc, char **argv)
         // the next start mounts what was set, and a doubled slash in a remembered path no longer leaks into the display
         VDrive_RemoteIdleSet(0, "/GAME.D64", msg, sizeof msg);
         IO1[rWRegCurrMenuWAIT] = rmtTeensy; DriveDirPath[0] = 0;
-        VDrive_PreStart();
+        prestart();
         check("idle set then start: the image is mounted", vdUnit[0].mounted && fast_load(8, "$").find("GAMEDISK") != std::string::npos);
         { std::ofstream f(firstPartition.root / ".vdrive", std::ios::trunc); f << "//USB.D64"; }
-        VDrive_PreStart();
+        prestart();
         check("a sidecar with a doubled slash mounts with cwd root, not //", vdUnit[1].mounted && vdUnit[1].cwd[0] == 0);
         check("... and the status path has a single slash", VDrive_RemoteStatus(1, js, sizeof js) > 0 && strstr(js, "\"path\":\"/usb.d64\"") && !strstr(js, "//"));
         fs_::remove(SD.root / ".vdrive"); fs_::remove(firstPartition.root / ".vdrive");
@@ -601,7 +661,7 @@ int main(int argc, char **argv)
         // fresh state: nothing mounted, sidecars gone
         fs_::remove(SD.root / ".vdrive"); fs_::remove(firstPartition.root / ".vdrive");
         IO1[rWRegCurrMenuWAIT] = rmtTeensy; DriveDirPath[0] = 0;
-        VDrive_PreStart(); InitHndlr_VDrive();
+        prestart(); InitHndlr_VDrive();
         check("border register idles at $80", vioHot.border == VIO_BRD_IDLE && r1(VIO_BORDER) == 0x80);
         g_ms += 5000;
 

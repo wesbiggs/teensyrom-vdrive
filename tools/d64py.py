@@ -149,7 +149,7 @@ LIB.vio_io2_read.restype = ctypes.c_uint8
 LIB.vio_poll.restype = ctypes.c_int
 LIB.vdrive_active.restype = ctypes.c_int
 (R_CMD, R_ARG, R_DATA, R_STAT, R_ST, R_LEN, R_DEV0, R_DEV1) = range(8)
-(F_LOAD_OPEN, F_LOAD_BLK, F_SAVE_OPEN, F_SAVE_BLK, F_SAVE_CLOSE, F_SCAN, F_FREE) = range(9, 16)
+(F_LOAD_OPEN, F_LOAD_BLK, F_SAVE_OPEN, F_SAVE_BLK, F_SAVE_CLOSE, F_SCAN, F_FREE, F_MENU) = range(9, 17)
 BUSY, OK, NOTMINE, SCANREQ = 0x80, 0x5A, 0xA5, 0x3C
 WIN_SIZE = 128                                    # VIO_WIN: the IO2 window at $DF80 (d64/vdrive_io.h)
 
@@ -175,7 +175,10 @@ class VIO:
         self.keep.append(disk)
 
     def arm_scan(self): return LIB.vio_arm_scan(self.v)
+    def probe_begin(self): return LIB.vio_probe_begin(self.v)
+    def probe_free(self, dev): return LIB.vio_probe_free(self.v, ctypes.c_uint8(dev))
     def vd_act(self): return LIB.vdrive_active(self.v)
+    def take_menu(self): return LIB.vio_take_menu(self.v)
 
     def set_devices(self, d0, d1):
         LIB.vdrive_set_devices(self.v, ctypes.c_uint8(d0), ctypes.c_uint8(d1))

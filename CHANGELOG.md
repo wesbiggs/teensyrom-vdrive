@@ -1,13 +1,41 @@
 # Changelog
 
-## Unreleased
+## v0.9.0.35
+
+Works on hardware (owner, 2026-10-30).
+
+### Added
+- **Device numbers settled before the program starts.** The TR menu now probes the serial bus itself before every launch with a
+  VDrive Special IO (any PRG start: menu, remote launch, hot keys, auto-launch, "Exit to BASIC"), with the C64's own KERNAL, so
+  `PEEK(56854)` / `PEEK(56855)` (`$DE16/$DE17`) give the SD / USB numbers from the program's first instruction. Programs no longer need
+  a bus access of their own first. The firmware holds the replacement KERNAL back during the probe; the KERNAL's own scan on the first
+  disk access stays as the fallback (`docs/DESIGN.md` section 37). Both numbers fixed with `U0>`, or no card and no stick: no probe.
+  The patch now changes the menu too (`MainMenu.asm`, routine in `firmware/vdrive_probe.asm`, `TeensyROMC64.h` rebuilt by
+  `tools/make_tr_patch.sh` with the TR's own tool, so regenerating the patch needs ACME 0.97 and node).
+- **Back to the TR menu from a program:** mailbox command 16 (`POKE 56848,16`) writes back what is unsaved and resets into the TR
+  menu, as the menu button does. VDrive Config's `Q` uses it ("Exit to Menu"); without an answer it returns to BASIC as before.
+- `VDrive Config` is in the TR menu's Utilities (Teensy memory), run with the user's default VDrive Special IO (its REU / SwiftLink
+  kept).
 
 ### Changed
-- `VDrive Config.prg` is now machine code (`util/vdconfig.s`, assembled by `make util`; no petcat needed) instead of BASIC: the same screen and
-  keys, but reading the list, the directory listings of the browser and every redraw no longer crawl through BASIC string handling.
-  It now reads the device numbers after a first bus access (as VDCOPY does), so with a real drive on the bus it talks to the numbers the
-  bus scan gave the SD / USB units, not their defaults. `tests/test_vdconfig.py` runs the real PRG in py65 (`tests/c64_sim.py` answers its
-  KERNAL calls) against the same drive model; not on a C64 or in VICE yet.
+- `VDrive Config.prg` is now machine code (`util/vdconfig.s`, assembled by `make util`; no petcat needed) instead of BASIC: the same
+  screen and keys, but reading the list, the directory listings of the browser and every redraw no longer crawl through BASIC string
+  handling. The screen is in the lower-case character set: paths show as they are on the card, messages in mixed case. The list
+  header and the start-up message say which Alt-button gesture switches that list (1 tap SD, 2 taps USB). It reads the device numbers
+  the menu's probe left (before this firmware it made one bus access first).
+
+Tests: unit and firmware glue host tests; `tests/test_vdconfig.py` runs the real PRG in py65; the menu's probe routine runs in VICE
+with true-drive 1541s (`make test-menuprobe`, needs ACME). Not on a C64 yet: the probe through the real menu and Teensy, VDrive Config
+on screen, the return to the menu.
+
+## v0.9.0.34
+
+### Fixed
+- SwiftLink transmit could hang the whole firmware: NativeEthernet's `client.write()` waits for send-buffer space, and with the
+  Ethernet stack polled from `loop()` (0.9.0.14) a full buffer stopped `loop()` for good (an 8 KB HTTP POST stalled after a lost
+  segment). Bytes now go into a 256-byte buffer, sent after a 2 ms pause, every 20 ms or when full, never more than
+  `availableForWrite()`; while it is full the ACIA's transmitter stays "not empty" (`firmware/swiftlink-tx-fix.patch`, meant
+  for upstream). Works on hardware (owner): the stalled uploads complete.
 
 ## v0.9.0.33
 

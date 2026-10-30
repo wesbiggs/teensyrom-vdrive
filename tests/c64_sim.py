@@ -4,10 +4,14 @@ The program is loaded from its PRG and started at the SYS address of its BASIC s
 jump-table entries below is carried out here and returns like the real routine: SETLFS, SETNAM, OPEN, CLOSE, CHKIN, CHKOUT, CLRCHN,
 CHRIN, CHROUT, GETIN, PLOT, LISTEN, SECOND, UNLSN. Any other jump into the ROM area is an error. Files go to a drive object
 (open / close / get / getline / put / st, and .units for "present"), the screen is a 40x25 model with cursor addressing, reverse and colour
-codes, keys come from a script. run() returns "key" when the program waits for a key it does not have and "end" when it returns to BASIC.
+codes and the two character sets (CHR$(14) / CHR$(142); row() shows what the set displays: in the lower-case set $41-$5A as
+small letters and $C1-$DA as capitals), keys come from a script. run() returns "key" when the program waits for a key it does not
+have, "end" when it returns to BASIC and "menu" when it writes the vdrive mailbox's VIO_MENU command (the Teensy would reset the
+C64 into the TR menu then; answered at $DE13 unless menu_answer is False).
 Kept from the real KERNAL on purpose: CHRIN from a serial file answers CR without reading while ST ($90) is not 0, every read ORs its
 bits into ST, and bytes sent to a file reach the drive at UNLISTEN (CLRCHN / CLOSE), so a command is one PRINT#."""
 from py65.devices.mpu6502 import MPU
+from py65.memory import ObservableMemory
 
 COLOR_OF = {144: 0, 5: 1, 28: 2, 159: 3, 156: 4, 30: 5, 31: 6, 158: 7, 129: 8, 149: 9, 150: 10, 151: 11, 152: 12, 153: 13, 154: 14, 155: 15}
 STATUS = 0x90
@@ -23,6 +27,7 @@ class Screen:
         self.reverse = False
         self.color = 1
         self.scrolled = 0
+        self.lower = False                  # the lower-case character set
 
     def clear(self):
         for r in range(25):
@@ -31,6 +36,7 @@ class Screen:
 
     def put(self, code):
         if code == 147: self.clear(); return
+        if code in (14, 142): self.lower = code == 14; return
         if code == 19: self.r = self.c = 0; return
         if code == 18: self.reverse = True; return
         if code == 146: self.reverse = False; return
@@ -39,9 +45,14 @@ class Screen:
         if code == 145: self.r = max(0, self.r - 1); return
         if code == 13: self.c = 0; self.newline(); self.reverse = False; return
         if code & 0x7F < 32: return
-        self.ch[self.r][self.c] = chr(code); self.rev[self.r][self.c] = self.reverse; self.col[self.r][self.c] = self.color
+        self.ch[self.r][self.c] = self.glyph(code); self.rev[self.r][self.c] = self.reverse; self.col[self.r][self.c] = self.color
         self.c += 1
         if self.c >= 40: self.c = 0; self.newline()    # the C64 wraps as soon as the last column is written (and scrolls on the last row)
+
+    def glyph(self, code):
+        if 0xC1 <= code <= 0xDA or 0x61 <= code <= 0x7A: return chr((code & 0x1F) + 64) if self.lower else "?"   # shifted: capitals / graphics
+        if 0x41 <= code <= 0x5A and self.lower: return chr(code + 32)
+        return chr(code)
 
     def newline(self):
         if self.r < 24: self.r += 1
@@ -57,9 +68,11 @@ def petscii(s): return "".join(chr(ord(c) - 32) if "a" <= c <= "z" else c for c 
 
 
 class C64:
-    def __init__(self, prg, drive, mem=None):
+    MBXCMD, MBXSTAT, VIO_MENU = 0xDE10, 0xDE13, 16
+
+    def __init__(self, prg, drive, mem=None, menu_answer=True):
         prg = bytes(prg)
-        self.cpu = c = MPU()
+        self.cpu = c = MPU(memory=ObservableMemory())
         self.mem = c.memory
         load = prg[0] | prg[1] << 8
         self.mem[load:load + len(prg) - 2] = list(prg[2:])
@@ -69,6 +82,8 @@ class C64:
         self.screen, self.drive, self.keys = Screen(), drive, []
         self.files, self.inp, self.outp, self.wbuf, self.cmdbuf = {}, None, None, bytearray(), {}
         self.lfs, self.name, self.ldev, self.steps = (0, 0, 0), "", None, 0
+        self.menu, self.menu_answer = False, menu_answer
+        self.mem.subscribe_to_write([self.MBXCMD], self.mbx_cmd)
         c.sp = 0xF6
         self.push((END - 1) >> 8); self.push((END - 1) & 0xFF)
         c.pc = start
@@ -102,6 +117,7 @@ class C64:
                 continue
             if pc >= 0xA000 and not 0xC000 <= pc < 0xD000: raise RuntimeError("call into the ROM at $%04X, not modelled" % pc)
             c.step()
+            if self.menu: return "menu"
             self.steps += 1
             if self.steps > max_steps: raise RuntimeError("runaway program at $%04X" % c.pc)
 
@@ -109,6 +125,11 @@ class C64:
         for k in keys:
             if isinstance(k, str): self.keys.extend(ord(petscii(ch)) for ch in k)     # unshifted keys give the upper case codes
             else: self.keys.append(k)
+
+    def mbx_cmd(self, addr, v):
+        if v != self.VIO_MENU: raise RuntimeError("mailbox command %d, not modelled" % v)
+        self.mem[self.MBXSTAT] = 0x5A if self.menu_answer else 0x80
+        self.menu = self.menu_answer
 
     # ---- KERNAL ----
     def setlfs(self): self.lfs = (self.cpu.a, self.cpu.x, self.cpu.y)

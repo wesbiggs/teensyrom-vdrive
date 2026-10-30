@@ -8,14 +8,16 @@ C=Source/Teensy/MinimalBoot/Common
 W="$(mktemp -d)"; trap 'rm -rf "$W"' EXIT
 mkdir -p "$W/$C/IO_Handlers"
 for f in Common_Defs.h Menu_Regs.h IOHandlers.h ISRs.c IO_Handlers/StatusFunctions.c IO_Handlers/IOH_KernalReplace.c IO_Handlers/Swift_ATcommands.c IO_Handlers/IOH_Swiftlink.c; do cp "$TR/$C/$f" "$W/$C/$f"; done
-mkdir -p "$W/Source/Teensy"; cp "$TR/Source/Teensy/Teensy.ino" "$TR/Source/Teensy/IOHandlers.ino" "$TR/Source/Teensy/SerUSBIO.ino" "$W/Source/Teensy/"
+mkdir -p "$W/Source/Teensy"; cp "$TR/Source/Teensy/Teensy.ino" "$TR/Source/Teensy/IOHandlers.ino" "$TR/Source/Teensy/SerUSBIO.ino" "$TR/Source/Teensy/MainMenuItems.h" "$W/Source/Teensy/"
+M=Source/C64/MainMenuCRT/source; mkdir -p "$W/$M" "$W/Source/Teensy/TRMenuFiles/ROMs"
+cp "$TR/$M/MainMenu.asm" "$W/$M/"; cp "$TR/Source/Teensy/TRMenuFiles/ROMs/TeensyROMC64.h" "$W/Source/Teensy/TRMenuFiles/ROMs/"
 cd "$W"; git init -q; git add -A; git -c user.name=x -c user.email=x@x commit -qm base
 # fixes to upstream Kernal Replace (RAM under the KERNAL, fast image copy, late-ISR counters): applied before the edits below
 git apply "$HERE/firmware/kernalreplace-fixes.patch"
 # fix to upstream SwiftLink: Tx bytes coalesced, never a blocking client.write() (it hung loop() with the stack polled from there)
 git apply "$HERE/firmware/swiftlink-tx-fix.patch"
 
-python3 -I - "$C" "$HERE/firmware/REV" "$HERE/firmware/vdrive_remote.inc" <<'PY'
+python3 -I - "$C" "$HERE/firmware/REV" "$HERE/firmware/vdrive_remote.inc" "$HERE/firmware/vdrive_probe.asm" <<'PY'
 import sys
 C = sys.argv[1]
 def edit(path, old, new):
@@ -93,6 +95,37 @@ edit(f"{C}/IO_Handlers/StatusFunctions.c",
      "   if (NextIOHndlr == IOH_KernalReplace)\n   {\n      InitHndlr_KERNALReplace_PreStart(); //separate function so it doesn't get called twice\n",
      "   if (NextIOHndlr == IOH_KernalReplace\n#ifdef Fab04_VDrive\n       || VD_IsHandler(NextIOHndlr)\n#endif\n      )\n   {\n      InitHndlr_KERNALReplace_PreStart(); //separate function so it doesn't get called twice\n"
      "#ifdef Fab04_VDrive\n      if (VD_IsHandler(NextIOHndlr)) VDrive_PreStart(); //SD/USB probing now, while the C64 still waits\n#endif\n")
+# The launch-time bus probe (docs/DESIGN.md 37). KERNALPreStart() first lets VDrive_ProbeStep() answer the menu's probe steps;
+# the menu clears rwRegScratch before PreStart (a TeensyROM without VDrive never sets it, so its menu skips the probe) and runs
+# VDriveProbe after it, with the C64's own KERNAL still in place.
+edit(f"{C}/IO_Handlers/StatusFunctions.c",
+     "   //called before BASIC init and program load/launch\n#ifdef Fab04_KernalReplace\n",
+     "   //called before BASIC init and program load/launch\n"
+     "#ifdef Fab04_VDrive\n   if (VDrive_ProbeStep()) return; //a step of the menu's bus probe after a VDrive PreStart (MainMenu.asm, VDriveProbe)\n#endif\n"
+     "#ifdef Fab04_KernalReplace\n")
+edit("Source/C64/MainMenuCRT/source/MainMenu.asm",
+     ";Check for Kernal Replace Special IO and start it now\n   lda #rCtlKERNALPreStartWAIT\n   sta wRegControl+IO1Port\n"
+     "   jsr WaitForTRDots ;use WaitForTRWaitMsg instead?\n",
+     ";Check for Kernal Replace Special IO and start it now\n"
+     "   lda #0\n   sta rwRegScratch+IO1Port ;VDrive: a nonzero answer asks for VDriveProbe\n"
+     "   lda #rCtlKERNALPreStartWAIT\n   sta wRegControl+IO1Port\n"
+     "   jsr WaitForTRDots ;use WaitForTRWaitMsg instead?\n"
+     "   jsr VDriveProbe\n")
+edit("Source/C64/MainMenuCRT/source/MainMenu.asm",
+     "   ;rts ;SelectItem never returns\n\nAnyKeyErrMsgWait:\n",
+     "   ;rts ;SelectItem never returns\n\n" + open(sys.argv[4]).read() + "AnyKeyErrMsgWait:\n")
+# VDrive Config in the Teensy menu's Utilities, run with a VDrive Special IO (VDriveSwift_Remap picks the user's default one). After
+# "LOAD"*",8,1 and RUN": the menu finds that entry and "Exit to BASIC" by their place in the list (items 2 and 3).
+edit("Source/Teensy/MainMenuItems.h",
+     '#include "TRMenuFiles/ROMs/ccgms_2021_Swiftlink_DE_38400.prg.h"\n',
+     '#include "TRMenuFiles/ROMs/ccgms_2021_Swiftlink_DE_38400.prg.h"\n'
+     '#ifdef Fab04_VDrive\n   #include "TRMenuFiles/ROMs/vdconfig.prg.h"\n#endif\n')
+edit("Source/Teensy/MainMenuItems.h",
+     ', (uint8_t*)Load8Run_prg               , sizeof(Load8Run_prg) , //used by location, see Load8Run:\n',
+     ', (uint8_t*)Load8Run_prg               , sizeof(Load8Run_prg) , //used by location, see Load8Run:\n'
+     '#ifdef Fab04_VDrive\n'
+     '     rtFilePrg  , IOH_VDrive       , (char*)"VDrive Config             +VDrive", (uint8_t*)vdconfig_prg               , sizeof(vdconfig_prg) ,\n'
+     '#endif\n')
 # Added as a case of its own ahead of upstream's, instead of rewriting upstream's IOHandlerInit() line: an open upstream PR
 # strips that line's trailing space, which would break a hunk that has it as context.
 edit("Source/Teensy/IOHandlers.ino",
@@ -105,6 +138,24 @@ edit("Source/Teensy/IOHandlers.ino",
 PY
 cp "$HERE/firmware/IOH_VDrive.c" "$HERE/firmware/IOH_VDriveSwift.c" "$HERE/firmware/IOH_VDriveREU.c" "$HERE/firmware/IOH_VDriveSwiftREU.c" \
    "$C/IO_Handlers/"
+# the VDrive Config PRG as a menu binary, in the TR's own header format
+python3 -I "$HERE/tools/make_util.py" "$W/util" >/dev/null
+mkdir -p Source/Teensy/TRMenuFiles/ROMs
+python3 -I - "$W/util/VDrive Config.prg" Source/Teensy/TRMenuFiles/ROMs/vdconfig.prg.h <<'PY'
+import sys
+data = open(sys.argv[1], "rb").read()
+rows = ",\n".join("\t" + ", ".join("0x%02x" % b for b in data[i:i + 12]) for i in range(0, len(data), 12))
+open(sys.argv[2], "w").write("#ifndef VDCONFIG_PRG_H\n#define VDCONFIG_PRG_H\n\n// VDrive Config (teensyrom-vdrive util/vdconfig.s), generated by tools/make_tr_patch.sh\n"
+                             "PROGMEM static const unsigned char vdconfig_prg[] = {\n" + rows + "\n};\n\n#endif /* VDCONFIG_PRG_H */\n")
+PY
+rm -rf "$W/util"
+# the menu, rebuilt into its header (TeensyROMC64.h) by the TR's own tool (ACME 0.97, node), in a scratch copy of what it reads
+B="$(mktemp -d)"; mkdir -p "$B/Source" "$B/$C"
+cp -R "$TR/tools" "$B/"; cp -R "$TR/Source/C64" "$B/Source/"; cp "$C/Menu_Regs.h" "$B/$C/"
+cp "$M/MainMenu.asm" "$B/$M/"
+(cd "$B" && node tools/build-c64.mjs --project MainMenuCRT --rom-dir "$W/Source/Teensy/TRMenuFiles/ROMs" >/dev/null)
+cmp -s "$B/$M/Menu_Regs.i" "$TR/$M/Menu_Regs.i" || { echo "Menu_Regs.i would change: carry it in the patch" >&2; exit 1; }
+rm -rf "$B"
 mkdir -p "$C/vdrive"
 cp "$HERE"/d64/d64.c "$HERE"/d64/d64.h "$HERE"/d64/vdrive.c "$HERE"/d64/vdrive.h \
    "$HERE"/d64/vdrive_io.c "$HERE"/d64/vdrive_io.h "$HERE"/d64/vd_cfg.h "$C/vdrive/"

@@ -1,11 +1,13 @@
 ; VDrive Config: edit the Alt-button disk lists (/vdrive-config.txt on each unit) and show / change the mounted images, entirely in machine code.
 ; Loads at $0801 with a BASIC "10 SYS 2061" stub. Talks to the drives only through the KERNAL: the "!CONFIG[,W]" and "!STATE" host text
 ; channels (docs/DESIGN.md 23), "$/folder/" listings for the browser and "CD:" on the command channel (logical file 15 for the SD unit, 14 for
-; the USB unit, open for the whole run: closing a command channel closes every channel of its unit).
+; the USB unit, open for the whole run: closing a command channel closes every channel of its unit). The only mailbox access of its own
+; is the return to the TR menu (VIO_MENU, on Q).
 ; The file is kept as text in TXT (each line ends in CR) with an index of its lines; every change rebuilds the text in NEWB (one line replaced,
 ; removed, swapped or added), copies it back, re-indexes and re-parses the entries, then writes the whole file. Lines that are not entries
 ; (comments, blank lines) stay where they are.
-; Buffers and tables are BSS at $2000-$4FFF (not in the PRG). Messages are upper case ASCII, which is also the default-mode PETSCII.
+; Buffers and tables are BSS at $2000-$4FFF (not in the PRG). The screen is in the lower-case character set: PS swaps the case of the
+; letters in its strings for that set, strings for the drive (CMDS, types) are as they are.
 .setcpu "6502"
 
 SETLFS  = $FFBA
@@ -29,6 +31,10 @@ BORDER  = $D020
 BGCOL   = $D021
 TXTCOL  = $0286
 DEV0REG = $DE16         ; vdrive: current device number of the SD unit, $DE17 the USB unit (0 = none)
+MBXCMD  = $DE10         ; vdrive mailbox (d64/vdrive_io.h): command register ...
+MBXSTAT = $DE13         ; ... and its answer token
+VIO_MENU = 16           ; command: back to the TR menu (the Teensy resets the C64 into it)
+STAT_OK = $5A           ; answer token: done
 
 P1      = $FB           ; inline strings
 P2      = $FD           ; the string being printed, parsed or compared
@@ -47,18 +53,50 @@ OUTSCR  = 0             ; OUTM: where fch sends characters
 OUTLINE = 1
 OUTCMD  = 2
 
-.macro PS str
+.macro LCB s          ; one string or byte for the lower-case screen: 'a'-'z' -> $41-$5A, 'A'-'Z' -> $C1-$DA, anything else as it is
+.if .match({s}, "")
+.repeat .strlen(s), I
+.if .strat(s, I) >= 'a' && .strat(s, I) <= 'z'
+        .byte .strat(s, I) - $20
+.elseif .strat(s, I) >= 'A' && .strat(s, I) <= 'Z'
+        .byte .strat(s, I) + $80
+.else
+        .byte .strat(s, I)
+.endif
+.endrepeat
+.else
+        .byte s
+.endif
+.endmacro
+.macro LC s1, s2, s3, s4, s5
+        LCB s1
+.ifnblank s2
+        LCB s2
+.endif
+.ifnblank s3
+        LCB s3
+.endif
+.ifnblank s4
+        LCB s4
+.endif
+.ifnblank s5
+        LCB s5
+.endif
+.endmacro
+.macro PS s1, s2, s3, s4, s5 ; print the strings / bytes (screen text: see LCB)
         jsr pstr
-        .byte str, 0
+        LC s1, s2, s3, s4, s5
+        .byte 0
 .endmacro
 .macro MSG str          ; a message on row 20
         jsr msgbeg
-        PS {str}
+        PS str
         jsr fpad
 .endmacro
-.macro CMDS str         ; CMD = str; fch appends to CMD until scr
+.macro CMDS str         ; CMD = str (as it is: for the drive); fch appends to CMD until scr
         jsr cmdbeg
-        PS {str}
+        jsr pstr
+        .byte str, 0
 .endmacro
 
 .segment "LOADADDR"
@@ -73,10 +111,9 @@ OUTCMD  = 2
 start:
 .assert start = 2061, error, "the SYS address in the BASIC stub must match"
         jsr scr
-        PS {"READING CONFIG...", 13}
-        lda #8
-        jsr probe               ; the first bus access runs the vdrive bus scan; until then DEV0/DEV1 hold the defaults
-        ldx #1
+        PS 14, 8                ; the lower-case character set, and Shift+C= may not switch it back
+        PS "Reading config...", 13
+        ldx #1                  ; the TR menu probed the bus before the launch, so DEV0/DEV1 are already settled
 @dv:    lda DEV0REG,x
         cmp #8
         bcc @no
@@ -91,7 +128,7 @@ start:
         bne @act
         lda #255
         sta FLDN
-        PS {"VDRIVE IS NOT ACTIVE.", 13, "START THIS PROGRAM FROM THE TEENSYROM MENU WITH THE VDRIVE KERNAL.", 13}
+        PS "VDrive is not active.", 13, "Start this program from the TeensyROM menu with the VDrive KERNAL.", 13
         rts
 @act:   lda BORDER
         and #15
@@ -130,7 +167,7 @@ start:
         sta CU
         sta TP
         jsr drawall
-        MSG "READY"
+        MSG "Ready. Alt: 1 tap = SD, 2 taps = USB"
 main:   jsr getkey
         cmp #'Q'
         beq quit
@@ -153,11 +190,37 @@ NKEYS = * - keytab
 keylo:  .lobytes k_up-1, k_down-1, k_ret-1, k_brow-1, k_unm-1, k_add-1, k_edit-1, k_del-1, k_plus-1, k_minus-1, k_tog-1, k_ref-1
 keyhi:  .hibytes k_up-1, k_down-1, k_ret-1, k_brow-1, k_unm-1, k_add-1, k_edit-1, k_del-1, k_plus-1, k_minus-1, k_tog-1, k_ref-1
 
+; Q: back to the TR menu. The Teensy answers the mailbox command, writes back what is unsaved and resets the C64 into its menu; if
+; nothing answers (or no reset comes) this returns to BASIC instead.
 quit:   lda #15
         jsr CLOSE
         lda #14
         jsr CLOSE
         jsr CLRCHN
+        sei                     ; nothing from the KERNAL while the Teensy writes to the card
+        lda #VIO_MENU
+        sta MBXCMD
+        ldx #0
+        ldy #0
+@w:     lda MBXSTAT             ; BUSY until answered; read twice, as the KERNAL does (a late answer gives a mixed byte)
+        cmp #STAT_OK
+        bne @n
+        cmp MBXSTAT
+        beq @ok
+@n:     dex
+        bne @w
+        dey
+        bne @w
+        beq @bas                ; not answered in about a second
+@ok:    lda #4                  ; answered: the reset comes within a few ms; give it about 4 s
+        sta T0
+@r:     dex
+        bne @r
+        dey
+        bne @r
+        dec T0
+        bne @r
+@bas:   cli
         lda OC
         sta BORDER
         lda OB
@@ -166,23 +229,11 @@ quit:   lda #15
         sta TXTCOL
         lda #255
         sta FLDN
-        PS {147, 154, "BYE"}
+        jsr pstr
+        .byte 147, 142, 9, 154, "BYE", 0  ; upper case again for BASIC
         rts
 
 ; ---------------------------------------------------------------------------------------------------------------------------------
-; Is anything listening on unit A? LISTEN + SECOND, as the KERNAL bus scan does it. Returns A = ST (Z set = present).
-probe:  jsr LISTEN
-        lda #$6F
-        jsr SECOND
-        lda STATUS
-        pha
-        bne @gone
-        jsr UNLSN
-@gone:  lda #0
-        sta STATUS
-        pla
-        rts
-
 ; open logical file A on device X, secondary Y, without a name (the command channel)
 openc:  jsr SETLFS
         lda #0
@@ -264,6 +315,14 @@ cmdbeg: lda #OUTCMD
         lda #0
         sta CMDLEN
         rts
+
+; fch with a letter $41-$5A shown in upper case (lower-case character set): the types from the listing
+fchu:   cmp #'A'
+        bcc @f
+        cmp #'Z'+1
+        bcs @f
+        ora #$80
+@f:     jmp fch
 
 ; spaces up to the end of the field
 fpad:   lda FLDN
@@ -375,7 +434,7 @@ msgbeg: jsr scr
 
 ; "ERROR nn,message" on row 20
 perr:   jsr msgbeg
-        PS "ERROR "
+        PS "Error "
         lda ENUM
         ldx #0
         jsr fnum
@@ -985,7 +1044,7 @@ save:   lda TLEN+1
         lda TLEN
         cmp #<(SAVEMAX+1)
         bcc @ok
-@long:  MSG "LIST TOO LONG TO SAVE"
+@long:  MSG "List too long to save"
         rts
 @ok:    CMDS "!CONFIG,W"
         jsr scr
@@ -999,7 +1058,7 @@ save:   lda TLEN+1
         lda #2
         jsr CLOSE
         jsr msgbeg
-        PS "CANNOT WRITE:"
+        PS "Cannot write:"
         jsr pemsg
         jmp fpad
 @w:     ldx #2
@@ -1033,10 +1092,10 @@ save:   lda TLEN+1
         jsr rdel
         lda ENUM
         bne @we
-        MSG "SAVED"
+        MSG "Saved"
         rts
 @we:    jsr msgbeg
-        PS "WRITE ERROR "
+        PS "Write error "
         lda ENUM
         ldx #0
         jsr fnum
@@ -1045,29 +1104,29 @@ save:   lda TLEN+1
 ; ---------------------------------------------------------------------------------------------------------------------------------
 ; The screen: row 0 title, 1-2 the units, 3 the list header, 4-19 the list, 20 messages, 21-23 the keys.
 drawall:jsr scr
-        PS {147}
+        PS 147
         ldx #0
         jsr rowbeg
-        PS {18, " VDRIVE CONFIG"}
+        PS 18, " VDrive Config"
         jsr fpad
-        PS {146}
+        PS 146
 drawmid:jsr drawdrv
         jsr drawlh
         jsr drawlist
         ldx #21
         jsr rowbeg
-        PS "RETURN:MOUNT B:BROWSE+MOUNT U:UNMOUNT"
+        PS "Return:Mount B:Browse+Mount U:Unmount"
         jsr fpad
         ldx #22
         jsr rowbeg
-        PS "A:ADD E:EDIT D:DELETE +/-:REORDER"
+        PS "A:Add E:Edit D:Delete +/-:Reorder"
         jsr fpad
         ldx #23
         jsr rowbeg
-        PS "T:SD/USB LIST R:REFRESH Q:QUIT"
+        PS "T:SD/USB List R:Refresh Q:Exit to Menu"
         jmp fpad
 
-; "SD  8: /path" / "USB 9: (NOTHING MOUNTED)" / "USB  : NO DRIVE", the shown unit's name in reverse
+; "SD  8: /path" / "USB 9: (Nothing mounted)" / "USB  : No drive", the shown unit's name in reverse
 drawdrv:lda #0
         sta U
 @u:     ldx U
@@ -1078,7 +1137,7 @@ drawdrv:lda #0
         lda U
         cmp UN
         bne @n
-        PS {18}
+        PS 18
 @n:     lda U
         bne @usb
         PS "SD "
@@ -1092,17 +1151,17 @@ drawdrv:lda #0
 @d:     ldx #2
         jsr fnum
         PS ": "
-@m:     PS {146}
+@m:     PS 146
         lda #32
         sta FLDN
         ldx U
         lda DEVS,x
         bne @h
-        PS "NO DRIVE"
+        PS "No drive"
         jmp @p
 @h:     lda MPL,x
         bne @mp
-        PS "(NOTHING MOUNTED)"
+        PS "(Nothing mounted)"
         jmp @p
 @mp:    jsr mpptr
         lda #32
@@ -1117,7 +1176,7 @@ drawdrv:lda #0
 
 drawlh: ldx #3
         jsr rowbeg
-        PS {18, "LIST: "}
+        PS 18, "List: "
         lda UN
         bne @u
         PS "SD"
@@ -1127,9 +1186,20 @@ drawlh: ldx #3
         lda NE
         ldx #0
         jsr fnum
-        PS " ENTRIES)"
-        jsr fpad
-        PS {146}
+        PS " entries)"
+@sp:    lda FLDN                ; the Alt button gesture for this list, at the right end
+        cmp #12
+        bcc @alt
+        lda #' '
+        jsr fch
+        jmp @sp
+@alt:   lda UN
+        bne @a2
+        PS "Alt: 1 tap"
+        jmp @e
+@a2:    PS "Alt: 2 taps"
+@e:     jsr fpad
+        PS 146
         rts
 
 drawlist:
@@ -1191,17 +1261,17 @@ drawrow:lda KK
         jsr fpath
         lda #255
         sta FLDN
-        PS {146, " "}
+        PS 146, " "
         ldx KK
         lda EC,x
         ldx #3
         jsr fnum
-        PS {" ", 18}
+        PS " ", 18
         ldx KK
         ldy EC,x
         lda colcodes,y
         jsr fch
-        PS {"  ", 146, 5}
+        PS "  ", 146, 5
         ldx KK
         lda EF,x
         ldx #3
@@ -1328,7 +1398,7 @@ mountp: CMDS "CD:"
         jsr sendcmd
         lda ENUM
         bne @e
-        MSG "MOUNTED"
+        MSG "Mounted"
         jmp @d
 @e:     jsr perr
 @d:     jsr readstate
@@ -1346,16 +1416,16 @@ k_brow: jsr browse
 k_unm:  ldx UN
         lda MPL,x
         bne @u
-        MSG "NOTHING MOUNTED"
+        MSG "Nothing mounted"
         rts
 @u:     CMDS {"CD:", LARROW}
         jsr sendcmd
         lda ENUM
         bne @e
-        MSG "UNMOUNTED"
+        MSG "Unmounted"
         jmp @d
 @e:     jsr msgbeg
-        PS "ERROR "
+        PS "Error "
         lda ENUM
         ldx #0
         jsr fnum
@@ -1370,7 +1440,7 @@ k_add:  lda NE
         lda NL
         cmp #MAXL-1
         bcc @ok
-@full:  MSG "LIST IS FULL"
+@full:  MSG "List is full"
         rts
 @ok:    jsr browse
         lda BR
@@ -1460,7 +1530,7 @@ k_edit: lda NE
         cmp #'/'
         beq @num
 @bad:   jsr drawmid
-        MSG "PATH MUST START WITH /"
+        MSG "Path must start with /"
         rts
 @num:   lda #15
         sta NMAX
@@ -1494,7 +1564,7 @@ k_edit: lda NE
 @cn:    jmp drawall
 
 toolong:jsr drawall
-        MSG "LIST TOO LONG"
+        MSG "List too long"
         rts
 
 ; D: delete the entry (asks)
@@ -1502,13 +1572,13 @@ k_del:  lda NE
         bne @go
         rts
 @go:    jsr msgbeg
-        PS "DELETE ENTRY "
+        PS "Delete entry "
         lda CU
         clc
         adc #1
         ldx #0
         jsr fnum
-        PS "? (Y/N)"
+        PS "? (y/n)"
         jsr fpad
         jsr getkey
         cmp #'Y'
@@ -1569,7 +1639,7 @@ k_tog:  lda UN
         tax
         lda DEVS,x
         bne @ok
-        MSG "NO DRIVE ON THAT UNIT"
+        MSG "No drive on that unit"
         rts
 @ok:    stx UN
         jsr setunit
@@ -1586,7 +1656,7 @@ k_ref:  jsr readstate
         jsr clampcu
         jsr fixtp
         jsr drawmid
-        MSG "REFRESHED"
+        MSG "Refreshed"
         rts
 
 pathbp: lda #<PATHB
@@ -1597,9 +1667,9 @@ pathbp: lda #<PATHB
         sta SLEN
         rts
 
-lbcol:  .byte "COLOUR 0-15: ", 0
-lbfl:   .byte "FLASHES 0-20: ", 0
-lbpath: .byte "PATH(?=BROWSE): ", 0
+lbcol:  LC "Colour 0-15: ", 0
+lbfl:   LC "Flashes 0-20: ", 0
+lbpath: LC "Path(?=browse): ", 0
 
 ; ---------------------------------------------------------------------------------------------------------------------------------
 ; Line editor on row 23: label at X/Y (zero terminated), EDBUF/EDLEN the text, at most A characters typed (a longer text can still be
@@ -1850,7 +1920,7 @@ mkjn:   lda BQ
 @d:     stx PATHBL
         clc
         rts
-@long:  MSG "PATH TOO LONG"
+@long:  MSG "Path too long"
         sec
         rts
 
@@ -1918,7 +1988,7 @@ blist:  lda #0
         lda #1
         jsr CLOSE
         jsr msgbeg
-        PS "CANNOT LIST: "
+        PS "Cannot list: "
         jsr pemsg
         jmp fpad
 @rd:    ldx #1
@@ -2056,7 +2126,7 @@ types:  .byte "DIRD64D71D81"
 ; the browser screen: row 3 the folder, 4-19 the entries, 21 the keys
 bdraw:  ldx #3
         jsr rowbeg
-        PS {18, "BROWSE: "}
+        PS 18, "Browse: "
         lda #<BP
         sta P2
         lda #>BP
@@ -2065,7 +2135,7 @@ bdraw:  ldx #3
         sta SLEN
         jsr fmem
         jsr fpad
-        PS {146}
+        PS 146
         lda #0
         sta R
 @r:     lda BW
@@ -2101,7 +2171,7 @@ bdraw:  ldx #3
         jsr ffield
         lda #255
         sta FLDN
-        PS {146, " "}
+        PS 146, " "
         ldx KK
         lda BTY,x
         sta T0
@@ -2109,11 +2179,11 @@ bdraw:  ldx #3
         adc T0
         tax
         lda types,x
-        jsr fch
+        jsr fchu
         lda types+1,x
-        jsr fch
+        jsr fchu
         lda types+2,x
-        jsr fch
+        jsr fchu
         lda #17
         sta FLDN
         jsr fpad
@@ -2124,7 +2194,7 @@ bdraw:  ldx #3
         jmp @r
 @h:     ldx #21
         jsr rowbeg
-        PS {"RETURN:OPEN/SELECT  ", LARROW, ":CANCEL"}
+        PS "Return:Open/Select  ", LARROW, ":Cancel"
         jsr fpad
         ldx #22
         jsr rowbeg

@@ -116,11 +116,15 @@ enum { eepAdVDriveDevs = 4235, eepAdNextIOHndlr = 6 };
 #define Fab04_REU
 enum { IOH_None = 0, IOH_Swiftlink, IOH_REU, IOH_VDrive, IOH_VDriveSwift, IOH_VDriveSwiftREU, IOH_VDriveREU, IOH_Other };   // only the order within the real enum is irrelevant here
 extern bool (*fBusSnoop)(uint16_t Address, bool R_Wn);
+bool KernalCheck(uint16_t Address, bool R_Wn);
+extern uint8_t HIRAM_State;
+enum { HIRAM_State_Unknown = 0, HIRAM_State_ROM, HIRAM_State_RAM };
+extern volatile uint8_t BtnPressed;
 
 enum { rwRegPwrUpDefaults2 = 8, rpud2AltBtnActionMask = 0b00111000, rpud2AltBtnAutoLaunch = 0, rpud2AltBtnPause = 0b00001000, rpud2AltBtnNone = 0b00100000 };
 #define Fab04_SpecialButton
 extern void (*fSpecialBtnChange)(bool Up_nDn);
-enum { rWRegCurrMenuWAIT = 3, rmtUSBDrive = 0, rmtSD = 1, rmtTeensy = 2 };
+enum { rWRegCurrMenuWAIT = 3, rwRegScratch = 9, rmtUSBDrive = 0, rmtSD = 1, rmtTeensy = 2 };
 extern volatile uint8_t *IO1;
 extern char DriveDirPath[];
 

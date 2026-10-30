@@ -192,7 +192,7 @@ class T(unittest.TestCase):
     def row(self, r): return self.b.screen.row(r)
 
     def entry(self, r):
-        m = re.match(r"^[> ][* ]\s*(\d+) (\S+)\s+(\d+)\s+(\d+)X$", self.row(r))
+        m = re.match(r"^[> ][* ]\s*(\d+) (\S+)\s+(\d+)\s+(\d+)x$", self.row(r))
         return m.groups() if m else None
 
     def config(self, dev=8): return self.drive.units[dev].files.get("/vdrive-config.txt", b"").decode()
@@ -200,17 +200,18 @@ class T(unittest.TestCase):
     # ---------------------------------------------------------------- tests
     def test_first_screen(self):
         self.start(mounted="/games/zork.d64")
-        self.assertIn("VDRIVE CONFIG", self.row(0))
-        self.assertEqual(self.row(1), "SD  8: /GAMES/ZORK.D64")
-        self.assertEqual(self.row(2), "USB 9: (NOTHING MOUNTED)")
-        self.assertEqual(self.row(3), "LIST: SD (4 ENTRIES)")
-        self.assertTrue(re.match(r"^>\*\s+1 /GAMES/ZORK\.D64\s+5\s+2X$", self.row(4)), self.row(4))
-        self.assertTrue(re.match(r"^ {2}\s*2 /UTIL/TOOLS\.D64\s+7\s+1X$", self.row(5)), self.row(5))
-        self.assertTrue((self.entry(6) or ())[:2] == tuple(["3", "/BIG.D81"]), self.row(6))
-        self.assertTrue((self.entry(7) or ())[:2] == tuple(["4", "/GONE/NOWHERE.D64"]), self.row(7))
+        self.assertIn("VDrive Config", self.row(0))
+        self.assertEqual(self.row(1), "SD  8: /games/zork.d64")
+        self.assertEqual(self.row(2), "USB 9: (Nothing mounted)")
+        self.assertEqual(self.row(3), "List: SD (4 entries)" + " " * 8 + "Alt: 1 tap")
+        self.assertTrue(re.match(r"^>\*\s+1 /games/zork\.d64\s+5\s+2x$", self.row(4)), self.row(4))
+        self.assertTrue(re.match(r"^ {2}\s*2 /util/tools\.d64\s+7\s+1x$", self.row(5)), self.row(5))
+        self.assertTrue((self.entry(6) or ())[:2] == tuple(["3", "/big.d81"]), self.row(6))
+        self.assertTrue((self.entry(7) or ())[:2] == tuple(["4", "/gone/nowhere.d64"]), self.row(7))
         self.assertEqual(self.row(8), "")
-        self.assertTrue(self.row(21).startswith("RETURN:MOUNT"))
-        self.assertEqual(self.row(23), "T:SD/USB LIST R:REFRESH Q:QUIT")
+        self.assertEqual(self.row(20), "Ready. Alt: 1 tap = SD, 2 taps = USB")
+        self.assertTrue(self.row(21).startswith("Return:Mount"))
+        self.assertEqual(self.row(23), "T:SD/USB List R:Refresh Q:Exit to Menu")
         # the colour cell: reverse, in colour 5 (green) for entry 1, nothing else on that row is reversed after the path
         cells = [c for c in range(40) if self.b.screen.rev[4][c] and self.b.screen.ch[4][c] == " "]
         self.assertTrue(cells and all(self.b.screen.col[4][c] == 5 for c in cells[-2:]), cells)
@@ -227,28 +228,28 @@ class T(unittest.TestCase):
         self.assertTrue(self.row(5).startswith(">") and self.row(4).startswith(" "))
         self.keys(RET)                                   # mount entry 2
         self.assertEqual(self.drive.units[8].mounted, "/util/tools.d64")
-        self.assertEqual(self.row(1), "SD  8: /UTIL/TOOLS.D64")
-        self.assertEqual(self.row(20), "MOUNTED")
+        self.assertEqual(self.row(1), "SD  8: /util/tools.d64")
+        self.assertEqual(self.row(20), "Mounted")
         self.assertTrue(self.row(5).startswith(">*"))
         self.keys(UP, UP)                                # stays on the first entry
         self.assertTrue(self.row(4).startswith(">"))
         self.keys(DOWN, DOWN, DOWN, RET)                 # entry 4 does not exist
-        self.assertTrue(self.row(20).startswith("ERROR 62"), self.row(20))
+        self.assertTrue(self.row(20).startswith("Error 62"), self.row(20))
         self.assertEqual(self.drive.units[8].mounted, "/util/tools.d64")
 
     def test_unmount(self):
         self.start(mounted="/big.d81")
         self.keys("u")
         self.assertIsNone(self.drive.units[8].mounted)
-        self.assertEqual(self.row(20), "UNMOUNTED"); self.assertEqual(self.row(1), "SD  8: (NOTHING MOUNTED)")
+        self.assertEqual(self.row(20), "Unmounted"); self.assertEqual(self.row(1), "SD  8: (Nothing mounted)")
         self.keys("u")
-        self.assertEqual(self.row(20), "NOTHING MOUNTED")
+        self.assertEqual(self.row(20), "Nothing mounted")
         self.assertEqual([c for d, c in self.drive.log if c.upper() == "CD:_"], ["CD:_"])         # a second U must not climb out of the folder
 
     def test_delete_and_move(self):
         self.start()
         self.keys("d")
-        self.assertTrue(self.row(20).startswith("DELETE ENTRY 1?"))
+        self.assertTrue(self.row(20).startswith("Delete entry 1?"))
         self.keys("n")
         self.assertEqual(self.config(), CONFIG)           # nothing written
         self.keys(DOWN, "+")                              # entry 2 moves down
@@ -256,7 +257,7 @@ class T(unittest.TestCase):
         order = [l.split(",")[0] for l in lines if l.startswith("/")]
         self.assertEqual(order, ["/games/zork.d64", "/big.d81", "/util/tools.d64", "/gone/nowhere.d64"])
         self.assertEqual(lines[0], "# my disks")                                  # comments stay in place
-        self.assertTrue((self.entry(6) or ())[:2] == tuple(["3", "/UTIL/TOOLS.D64"]) and self.row(6).startswith(">"), self.row(6))
+        self.assertTrue((self.entry(6) or ())[:2] == tuple(["3", "/util/tools.d64"]) and self.row(6).startswith(">"), self.row(6))
         self.keys("-")                                                           # back up: the cursor follows the entry
         order = [l.split(",")[0] for l in self.config().split("\n") if l.startswith("/")]
         self.assertEqual(order, ["/games/zork.d64", "/util/tools.d64", "/big.d81", "/gone/nowhere.d64"])
@@ -267,70 +268,70 @@ class T(unittest.TestCase):
         self.keys("d", "y")
         order = [l.split(",")[0] for l in self.config().split("\n") if l.startswith("/")]
         self.assertEqual(order, ["/games/zork.d64", "/big.d81", "/gone/nowhere.d64"])
-        self.assertEqual(self.row(20), "SAVED")
-        self.assertTrue(self.row(3).startswith("LIST: SD (3 ENTRIES)"))
+        self.assertEqual(self.row(20), "Saved")
+        self.assertTrue(self.row(3).startswith("List: SD (3 entries)"))
         self.keys(DOWN, DOWN, DOWN, DOWN)
         self.keys("d", "y", "d", "y", "d", "y")
         self.assertEqual([l for l in self.config().split("\n") if l.startswith("/")], [])
-        self.assertEqual(self.row(3), "LIST: SD (0 ENTRIES)")
+        self.assertEqual(self.row(3), "List: SD (0 entries)" + " " * 8 + "Alt: 1 tap")
         self.keys("d", "e", RET)                                                  # on an empty list these do nothing
         self.assertEqual(self.row(4), "")
 
     def test_add_through_browser(self):
         self.start(mounted="/big.d81")
         self.keys("a")
-        self.assertEqual(self.row(3), "BROWSE: /")
+        self.assertEqual(self.row(3), "Browse: /")
         names = [self.row(r) for r in range(4, 12)]
-        self.assertTrue(any("GAMES" in n and "DIR" in n for n in names) and any("BIG.D81" in n and "D81" in n for n in names), names)
-        self.assertFalse(any("README" in n for n in names), "plain files are not listed")
+        self.assertTrue(any("games" in n and "DIR" in n for n in names) and any("big.d81" in n and "D81" in n for n in names), names)
+        self.assertFalse(any("readme" in n for n in names), "plain files are not listed")
         self.assertTrue(self.row(4).startswith(">"))
-        idx = next(i for i, n in enumerate(names) if "GAMES" in n)
+        idx = next(i for i, n in enumerate(names) if "games" in n)
         self.keys(*([DOWN] * idx), RET)                  # into GAMES
-        self.assertEqual(self.row(3), "BROWSE: /GAMES")
+        self.assertEqual(self.row(3), "Browse: /games")
         self.assertTrue(self.row(4).strip().startswith(">") and ".." in self.row(4))
         self.assertEqual(self.drive.units[8].mounted, "/big.d81", "browsing must not change the mounted image")
         names = [self.row(r) for r in range(5, 9)]
-        sub = next(i for i, n in enumerate(names) if "SUB" in n)
+        sub = next(i for i, n in enumerate(names) if "sub" in n)
         self.keys(*([DOWN] * (sub + 1)), RET)            # into GAMES/SUB
-        self.assertEqual(self.row(3), "BROWSE: /GAMES/SUB")
+        self.assertEqual(self.row(3), "Browse: /games/sub")
         self.keys(DOWN, RET)                             # DEEP.D64
-        self.assertEqual(self.row(23).startswith("COLOUR 0-15: 1"), True, self.row(23))
+        self.assertEqual(self.row(23).startswith("Colour 0-15: 1"), True, self.row(23))
         self.keys(DEL, "1", "2", RET)
-        self.assertTrue(self.row(23).startswith("FLASHES 0-20: 1"), self.row(23))
+        self.assertTrue(self.row(23).startswith("Flashes 0-20: 1"), self.row(23))
         self.keys(DEL, "4", RET)
         self.assertEqual(self.config().split("\n")[-2], "/games/sub/deep.d64, 12, 4")
-        self.assertEqual(self.row(20), "SAVED")
-        self.assertEqual(self.row(3), "LIST: SD (5 ENTRIES)")
+        self.assertEqual(self.row(20), "Saved")
+        self.assertEqual(self.row(3), "List: SD (5 entries)" + " " * 8 + "Alt: 1 tap")
         self.assertTrue(self.row(8).startswith(">"), self.row(8))                # cursor on the new entry
         self.assertEqual(self.drive.units[8].mounted, "/big.d81")
 
     def test_browse_up_and_cancel(self):
         self.start()
         self.keys("a", DOWN, RET)                        # into the first directory
-        self.assertTrue(self.row(3).startswith("BROWSE: /"), self.row(3))
+        self.assertTrue(self.row(3).startswith("Browse: /"), self.row(3))
         self.keys(RET)                                   # ".." goes back to the root
-        self.assertEqual(self.row(3), "BROWSE: /")
+        self.assertEqual(self.row(3), "Browse: /")
         self.keys(LEFTARROW)
-        self.assertTrue("VDRIVE CONFIG" in self.row(0) and self.row(3).startswith("LIST:"))
+        self.assertTrue("VDrive Config" in self.row(0) and self.row(3).startswith("List:"))
         self.assertEqual(self.config(), CONFIG)
 
     def test_browse_and_mount_any_image(self):
         self.start()
         self.keys("b")
         names = [self.row(r) for r in range(4, 12)]
-        k = next(i for i, n in enumerate(names) if "BIG.D81" in n)
+        k = next(i for i, n in enumerate(names) if "big.d81" in n)
         self.keys(*([DOWN] * k), RET)
         self.assertEqual(self.drive.units[8].mounted, "/big.d81")
-        self.assertEqual(self.row(1), "SD  8: /BIG.D81"); self.assertEqual(self.row(20), "MOUNTED")
+        self.assertEqual(self.row(1), "SD  8: /big.d81"); self.assertEqual(self.row(20), "Mounted")
         self.assertEqual(self.config(), CONFIG, "mounting from the browser does not touch the list")
 
     def test_edit(self):
         self.start()
         self.keys("e")
-        self.assertTrue(self.row(23).startswith("PATH(?=BROWSE): /GAMES/ZORK.D64"), self.row(23))
+        self.assertTrue(self.row(23).startswith("Path(?=browse): /games/zork.d64"), self.row(23))
         for _ in range(len("zork.d64")): self.keys(DEL)
         self.keys(*"ZORK2.D64", RET)
-        self.assertTrue(self.row(23).startswith("COLOUR 0-15: 5"))
+        self.assertTrue(self.row(23).startswith("Colour 0-15: 5"))
         self.keys(DEL, "9", RET)
         self.keys(DEL, "0", RET)                         # 0 flashes = silent but valid
         self.assertEqual(self.config().split("\n")[1], "/games/zork2.d64, 9, 0")
@@ -338,9 +339,9 @@ class T(unittest.TestCase):
         self.keys("e", LEFTARROW)                        # cancel keeps everything
         self.assertEqual(self.config().split("\n")[1], "/games/zork2.d64, 9, 0")
         self.keys("e", *([DEL] * 30), "X", RET)          # not a path
-        self.assertEqual(self.row(20), "PATH MUST START WITH /")
+        self.assertEqual(self.row(20), "Path must start with /")
         self.keys("e", *([DEL] * 30), "?", RET)          # browse for a new path
-        self.assertTrue(self.row(3).startswith("BROWSE"))
+        self.assertTrue(self.row(3).startswith("Browse"))
         self.keys(LEFTARROW)
 
     def test_bad_numbers_are_ignored(self):
@@ -352,29 +353,29 @@ class T(unittest.TestCase):
     def test_toggle_to_usb(self):
         self.start(usb_cfg="/usb.d64, 3, 3\n/disks/a.d64\n")
         self.keys("t")
-        self.assertEqual(self.row(3), "LIST: USB (2 ENTRIES)")
-        self.assertTrue((self.entry(4) or ())[:2] == tuple(["1", "/USB.D64"]), self.row(4))
+        self.assertEqual(self.row(3), "List: USB (2 entries)" + " " * 7 + "Alt: 2 taps")
+        self.assertTrue((self.entry(4) or ())[:2] == tuple(["1", "/usb.d64"]), self.row(4))
         self.keys(RET)
         self.assertEqual(self.drive.units[9].mounted, "/usb.d64")
-        self.assertEqual(self.row(2), "USB 9: /USB.D64")
+        self.assertEqual(self.row(2), "USB 9: /usb.d64")
         self.assertEqual(self.drive.units[8].mounted, None)
         self.keys("d", "y")
         self.assertEqual(self.config(9), "/disks/a.d64\n")
         self.assertEqual(self.config(8), CONFIG)
         self.keys("t")
-        self.assertEqual(self.row(3), "LIST: SD (4 ENTRIES)")
+        self.assertEqual(self.row(3), "List: SD (4 entries)" + " " * 8 + "Alt: 1 tap")
 
     def test_no_usb_drive(self):
         self.start(devs=(8, 0))
-        self.assertEqual(self.row(2), "USB  : NO DRIVE")
+        self.assertEqual(self.row(2), "USB  : No drive")
         self.keys("t")
-        self.assertEqual(self.row(20), "NO DRIVE ON THAT UNIT")
-        self.assertEqual(self.row(3), "LIST: SD (4 ENTRIES)")
+        self.assertEqual(self.row(20), "No drive on that unit")
+        self.assertEqual(self.row(3), "List: SD (4 entries)" + " " * 8 + "Alt: 1 tap")
 
     def test_only_usb(self):
         self.start(devs=(0, 9), usb_cfg="/usb.d64\n")
-        self.assertEqual(self.row(1), "SD   : NO DRIVE")
-        self.assertEqual(self.row(3), "LIST: USB (1 ENTRIES)")
+        self.assertEqual(self.row(1), "SD   : No drive")
+        self.assertEqual(self.row(3), "List: USB (1 entries)" + " " * 7 + "Alt: 2 taps")
         self.keys(RET)
         self.assertEqual(self.drive.units[9].mounted, "/usb.d64")
 
@@ -382,14 +383,14 @@ class T(unittest.TestCase):
         self.drive = FakeDrive({})
         self.b = C64(PRG, self.drive, {56854: 0, 56855: 0})
         self.assertEqual(self.b.run(), "end")
-        self.assertIn("NOT ACTIVE", self.b.screen.text())
+        self.assertIn("not active", self.b.screen.text())
 
     def test_missing_and_empty_config(self):
         self.start(cfg=None)
-        self.assertEqual(self.row(3), "LIST: SD (0 ENTRIES)")
+        self.assertEqual(self.row(3), "List: SD (0 entries)" + " " * 8 + "Alt: 1 tap")
         self.keys("a")                                  # browse + add creates the file
         names = [self.row(r) for r in range(4, 12)]
-        k = next(i for i, n in enumerate(names) if "BIG.D81" in n)
+        k = next(i for i, n in enumerate(names) if "big.d81" in n)
         self.keys(*([DOWN] * k), RET, DEL, "2", RET, DEL, "3", RET)
         self.assertEqual(self.config(), "/big.d81, 2, 3\n")
 
@@ -398,11 +399,11 @@ class T(unittest.TestCase):
                "not a path\r\n#/commented.d64\r\n/SPACED.D64 ,12,0\r\n").lower()
         self.start(cfg=cfg)
         rows = [self.row(r) for r in range(4, 12)]
-        got = [re.match(r"^.. *(\d+) (\S+) +(\d+) +(\d+)X$", r) for r in rows if r.strip()]
+        got = [re.match(r"^.. *(\d+) (\S+) +(\d+) +(\d+)x$", r) for r in rows if r.strip()]
         self.assertEqual(len(got), 6, rows)
         self.assertEqual([g.groups() for g in got], [
-            ("1", "/A/B,C.D64", "3", "4"), ("2", "/NO/NUMBERS.D64", "1", "1"), ("3", "/ONE.D64", "3", "1"),
-            ("4", "/TOOMANY.D64", "1", "20"), ("5", "/COMMA,IN,NAME.D64", "6", "1"), ("6", "/SPACED.D64", "12", "0")])
+            ("1", "/a/b,c.d64", "3", "4"), ("2", "/no/numbers.d64", "1", "1"), ("3", "/one.d64", "3", "1"),
+            ("4", "/toomany.d64", "1", "20"), ("5", "/comma,in,name.d64", "6", "1"), ("6", "/spaced.d64", "12", "0")])
 
     def test_unparsed_lines_survive_a_save(self):
         self.start()
@@ -415,12 +416,12 @@ class T(unittest.TestCase):
     def test_long_names_and_many_entries(self):
         lines = "".join("/DIR%02d/IMAGE_%02d.D64,%d,%d\n" % (i, i, i % 16, i % 5) for i in range(32)).lower()
         self.start(cfg=lines)
-        self.assertEqual(self.row(3), "LIST: SD (32 ENTRIES)")
+        self.assertEqual(self.row(3), "List: SD (32 entries)" + " " * 7 + "Alt: 1 tap")
         self.keys(*([DOWN] * 31))
         self.assertTrue(self.row(19).startswith(">"), self.row(19))        # last visible row after scrolling
-        self.assertTrue((self.entry(19) or ())[:2] == tuple(["32", "/DIR31/IMAGE_31.D64"]), self.row(19))
+        self.assertTrue((self.entry(19) or ())[:2] == tuple(["32", "/dir31/image_31.d64"]), self.row(19))
         self.keys("a")                                                      # full
-        self.assertEqual(self.row(20), "LIST IS FULL")
+        self.assertEqual(self.row(20), "List is full")
         self.keys(UP, *([UP] * 20))
         self.assertTrue(self.row(4).startswith(">") or self.row(4).split()[1] == "1")
 
@@ -428,28 +429,42 @@ class T(unittest.TestCase):
         self.start()
         self.drive.units[8].mounted = "/util/tools.d64"                    # the alt button switched the disk meanwhile
         self.keys("r")
-        self.assertEqual(self.row(1), "SD  8: /UTIL/TOOLS.D64"); self.assertTrue(self.row(5).startswith(" *"))
+        self.assertEqual(self.row(1), "SD  8: /util/tools.d64"); self.assertTrue(self.row(5).startswith(" *"))
 
-    def test_quit_restores_the_screen(self):
+    def test_quit_returns_to_the_tr_menu(self):
         self.start()
+        self.b.press("q")
+        self.assertEqual(self.b.run(), "menu")                           # VIO_MENU written: the Teensy resets into its menu
+        self.assertEqual(self.drive.chans, {}, "every file closed first")
+
+    def test_quit_without_an_answer_returns_to_basic(self):
+        self.drive = FakeDrive(make_sd() | {"/vdrive-config.txt": CONFIG.encode()})
+        self.b = C64(PRG, self.drive, {56854: 8, 56855: 0, 53280: 14, 53281: 6, 646: 14}, menu_answer=False)
+        self.assertEqual(self.b.run(), "key")
         self.b.press("q")
         self.assertEqual(self.b.run(), "end")
         self.assertEqual((self.b.mem[53280], self.b.mem[53281], self.b.mem[646]), (14, 6, 14))
         self.assertEqual(self.drive.chans, {})
-        self.assertTrue(self.b.screen.row(0).endswith("BYE") or "BYE" in self.b.screen.text())
+        self.assertFalse(self.b.screen.lower, "upper case again for BASIC")
+        self.assertIn("BYE", self.b.screen.text())
 
-    def test_reads_device_numbers_after_the_bus_scan(self):
-        # $DE16 holds the default 8 until the first bus access runs the scan, which (a real drive at 8) moves the SD unit to 9
+    def test_lower_case_screen(self):
+        self.start()
+        self.assertTrue(self.b.screen.lower)
+        self.assertEqual(self.row(0), " VDrive Config")
+        self.keys("a")
+        self.assertTrue(any("DIR" in self.row(r) for r in range(4, 12)), "listing types in capitals")
+
+    def test_uses_the_numbers_the_menu_probe_left(self):
+        # the TR menu probed the bus before the launch (a real drive at 8): $DE16 already says 9, and nothing is probed again
         self.drive = FakeDrive(make_sd() | {"/vdrive-config.txt": CONFIG.encode()})
         self.drive.units = {9: self.drive.units.pop(8)}
-        self.b = C64(PRG, self.drive, {56854: 8, 56855: 0})
-        listen = self.b.listen
-        def scan():
-            self.b.mem[56854] = 9; listen()
-        self.b.listen = scan; self.b.traps[0xFFB1] = scan
+        self.b = C64(PRG, self.drive, {56854: 9, 56855: 0})
+        probes = []
+        self.b.traps[0xFFB1] = lambda: probes.append(self.b.cpu.a)
         self.assertEqual(self.b.run(), "key")
-        self.assertEqual(self.row(1), "SD  9: (NOTHING MOUNTED)")
-        self.assertEqual(self.row(3), "LIST: SD (4 ENTRIES)")
+        self.assertEqual(probes, [])
+        self.assertEqual(self.row(1), "SD  9: (Nothing mounted)")
         self.keys(RET)
         self.assertEqual(self.drive.units[9].mounted, "/games/zork.d64")
 
@@ -457,19 +472,19 @@ class T(unittest.TestCase):
         cfg = "/a.d64, 1, 1\r\n/b.d64, 2, 2\r\n" + "".join("# %s\r\n" % ("x" * 76) for _ in range(25))
         self.start(cfg=cfg)
         self.keys("+")
-        self.assertEqual(self.row(20), "LIST TOO LONG TO SAVE")
+        self.assertEqual(self.row(20), "List too long to save")
         self.assertEqual(self.config(), cfg.lower())
-        self.assertTrue((self.entry(4) or ())[:2] == tuple(["1", "/B.D64"]), self.row(4))     # changed on the screen, as before
+        self.assertTrue((self.entry(4) or ())[:2] == tuple(["1", "/b.d64"]), self.row(4))     # changed on the screen, as before
 
     def test_long_file_keeps_its_lines(self):
         lines = ["# comment %d with a \" quote" % i for i in range(60)] + ["/x%02d.d64, %d, %d" % (i, i % 16, i % 21) for i in range(20)]
         cfg = "\n".join(lines) + "\n"
         self.start(cfg=cfg)
-        self.assertEqual(self.row(3), "LIST: SD (20 ENTRIES)")
+        self.assertEqual(self.row(3), "List: SD (20 entries)" + " " * 7 + "Alt: 1 tap")
         self.keys(DOWN, DOWN, "+", "d", "y")
         want = lines[:60] + ["/x%02d.d64, %d, %d" % (i, i % 16, i % 21) for i in (0, 1, 3, 4)] + lines[65:]
         self.assertEqual(self.config().split("\n")[:-1], want)
-        self.assertEqual(self.row(20), "SAVED")
+        self.assertEqual(self.row(20), "Saved")
 
     def test_never_closes_the_command_channel_while_working(self):
         self.start()

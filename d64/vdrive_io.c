@@ -149,6 +149,28 @@ VD_COLD int vio_arm_scan(vio_t *v)
     return v->scan_state;
 }
 
+VD_COLD int vio_probe_begin(vio_t *v)
+{
+    v->scan_state = 3;
+    int need = vdrive_scan_begin(&v->vd);
+    vio_publish_devices(v);
+    return need;
+}
+
+VD_COLD int vio_probe_free(vio_t *v, uint8_t dev)
+{
+    int left = vdrive_scan_free(&v->vd, dev);
+    vio_publish_devices(v);
+    return left;
+}
+
+VD_COLD int vio_take_menu(vio_t *v)
+{
+    int r = v->menu_req;
+    v->menu_req = 0;
+    return r;
+}
+
 VD_COLD int vio_poll(vio_t *v)
 {
     if (!v->h->pending) return 0;
@@ -172,6 +194,7 @@ VD_COLD int vio_poll(vio_t *v)
         case VIO_FSAVE_CLOSE: fsave_close(v); break;
         case VIO_SCAN:        v->scan_state = 3; v->h->data = (uint8_t)vdrive_scan_begin(&v->vd); break;
         case VIO_FREE:        v->h->data = (uint8_t)vdrive_scan_free(&v->vd, v->h->arg); break;
+        case VIO_MENU:        v->menu_req = 1; break;
         default: notmine = 1;
     }
     vio_publish_devices(v);                             /* a U0> or a scan step may have moved a unit */
