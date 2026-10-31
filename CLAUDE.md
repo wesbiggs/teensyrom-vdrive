@@ -14,7 +14,10 @@ Firmware integration and usage: `firmware/README.md`.
 ## Status (read this first)
 * **Works on hardware (real C64, TR+ with this patch).** `make test` also passes on the host: C unit tests via ctypes against `c1541`, the 6502 patches in VICE through a
   monitor-driven mailbox mock, and the firmware glue compiled as C++ against host stubs. Toolchain for the firmware: `arduino-cli`, `teensy:avr@1.61.0`,
-  `CRC32@2.0.1`; do NOT use Teensyduino 1.62.0 (SD read stalls). Build/fit: RAM1 padding −976 B, flash +15.7 KB, RAM2 +4.5 KB vs stock.
+  `CRC32@2.0.1`; do NOT use Teensyduino 1.62.0 (SD read stalls). Build/fit (0.9.0.40 vs stock `fa509421`, TR+ main image): RAM1 variables +13.7 KB (free for locals 66 KB), RAM1 code +1.6 KB (padding 25.4 KB left), flash code +43 KB, RAM2 +7 KB.
+  `node tools/build-firmware.mjs --target tr-plus` (in a TeensyROM tree with the patch applied) writes `build/firmware/TeensyROM+_<version>_full.hex`; `--force` to overwrite.
+  On the owner's Mac `ARDUINO_DIRECTORIES_USER=~/code/3p/Arduino` (set in the shell profile; CRC32 lives in its `libraries/`), not the default `~/Documents/Arduino`:
+  Documents is iCloud Drive and an evicted `CRC32.h` made builds fail with "Operation timed out". A shell started before the profile change lacks the variable: pass it on the command.
 * **Verified on hardware by the owner (SD and USB):** handler listing and SD/USB detection, mailbox registers, stock and banner KERNAL control (the bring-up banner image showed
   `TRVDRIVE 64 BASIC V2` on F2), mounting with `CD:`, directory/`LOAD` of small and 6000-byte files, `SAVE`, `VERIFY`, the error channel, repeated directory listings,
   device 9 (USB stick), `U0>` renumbering and its EEPROM persistence, `CD:/`, the no-handler time-out, `SEQTEST`, `GETRAW`, `SOAK`, `DOSTEST`, `CDTEST`, `RENUM`,
