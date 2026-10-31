@@ -116,7 +116,7 @@ index 46e27c6..72c265a 100644
       rtFileCrt  , IOH_None         , (char*)"Super Expander 64"                , (uint8_t*)super_expander_64_crt      , sizeof(super_expander_64_crt) ,
       rtFileCrt  , IOH_None         , (char*)"Epyx Fast Load Cart"              , (uint8_t*)Epyx_Fast_Load_crt         , sizeof(Epyx_Fast_Load_crt) ,
 diff --git a/Source/Teensy/MinimalBoot/Common/Common_Defs.h b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
-index a0a6e5f..06a4e77 100644
+index a0a6e5f..2d1c70a 100644
 --- a/Source/Teensy/MinimalBoot/Common/Common_Defs.h
 +++ b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
 @@ -14,6 +14,7 @@
@@ -132,7 +132,7 @@ index a0a6e5f..06a4e77 100644
  
  
 -#define TRVersion              "0.9"    //*VERSION*
-+#define TRVersion              "0.9.0.38"    //*VERSION*  (stock 0.9 + VDrive rev 38)
++#define TRVersion              "0.9.0.39"    //*VERSION*  (stock 0.9 + VDrive rev 39)
  #ifdef Fab04_Features
     char strVersionNumber[] = "TeensyROM+ v" TRVersion; 
  #else
@@ -343,10 +343,10 @@ index adca184..6f80b52 100644
           {
 diff --git a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c
 new file mode 100644
-index 0000000..f4c2c71
+index 0000000..77383b0
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c
-@@ -0,0 +1,1094 @@
+@@ -0,0 +1,1112 @@
 +// "VDrive" Special IO for TeensyROM+: replacement KERNAL + virtual IEC drive.
 +//   unit 0 = SD card, unit 1 = USB drive. Device numbers are automatic by default: the first free numbers from 8 up
 +//   (the KERNAL probes the real serial bus on the first disk access of a run, see vdrive_io.h), so 8 (SD) and 9 (USB) when
@@ -629,6 +629,24 @@ index 0000000..f4c2c71
 +   return u->fs->rmdir(path) ? 0 : 26;
 +}
 +
++// S:NAME.D64 with nothing mounted: delete an image file (vdrive.c checks the name). A file with the FAT read-only attribute
++// cannot be opened for writing (SdFat), so it stays: 26 WRITE PROTECT ON.
++FLASHMEM static int VD_Scratch(void *ctx, int unit, const char *name)
++{
++   stcVDUnit *u = &vdUnit[unit];
++   char path[VD_CwdLen + 20];
++   VD_PathFor(u, name, path, sizeof path);
++   File probe = u->fs->open(path, FILE_READ);                                     // FILE_READ first: FILE_WRITE would create it
++   if (!probe || probe.isDirectory()) { if (probe) probe.close(); return 62; }
++   probe.close();
++   File w = u->fs->open(path, FILE_WRITE);
++   if (!w) return 26;
++   w.close();
++   if (!u->fs->remove(path)) return 26;
++   Printf_dbg("VDrive %d: scratched %s\n", unit + 8, path);
++   return 0;
++}
++
 +// A listing by path (LOAD"$/GAMES/G.D64") must not change what is selected: remember folder and image, put them back afterwards.
 +FLASHMEM static void VD_Push(void *ctx, int unit)
 +{
@@ -889,7 +907,7 @@ index 0000000..f4c2c71
 +   host.push = VD_Push;  host.pop = VD_Pop;  host.create = VD_Create;
 +   host.hf_open = VD_HfOpen;  host.hf_read = VD_HfRead;  host.hf_write = VD_HfWrite;  host.hf_close = VD_HfClose;
 +   host.plain_open = VD_PlainOpen;  host.plain_read = VD_PlainRead;  host.plain_close = VD_PlainClose;
-+   host.mkdir = VD_MkDir;  host.rmdir = VD_RmDir;
++   host.mkdir = VD_MkDir;  host.rmdir = VD_RmDir;  host.scratch = VD_Scratch;
 +   if (hfFile) hfFile.close();        // the drive state (and with it any open channel) was just reset
 +   hfKind = -1;
 +   vdrive_set_host(&vio->vd, &host);
@@ -3163,10 +3181,10 @@ index 0000000..20f3ecc
 +#endif
 diff --git a/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.c b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.c
 new file mode 100644
-index 0000000..2986fe4
+index 0000000..aa54ea4
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.c
-@@ -0,0 +1,1092 @@
+@@ -0,0 +1,1138 @@
 +#include "vdrive.h"
 +#include "vd_cfg.h"
 +#include <string.h>
@@ -3844,6 +3862,42 @@ index 0000000..2986fe4
 +    if (r) set_err(u, (uint8_t)r, 0, 0);
 +}
 +
++/* "S:[path/]NAME.D64[,NAME2.D81...]" (.D71, .D81) with nothing mounted: delete image files on the card. Exact names only (a
++ * wildcard is 33, anything but an image name 64), a file with the card's read-only attribute set stays (26). A path picks the
++ * folder ("S:GAMES/OLD.D64", "S:/OLD.D64", CMD "S//GAMES/:OLD.D64"); the selected folder stays as it was (host push / pop).
++ * Answers 01,FILES SCRATCHED,nn like a scratch on a disk: a name that is not there counts 0. */
++VD_COLD static void cmd_scratch_images(vdrive_t *v, int unit, vd_unit_t *u, const char *p, const char *end)
++{
++    const vd_host_t *h = &v->host;
++    if (p < end && *p == ':') p++;
++    if (p >= end) { set_err(u, 34, 0, 0); return; }
++    int total = 0;
++    while (p < end) {
++        const char *q = p;
++        while (q < end && *q != ',') q++;
++        char path[VD_CMDBUF];
++        size_t n = (size_t)(q - p);
++        if (n >= sizeof path) { set_err(u, 33, 0, 0); return; }
++        memcpy(path, p, n); path[n] = 0;
++        if (strpbrk(path, "*?")) { set_err(u, 33, 0, 0); return; }
++        if (!image_kind(path) || n < 5 || path[n - 5] == '/') { set_err(u, 64, 0, 0); return; }
++        char *leaf = strrchr(path, '/');
++        int r = 0, temp = leaf && h->push && h->pop;
++        if (temp) h->push(h->ctx, unit);
++        if (leaf) {
++            char *rest, root[2] = { '/', 0 };
++            *leaf++ = 0;
++            r = path_walk(v, unit, u, path[0] ? path : root, &rest);
++            if (!r && (*rest || u->disk)) r = 33;                 /* the path went into an image or ended on a pattern */
++        } else leaf = path;
++        if (!r) { r = h->scratch(h->ctx, unit, leaf); if (!r) total++; else if (r == 62) r = 0; }
++        if (temp) { d64_t *d = NULL; h->pop(h->ctx, unit, &d); u->disk = d; }
++        if (r) { set_err(u, (uint8_t)r, 0, 0); return; }
++        p = q + 1;
++    }
++    set_err(u, 1, (uint8_t)total, 0);
++}
++
 +/* UI / UJ / U9: reset the drive. Closes every channel, keeps the mounted image, answers the "73" power-on message. */
 +VD_COLD static void cmd_reset(vd_unit_t *u)
 +{
@@ -3977,6 +4031,16 @@ index 0000000..2986fe4
 +        if (k < 0) { set_err(u, 33, 0, 0); return; }
 +        if (k) cmd_new_image(v, unit, u, np, np + strlen(np));
 +        else cmd_new_image(v, unit, u, q, (const char *)cmd + len);
++        return;
++    }
++    if (!u->disk && cmd[0] == 'S' && v->host.scratch) {
++        const char *q = (const char *)cmd + 1;
++        while (*q >= '0' && *q <= '9') q++;                       /* "S0:" */
++        char sp[VD_CMDBUF];
++        int k = cmd_path(q, (const char *)cmd + len, sp, sizeof sp);   /* CMD "S//GAMES/:OLD.D64": "/GAMES/OLD.D64" */
++        if (k < 0) { set_err(u, 33, 0, 0); return; }
++        if (k) cmd_scratch_images(v, unit, u, sp, sp + strlen(sp));
++        else cmd_scratch_images(v, unit, u, q, (const char *)cmd + len);
 +        return;
 +    }
 +    if (!u->disk) { set_err(u, 74, 0, 0); return; }
@@ -4261,10 +4325,10 @@ index 0000000..2986fe4
 +}
 diff --git a/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.h b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.h
 new file mode 100644
-index 0000000..5ac7e2d
+index 0000000..1fd6c52
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.h
-@@ -0,0 +1,148 @@
+@@ -0,0 +1,151 @@
 +/* Virtual IEC drive: the Teensy-side state machine behind the KERNAL mailbox.
 + * Units 0/1 = devices 8/9, each backed by an optional mounted d64_t.
 + * One mailbox command in, one result out; no I/O other than the d64 and host callbacks. */
@@ -4356,6 +4420,9 @@ index 0000000..5ac7e2d
 +     * mkdir 63 if the name is taken; rmdir 62 if there is no such folder, 63 if it is not empty. */
 +    int  (*mkdir)(void *ctx, int unit, const char *name);
 +    int  (*rmdir)(void *ctx, int unit, const char *name);
++    /* S:NAME.D64 with nothing mounted: delete an image file in the current folder. 0 ok, else a DOS error: 62 no such file (vdrive.c
++     * counts it as 0 scratched), 26 the file is read-only on the card (FAT attribute) or the card is not writable. */
++    int  (*scratch)(void *ctx, int unit, const char *name);
 +} vd_host_t;
 +enum { VD_HF_CONFIG = 0, VD_HF_STATE = 1 };
 +

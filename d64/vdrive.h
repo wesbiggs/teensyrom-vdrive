@@ -89,6 +89,9 @@ typedef struct {
      * mkdir 63 if the name is taken; rmdir 62 if there is no such folder, 63 if it is not empty. */
     int  (*mkdir)(void *ctx, int unit, const char *name);
     int  (*rmdir)(void *ctx, int unit, const char *name);
+    /* S:NAME.D64 with nothing mounted: delete an image file in the current folder. 0 ok, else a DOS error: 62 no such file (vdrive.c
+     * counts it as 0 scratched), 26 the file is read-only on the card (FAT attribute) or the card is not writable. */
+    int  (*scratch)(void *ctx, int unit, const char *name);
 } vd_host_t;
 enum { VD_HF_CONFIG = 0, VD_HF_STATE = 1 };
 

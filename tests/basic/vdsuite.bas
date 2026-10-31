@@ -4,21 +4,21 @@
 30 dim fl$(20),sp(9),sf(9),im$(3),dn$(3),fr(3),lt(3),dh(3),sn$(9)
 40 for k=1 to 3:read dn$(k),im$(k),fr(k),lt(k),dh(k):next
 50 data vs64,vs64.d64,664,35,18,vs71,vs71.d71,1328,70,18,vs81,vs81.d81,3160,80,40
-60 for k=1 to 7:read sn$(k):next
-70 data setup,d64 image,d71 image,d81 image,bad sectors,card files,cmd paths
+60 for k=1 to 8:read sn$(k):next
+70 data setup,d64 image,d71 image,d81 image,bad sectors,card files,cmd paths,clean up
 100 print chr$(147);"vdrive test suite, device";d
-110 for k=1 to 7:print k;sn$(k):next
-120 print" 8 run all":print" 9 checks by hand":print" 0 quit"
+110 for k=1 to 8:print k;sn$(k):next
+120 print" 9 run all":print" 10 checks by hand":print" 0 quit"
 130 input"choice";m:if m=0 then close15:end
-140 if m=9 then 8000
-150 if m<1 or m>8 then 100
-160 ra=(m=8):sn=m:if ra then sn=1:p=0:f=0
+140 if m=10 then 9000
+150 if m<1 or m>9 then 100
+160 ra=(m=9):sn=m:if ra then sn=1:p=0:f=0
 170 print chr$(147);
-200 p0=p:f0=f:print"--- ";sn$(sn):on sn goto 1000,2000,2000,2000,5000,6000,7000
+200 p0=p:f0=f:print"--- ";sn$(sn):on sn goto 1000,2000,2000,2000,5000,6000,7000,8000
 400 sp(sn)=p-p0:sf(sn)=f-f0:print sn$(sn);":";sp(sn);"passed,";sf(sn);"failed"
-410 if ra and sn<7 then sn=sn+1:goto 200
+410 if ra and sn<8 then sn=sn+1:goto 200
 420 if ra=0 then 480
-430 print:for k=1 to 7:print sn$(k);tab(13);sp(k);"passed,";sf(k);"failed":next
+430 print:for k=1 to 8:print sn$(k);tab(13);sp(k);"passed,";sf(k);"failed":next
 440 print"total";p;"passed,";f;"failed":for k=1 to f:if k<=20 then print" ";fl$(k)
 450 next
 480 input"return for menu";z$:goto 100
@@ -184,11 +184,24 @@
 7140 l$="$":n$="vdscratch":gosub 600:t$="still at the root":x=fd:gosub 700
 7150 c$="n//vdscratch/:vscmd.d64,cm":gosub 850:t$="n// (63: made before)":x=(en=0 or en=63):gosub 700
 7160 c$="cd:/":gosub 850:goto 400
-8000 print chr$(147);"checks by hand (see tests/basic/readme)"
-8010 print"- status: run status on a 1541 and here,":print"  compare the texts"
-8020 print"- run/stop during load"chr$(34)"big"chr$(34)",8,1:":print"  break, then load"chr$(34)"$"chr$(34)",8 works"
-8030 print"- load"chr$(34)"hello"chr$(34)" with no device number"
-8040 print"- vdrive+reu: reu-checker says 512 kb":print"  with an image mounted"
-8050 print"- vdcopy: sd to 1541 and back"
-8060 print"- d81 time: setup prints it the first":print"  time it makes vs81.d81"
-8090 input"return for menu";z$:goto 100
+8000 rem clean up: the scratch images deleted with s:, the folders with rd:
+8010 gosub 1600:c$="s:t2/e.d64":gosub 850:t$="s: an image in a folder":x=(en=1):gosub 700
+8020 c$="s:nofile.d64":gosub 850:t$="a missing image counts 0":x=(en=1 and et=0):gosub 700
+8030 c$="s:vs*.d64":gosub 850:t$="no patterns (33)":x=(en=33):gosub 700
+8040 c$="s:/vdplain.prg":gosub 850:t$="images only (64)":x=(en=64):gosub 700
+8050 c$="s//vdscratch/:vscmd.d64":gosub 850:t$="s// cmd path":x=(en=1):gosub 700
+8060 c$="s:vs64.d64,vs71.d71,vs81.d81":gosub 850:t$="the three images":x=(en=1):gosub 700
+8070 l$="$":n$="vs64.d64":gosub 600:t$="images gone":x=(fd=0 and fb>=0):gosub 700
+8080 c$="rd:t2":gosub 850:t$="rd:t2":x=(en=0 or en=62):gosub 700
+8090 c$="cd:/":gosub 850:c$="rd:vdscratch":gosub 850:t$="rd:vdscratch":x=(en=0):gosub 700
+8100 n$="vdscratch":gosub 600:t$="the root without it":x=(fd=0):gosub 700
+8110 goto 400
+9000 print chr$(147);"checks by hand (see tests/basic/readme)"
+9010 print"- status: run status on a 1541 and here,":print"  compare the texts"
+9020 print"- run/stop during load"chr$(34)"big"chr$(34)",8,1:":print"  break, then load"chr$(34)"$"chr$(34)",8 works"
+9030 print"- load"chr$(34)"hello"chr$(34)" with no device number"
+9040 print"- vdrive+reu: reu-checker says 512 kb":print"  with an image mounted"
+9050 print"- vdcopy: sd to 1541 and back"
+9055 print"- s: on an image made read-only on a":print"  pc: 26, the file stays"
+9060 print"- d81 time: setup prints it the first":print"  time it makes vs81.d81"
+9090 input"return for menu";z$:goto 100

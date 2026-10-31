@@ -177,6 +177,10 @@ def main(kernal, scenario="basic"):
             if not q.is_dir(): return 62
             if any(q.iterdir()): return 63
             q.rmdir(); return 0
+        def h_scratch(ctx, unit, name):
+            q = hs["cwd"] / name.decode().lower()
+            if not q.is_file(): return 62
+            q.unlink(); hs["disks"].pop(q, None); return 0
         def h_unmount(ctx, unit): hs["cur"] = None
         def h_chdir(ctx, unit, name):
             n = name.decode().lower()
@@ -202,7 +206,7 @@ def main(kernal, scenario="basic"):
             hs["cwd"], hs["cur"] = hs["snap"]
             out[0] = ctypes.addressof(hs["cur"].d) if hs["cur"] else None; return 0
         cbs.push = HostStruct.PUSH(h_push); cbs.pop = HostStruct.POP(h_pop)
-        cbs.create = HostStruct.CREATE(h_create); cbs.mkdir = HostStruct.MKDIR(h_mkdir); cbs.rmdir = HostStruct.MKDIR(h_rmdir)
+        cbs.create = HostStruct.CREATE(h_create); cbs.mkdir = HostStruct.MKDIR(h_mkdir); cbs.rmdir = HostStruct.MKDIR(h_rmdir); cbs.scratch = HostStruct.MKDIR(h_scratch)
         cbs.plain_open = HostStruct.HOPEN(h_popen); cbs.plain_read = HostStruct.HREAD(h_pread)
         cbs.plain_close = HostStruct.HCLOSE(lambda c, u: hs.update(plain=None))
         LIB.vdrive_set_host(io.v, ctypes.byref(cbs))
@@ -506,10 +510,11 @@ def main(kernal, scenario="basic"):
         run('OPEN15,8,15,"CD:/MOCK.D64":CLOSE15\r')                                       # leave the card as the later tests expect
         run('NEW\r')
 
-        # --- VDSUITE: every section ("8" = run all) on the mock card (images made with N:, MD/RD, plain files, VDBAD.D64, CMD paths) ---
-        ok = prog("vdsuite", ["", "8"], ["TOTAL 176 PASSED, 0 FAILED"], wait=10.0) and ok
+        # --- VDSUITE: every section ("9" = run all) on the mock card (images made with N:, MD/RD, plain files, VDBAD.D64, CMD paths,
+        #     the clean-up with S:/RD:) ---
+        ok = prog("vdsuite", ["", "9"], ["TOTAL 186 PASSED, 0 FAILED"], wait=10.0) and ok
         m.keys('\r'); service(1.0); m.keys('0\r'); service(1.0)              # back to the menu, quit
-        check("vdsuite: the D81 it made is on the card", (sdroot / "vdscratch" / "vs81.d81").stat().st_size == 819200)
+        check("vdsuite: its clean-up left no VDSCRATCH folder", not (sdroot / "vdscratch").exists() and (sdroot / "vdplain.prg").exists())
         run('OPEN15,8,15,"CD:/MOCK.D64":CLOSE15\r')
         run('NEW\r')
 

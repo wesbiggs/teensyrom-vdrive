@@ -211,7 +211,7 @@ class HostStruct(ctypes.Structure):
                 ("dir_open", DIROPEN), ("dir_next", DIRNEXT), ("save_devices", SAVEDEV), ("push", PUSH), ("pop", POP),
                 ("hf_open", HFOPEN), ("hf_read", HFREAD), ("hf_write", HFWRITE), ("hf_close", HFCLOSE),
                 ("create", CREATE), ("plain_open", HOPEN), ("plain_read", HREAD), ("plain_close", HCLOSE),
-                ("mkdir", MKDIR), ("rmdir", MKDIR)]
+                ("mkdir", MKDIR), ("rmdir", MKDIR), ("scratch", MKDIR)]
 
 
 class HostTests(unittest.TestCase):
@@ -307,12 +307,19 @@ class HostTests(unittest.TestCase):
             if any(q.iterdir()): return 63
             q.rmdir(); return 0
 
+        def scratch(ctx, unit, name):
+            q = self.cwd / name.decode().lower()
+            if not q.is_file(): return 62
+            if q.name in self.readonly: return 26
+            q.unlink(); return 0
+
+        self.readonly = set()
         self.created = []
         self.cb = HostStruct(None, HostStruct.MOUNT(mount), HostStruct.UNMOUNT(unmount), HostStruct.CHDIR(chdir),
                              HostStruct.DIROPEN(dir_open), HostStruct.DIRNEXT(dir_next), HostStruct.SAVEDEV(lambda c, a, b: None),
                              HostStruct.PUSH(push), HostStruct.POP(pop), create=HostStruct.CREATE(create),
                              plain_open=HostStruct.HOPEN(hopen), plain_read=HostStruct.HREAD(hread), plain_close=HostStruct.HCLOSE(hclose),
-                             mkdir=HostStruct.MKDIR(mkdir), rmdir=HostStruct.MKDIR(rmdir))
+                             mkdir=HostStruct.MKDIR(mkdir), rmdir=HostStruct.MKDIR(rmdir), scratch=HostStruct.MKDIR(scratch))
         LIB.vdrive_set_host(self.io.v, ctypes.byref(self.cb))
 
     def tearDown(self): shutil.rmtree(self.tmp)
@@ -425,6 +432,37 @@ class HostTests(unittest.TestCase):
         self.cmd15(b"CD:A.D64"); self.status()
         self.cmd15(b"MD:PART"); self.assertTrue(self.status().startswith("31,"))   # D81 partitions / sub-directories: not supported
         self.assertFalse((self.tmp / "part").exists())
+
+    def test_s_deletes_image_files_with_nothing_mounted(self):
+        self.cmd15(b"S:A.D64,NOSUCH.D81")
+        self.assertEqual(self.status(), "01,FILES SCRATCHED,01,00\r")      # a missing name counts 0, as on a disk
+        self.assertFalse((self.tmp / "a.d64").exists())
+        self.cmd15(b"S0:SUB/INNER.D64"); self.assertEqual(self.status(), "01,FILES SCRATCHED,01,00\r")
+        self.assertFalse((self.tmp / "sub" / "inner.d64").exists())
+        self.assertEqual(self.cwd, self.tmp)                                 # the path was temporary
+        self.cmd15(b"CD:SUB"); self.status()
+        self.cmd15(b"N:X.D64"); self.status(); self.cmd15(b"CD:/"); self.status()
+        self.cmd15(b"CD:SUB"); self.status()
+        self.cmd15(b"S//:B.D64"); self.assertEqual(self.status(), "01,FILES SCRATCHED,01,00\r")   # CMD path from the root
+        self.assertEqual(self.cwd, self.tmp / "sub")
+        self.cmd15(b"CD:/"); self.status()
+        self.assertFalse((self.tmp / "b.d64").exists())
+        self.cmd15(b"S/SUB/:X.D64"); self.assertEqual(self.status(), "01,FILES SCRATCHED,01,00\r")
+        self.assertFalse((self.tmp / "sub" / "x.d64").exists())
+
+    def test_s_on_the_card_refuses_patterns_other_files_and_read_only_images(self):
+        self.readonly.add("a.d64")
+        self.cmd15(b"S:A.D64"); self.assertEqual(self.status(), "26,WRITE PROTECT ON,00,00\r")
+        self.assertTrue((self.tmp / "a.d64").exists())
+        self.cmd15(b"S:B.D64,A.D64"); self.assertTrue(self.status().startswith("26,"))   # stops at the protected one
+        self.assertFalse((self.tmp / "b.d64").exists())
+        for bad, code in ((b"S:*.D64", "33,"), (b"S:?.D64", "33,"), (b"S:README.PRG", "64,"), (b"S:SUB", "64,"), (b"S:SUB/.D64", "64,"),
+                          (b"S:", "34,"), (b"S:A.D64/X.D64", "33,")):
+            self.cmd15(bad); self.assertTrue(self.status().startswith(code), bad)
+        self.assertTrue((self.tmp / "readme.prg").exists() and (self.tmp / "sub" / "inner.d64").exists())
+        self.cmd15(b"CD:A.D64"); self.status()                                 # mounted: S: scratches inside the image as before
+        self.cmd15(b"S:A.D64"); self.assertEqual(self.status(), "01,FILES SCRATCHED,00,00\r")
+        self.assertTrue((self.tmp / "a.d64").exists())
 
     def test_n_with_an_image_mounted_still_formats_it(self):
         self.cmd15(b"CD:A.D64"); self.status()

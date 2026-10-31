@@ -675,6 +675,42 @@ VD_COLD static void cmd_folder(vdrive_t *v, int unit, vd_unit_t *u, int make, co
     if (r) set_err(u, (uint8_t)r, 0, 0);
 }
 
+/* "S:[path/]NAME.D64[,NAME2.D81...]" (.D71, .D81) with nothing mounted: delete image files on the card. Exact names only (a
+ * wildcard is 33, anything but an image name 64), a file with the card's read-only attribute set stays (26). A path picks the
+ * folder ("S:GAMES/OLD.D64", "S:/OLD.D64", CMD "S//GAMES/:OLD.D64"); the selected folder stays as it was (host push / pop).
+ * Answers 01,FILES SCRATCHED,nn like a scratch on a disk: a name that is not there counts 0. */
+VD_COLD static void cmd_scratch_images(vdrive_t *v, int unit, vd_unit_t *u, const char *p, const char *end)
+{
+    const vd_host_t *h = &v->host;
+    if (p < end && *p == ':') p++;
+    if (p >= end) { set_err(u, 34, 0, 0); return; }
+    int total = 0;
+    while (p < end) {
+        const char *q = p;
+        while (q < end && *q != ',') q++;
+        char path[VD_CMDBUF];
+        size_t n = (size_t)(q - p);
+        if (n >= sizeof path) { set_err(u, 33, 0, 0); return; }
+        memcpy(path, p, n); path[n] = 0;
+        if (strpbrk(path, "*?")) { set_err(u, 33, 0, 0); return; }
+        if (!image_kind(path) || n < 5 || path[n - 5] == '/') { set_err(u, 64, 0, 0); return; }
+        char *leaf = strrchr(path, '/');
+        int r = 0, temp = leaf && h->push && h->pop;
+        if (temp) h->push(h->ctx, unit);
+        if (leaf) {
+            char *rest, root[2] = { '/', 0 };
+            *leaf++ = 0;
+            r = path_walk(v, unit, u, path[0] ? path : root, &rest);
+            if (!r && (*rest || u->disk)) r = 33;                 /* the path went into an image or ended on a pattern */
+        } else leaf = path;
+        if (!r) { r = h->scratch(h->ctx, unit, leaf); if (!r) total++; else if (r == 62) r = 0; }
+        if (temp) { d64_t *d = NULL; h->pop(h->ctx, unit, &d); u->disk = d; }
+        if (r) { set_err(u, (uint8_t)r, 0, 0); return; }
+        p = q + 1;
+    }
+    set_err(u, 1, (uint8_t)total, 0);
+}
+
 /* UI / UJ / U9: reset the drive. Closes every channel, keeps the mounted image, answers the "73" power-on message. */
 VD_COLD static void cmd_reset(vd_unit_t *u)
 {
@@ -808,6 +844,16 @@ VD_COLD static void exec_command(vdrive_t *v, int unit, vd_unit_t *u, uint8_t *c
         if (k < 0) { set_err(u, 33, 0, 0); return; }
         if (k) cmd_new_image(v, unit, u, np, np + strlen(np));
         else cmd_new_image(v, unit, u, q, (const char *)cmd + len);
+        return;
+    }
+    if (!u->disk && cmd[0] == 'S' && v->host.scratch) {
+        const char *q = (const char *)cmd + 1;
+        while (*q >= '0' && *q <= '9') q++;                       /* "S0:" */
+        char sp[VD_CMDBUF];
+        int k = cmd_path(q, (const char *)cmd + len, sp, sizeof sp);   /* CMD "S//GAMES/:OLD.D64": "/GAMES/OLD.D64" */
+        if (k < 0) { set_err(u, 33, 0, 0); return; }
+        if (k) cmd_scratch_images(v, unit, u, sp, sp + strlen(sp));
+        else cmd_scratch_images(v, unit, u, q, (const char *)cmd + len);
         return;
     }
     if (!u->disk) { set_err(u, 74, 0, 0); return; }

@@ -280,6 +280,24 @@ FLASHMEM static int VD_RmDir(void *ctx, int unit, const char *name)
    return u->fs->rmdir(path) ? 0 : 26;
 }
 
+// S:NAME.D64 with nothing mounted: delete an image file (vdrive.c checks the name). A file with the FAT read-only attribute
+// cannot be opened for writing (SdFat), so it stays: 26 WRITE PROTECT ON.
+FLASHMEM static int VD_Scratch(void *ctx, int unit, const char *name)
+{
+   stcVDUnit *u = &vdUnit[unit];
+   char path[VD_CwdLen + 20];
+   VD_PathFor(u, name, path, sizeof path);
+   File probe = u->fs->open(path, FILE_READ);                                     // FILE_READ first: FILE_WRITE would create it
+   if (!probe || probe.isDirectory()) { if (probe) probe.close(); return 62; }
+   probe.close();
+   File w = u->fs->open(path, FILE_WRITE);
+   if (!w) return 26;
+   w.close();
+   if (!u->fs->remove(path)) return 26;
+   Printf_dbg("VDrive %d: scratched %s\n", unit + 8, path);
+   return 0;
+}
+
 // A listing by path (LOAD"$/GAMES/G.D64") must not change what is selected: remember folder and image, put them back afterwards.
 FLASHMEM static void VD_Push(void *ctx, int unit)
 {
@@ -540,7 +558,7 @@ FLASHMEM void VDrive_PreStart()
    host.push = VD_Push;  host.pop = VD_Pop;  host.create = VD_Create;
    host.hf_open = VD_HfOpen;  host.hf_read = VD_HfRead;  host.hf_write = VD_HfWrite;  host.hf_close = VD_HfClose;
    host.plain_open = VD_PlainOpen;  host.plain_read = VD_PlainRead;  host.plain_close = VD_PlainClose;
-   host.mkdir = VD_MkDir;  host.rmdir = VD_RmDir;
+   host.mkdir = VD_MkDir;  host.rmdir = VD_RmDir;  host.scratch = VD_Scratch;
    if (hfFile) hfFile.close();        // the drive state (and with it any open channel) was just reset
    hfKind = -1;
    vdrive_set_host(&vio->vd, &host);

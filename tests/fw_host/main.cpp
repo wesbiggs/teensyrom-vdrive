@@ -485,6 +485,18 @@ int main(int argc, char **argv)
     cmd15("N:/SUB/NEW2.D64"); check("N: with a folder path creates the image there", status15() == "00, OK,00,00\r" && fs_::file_size(SD.resolve("/sub/new2.d64")) == 174848);
     cmd15("CD:/"); status15();
 
+    // ---- S:NAME.D64 with nothing mounted: image files deleted from the card ----
+    cmd15("N:GONE.D71"); status15(); cmd15("CD:/"); status15();
+    cmd15("S:GONE.D71,NOSUCH.D64"); check("S:GONE.D71 deletes the image (a missing name counts 0)", status15() == "01,FILES SCRATCHED,01,00\r" && !fs_::exists(SD.root / "gone.d71"));
+    cmd15("S:SUB/NEW2.D64"); check("... with a folder path, and the folder stays as it was", status15() == "01,FILES SCRATCHED,01,00\r"
+          && !fs_::exists(SD.resolve("/sub/new2.d64")) && vdUnit[0].cwd[0] == 0);
+    cmd15("S:PLAIN.PRG"); check("... anything but an image name is 64, the file stays", status15().rfind("64,", 0) == 0 && fs_::exists(SD.root / "plain.prg"));
+    cmd15("N:KEEP.D64"); status15(); cmd15("CD:/"); status15();
+    fs_::permissions(SD.root / "keep.d64", fs_::perms::owner_write | fs_::perms::group_write | fs_::perms::others_write, fs_::perm_options::remove);
+    cmd15("S:KEEP.D64"); check("... a read-only image on the card stays (26)", status15().rfind("26,", 0) == 0 && fs_::exists(SD.root / "keep.d64"));
+    fs_::permissions(SD.root / "keep.d64", fs_::perms::owner_write, fs_::perm_options::add);
+    cmd15("S:KEEP.D64"); check("... and goes once it is writable", status15() == "01,FILES SCRATCHED,01,00\r" && !fs_::exists(SD.root / "keep.d64"));
+
     // ---- the menu's bus probe before launch: numbers right from the first instruction, no scan by the KERNAL ----
     {
         g_real_drives = {8, 10};

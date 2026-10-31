@@ -41,7 +41,7 @@ Firmware integration and usage: `firmware/README.md`.
 * **BASIC test programs** (`tests/basic/`, built into `build/testdisk/vdtest.d64` by `make testdisk`) run inside VICE in `make test` and on the C64; they
   found two real bugs that unit tests missed: `CIOUT` must return `A` = the byte sent (CHROUT tail-jumps into it; BASIC's PRINT broke after a
   number), and `U0>` must also be accepted with PRINT#'s trailing CR.
-  `VDSUITE` (tests/basic/vdsuite.bas, the "Not yet checked" items in one menu program; 176 checks, all pass in the `basic` VICE run, **not on hardware yet**) also needs `vdbad.d64` and
+  `VDSUITE` (tests/basic/vdsuite.bas, the "Not yet checked" items in one menu program; 186 checks with the clean-up (`8`, `S:`/`RD:`), all pass in the `basic` VICE run, **not on hardware yet**) also needs `vdbad.d64` and
   `vdplain.prg` from `make testdisk` (`tools/suite_files.py`, shared with the mock) in the card root. It found a drive bug, fixed in 0.9.0.36: a successful command did not reset an error nobody
   read (a 1541 says `00, OK` after it), so a stale `62` from an earlier `LOAD` came back after a good `CD:/`. Now every OPEN and command starts at `00` (`VD_UNLSN` in `vdrive.c`; CLOSE keeps its own error).
 * **Lessons from bring-up (keep):** (1) a flat NTSC C128 in C64 mode did not reliably serve the replacement KERNAL (the Skoe HIRAM sense cannot work there; upstream's DMA sense, in since 0.9.0.37, is meant to fix it, untested with VDrive): use a real C64, and
@@ -103,6 +103,9 @@ Firmware integration and usage: `firmware/README.md`.
 * 0.9.0.37: rebased on upstream with [TeensyROM PR 78](https://github.com/SensoriumEmbedded/TeensyROM/pull/78) merged (Kernal Replace senses HIRAM by DMA on a C128: the Skoe sense's A14 never reaches
   the PLA there). The PR carries the same early `HIRAM_State_RAM` return as our fix, so that hunk left `kernalreplace-fixes.patch` (which keeps `KernalFast`, the Ethernet poll and the trace);
   `VD_ProbeFinish` also resets the DMA sense state (`KDS_State`) when it re-hooks `KernalCheck`. Firmware builds (`TeensyROM+_0.9.0.37_full.hex`); the DMA sense is confirmed on a C128 by the TR maintainer, **VDrive not run on a C128**.
+* 0.9.0.39: `S:NAME.D64` (`.D71`/`.D81`, a comma list, a path or CMD path) with nothing mounted deletes image files on the card (host callback `scratch`, glue `VD_Scratch`, `cmd_scratch_images` in `vdrive.c`;
+  docs/DESIGN.md 39). Exact names only (33 for a pattern), images only (64); a file with the FAT read-only attribute stays (26: SdFat will not open it for writing). `L:` on a card image
+  is **not possible**: Teensyduino 1.61's SdFat 2.1.2 has no call that sets the attribute (set it on a PC). Unit, glue host and VICE (VDSUITE `8`) tests; not on hardware.
 * Known open risks: C128 untested with VDrive (the DMA sense above should fix lesson 1; not run); tape (device 1) intentionally broken (its code space was reclaimed: $F8E2-$FB8D, $FB97-$FCD0).
 
 ## Layout
