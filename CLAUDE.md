@@ -41,6 +41,9 @@ Firmware integration and usage: `firmware/README.md`.
 * **BASIC test programs** (`tests/basic/`, built into `build/testdisk/vdtest.d64` by `make testdisk`) run inside VICE in `make test` and on the C64; they
   found two real bugs that unit tests missed: `CIOUT` must return `A` = the byte sent (CHROUT tail-jumps into it; BASIC's PRINT broke after a
   number), and `U0>` must also be accepted with PRINT#'s trailing CR.
+  `VDSUITE` (tests/basic/vdsuite.bas, the "Not yet checked" items in one menu program; 176 checks, all pass in the `basic` VICE run, **not on hardware yet**) also needs `vdbad.d64` and
+  `vdplain.prg` from `make testdisk` (`tools/suite_files.py`, shared with the mock) in the card root. It found an open drive bug: a successful command does not reset an error nobody
+  read (a 1541 says `00, OK` after it), so a stale `62` from an earlier `LOAD` came back after a good `CD:/`; the suite reads the status once at start to step around it.
 * **Lessons from bring-up (keep):** (1) a flat NTSC C128 in C64 mode did not reliably serve the replacement KERNAL: use a real C64, and
   verify "is it really served" with the banner (`kernal-tr.bin` from 0.9.0.36 prints `VDRIVE SD n USB n` on the second line, `kernal-banner.bin` `TRVDRIVE` on the first; a stock image can't show either). (2) All SD/USB probing
   must happen in `VDrive_PreStart()` while the C64 waits, not at handler start. (3) Bus-handler data in fast RAM1, token STAT handshake,

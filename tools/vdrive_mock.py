@@ -26,11 +26,12 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from d64py import LIB, Disk, VDrive, VIO, R_DEV0, R_DEV1, WIN_SIZE
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "tests"))
 from test_vio import HostStruct               # ctypes layout of vd_host_t
+import suite_files
 
 OK = b"00, OK,00,00\r"
 
-def make_image(workdir):
-    """Build a test disk with c1541: TEST (BASIC), BIG (multi-sector, load $2000)."""
+def make_image(workdir, bad):
+    """Build a test disk with c1541: TEST (BASIC), BIG (multi-sector, load $2000), the BASIC tests (bad = VDBAD.D64's bad file sector)."""
     rnd = random.Random(1)
     big = b"\x00\x20" + bytes(rnd.randrange(256) for _ in range(6000))
     prg = b"\x01\x08" + bytes.fromhex("0e08 0a00 99 22 48 49 22 00 00 00".replace(" ", ""))  # 10 PRINT"HI"
@@ -46,7 +47,7 @@ def make_image(workdir):
     for src in sorted(basic.glob("*.bas")):
         out = workdir / (src.stem + ".prg")
         text = workdir / src.name
-        text.write_text(src.read_text().replace("@XX@", str(xx)))
+        text.write_text(suite_files.subst(src.read_text().replace("@XX@", str(xx)), bad))
         subprocess.run(["petcat", "-w2", "-o", str(out), "--", str(text)], check=True, capture_output=True)
         c("-attach", str(img), "-write", str(out), src.stem)
     from make_util import build as build_util
@@ -138,22 +139,44 @@ def main(kernal, scenario="basic"):
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         m = Mon()
-        image, big = make_image(workdir)
+        sdroot = workdir / "sdroot"; sdroot.mkdir()
+        bad = suite_files.bad_image(sdroot / "vdbad.d64")                # VDSUITE's card files
+        (sdroot / "vdplain.prg").write_bytes(suite_files.plain_prg())
+        image, big = make_image(workdir, bad)
         disk = Disk(image)
         io = VIO()
-        # a fake SD card for CD:/mount/renumber tests (cdtest.bas, renum.bas)
-        sdroot = workdir / "sdroot"; sdroot.mkdir()
+        # a fake SD card for CD:/mount/renumber tests (cdtest.bas, renum.bas, vdsuite.bas)
         (sdroot / "mock.d64").write_bytes(image)
         for fmt, nm_, fn in (("d81", "bigdisk", "big.d81"), ("d71", "twodisk", "two.d71")):
             subprocess.run(["c1541", "-format", nm_ + ",xx", fmt, str(sdroot / fn)], check=True, capture_output=True)
             (workdir / "h.prg").write_bytes(b"\x01\x08" + bytes.fromhex("0b08 0a00 99 22 48 49 22 00 00 00".replace(" ", "")))   # 10 PRINT"HI"
             subprocess.run(["c1541", "-attach", str(sdroot / fn), "-write", str(workdir / "h.prg"), "hello"], check=True, capture_output=True)
         subprocess.run(["c1541", "-format", "vdtest,01", "d64", str(sdroot / "vdtest.d64")], check=True, capture_output=True)
-        hs = {"cwd": sdroot, "disks": [], "entries": [], "i": 0, "saved": [], "cur": None, "snap": None}
-        def h_mount(ctx, unit, name, out):
+        hs = {"cwd": sdroot, "disks": {}, "entries": [], "i": 0, "saved": [], "cur": None, "snap": None, "plain": None}
+        def h_mount(ctx, unit, name, out):              # an image keeps its contents across unmount / mount (written back, as on the card)
             p = hs["cwd"] / name.decode().lower()
             if not p.exists() or p.is_dir(): return 62
-            d = Disk(p.read_bytes()); hs["disks"].append(d); hs["cur"] = d; out[0] = ctypes.addressof(d.d); return 0
+            d = hs["disks"].get(p) or hs["disks"].setdefault(p, Disk(p.read_bytes())); hs["cur"] = d; out[0] = ctypes.addressof(d.d); return 0
+        def h_create(ctx, unit, name, size, out):
+            p = hs["cwd"] / name.decode().lower()
+            if p.exists(): return 63
+            p.write_bytes(bytes(size)); return h_mount(ctx, unit, name, out)
+        def h_popen(ctx, unit, name, size):
+            p = hs["cwd"] / name.decode().lower()
+            if not p.is_file(): return 62
+            hs["plain"] = [p.read_bytes(), 0]; size[0] = len(hs["plain"][0]); return 0
+        def h_pread(ctx, unit, buf, n):
+            data, pos = hs["plain"]; part = data[pos: pos + n]; hs["plain"][1] += len(part)
+            ctypes.memmove(buf, part, len(part)); return len(part)
+        def h_mkdir(ctx, unit, name):
+            q = hs["cwd"] / name.decode().lower()
+            if q.exists(): return 63
+            q.mkdir(); return 0
+        def h_rmdir(ctx, unit, name):
+            q = hs["cwd"] / name.decode().lower()
+            if not q.is_dir(): return 62
+            if any(q.iterdir()): return 63
+            q.rmdir(); return 0
         def h_unmount(ctx, unit): hs["cur"] = None
         def h_chdir(ctx, unit, name):
             n = name.decode().lower()
@@ -179,6 +202,9 @@ def main(kernal, scenario="basic"):
             hs["cwd"], hs["cur"] = hs["snap"]
             out[0] = ctypes.addressof(hs["cur"].d) if hs["cur"] else None; return 0
         cbs.push = HostStruct.PUSH(h_push); cbs.pop = HostStruct.POP(h_pop)
+        cbs.create = HostStruct.CREATE(h_create); cbs.mkdir = HostStruct.MKDIR(h_mkdir); cbs.rmdir = HostStruct.MKDIR(h_rmdir)
+        cbs.plain_open = HostStruct.HOPEN(h_popen); cbs.plain_read = HostStruct.HREAD(h_pread)
+        cbs.plain_close = HostStruct.HCLOSE(lambda c, u: hs.update(plain=None))
         LIB.vdrive_set_host(io.v, ctypes.byref(cbs))
         io.attach(0, disk)
         if scan:
@@ -478,6 +504,13 @@ def main(kernal, scenario="basic"):
         run('LOAD"HELLO",8\r', "READY."); run('LIST\r', '10 PRINT"HI"')
         run('LOAD"$/",8\r', "SEARCHING FOR $/"); run('LIST\r', '"SD:/')               # a folder path: the host directory
         run('OPEN15,8,15,"CD:/MOCK.D64":CLOSE15\r')                                       # leave the card as the later tests expect
+        run('NEW\r')
+
+        # --- VDSUITE: every section ("8" = run all) on the mock card (images made with N:, MD/RD, plain files, VDBAD.D64, CMD paths) ---
+        ok = prog("vdsuite", ["", "8"], ["TOTAL 176 PASSED, 0 FAILED"], wait=10.0) and ok
+        m.keys('\r'); service(1.0); m.keys('0\r'); service(1.0)              # back to the menu, quit
+        check("vdsuite: the D81 it made is on the card", (sdroot / "vdscratch" / "vs81.d81").stat().st_size == 819200)
+        run('OPEN15,8,15,"CD:/MOCK.D64":CLOSE15\r')
         run('NEW\r')
 
         # --- handler absent (BUSY never clears): KERNAL must time out and use the real IEC code ---
