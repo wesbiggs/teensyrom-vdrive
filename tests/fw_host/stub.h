@@ -124,7 +124,7 @@ extern volatile uint8_t BtnPressed;
 enum { rwRegPwrUpDefaults2 = 8, rpud2AltBtnActionMask = 0b00111000, rpud2AltBtnAutoLaunch = 0, rpud2AltBtnPause = 0b00001000, rpud2AltBtnNone = 0b00100000 };
 #define Fab04_SpecialButton
 extern void (*fSpecialBtnChange)(bool Up_nDn);
-enum { rWRegCurrMenuWAIT = 3, rwRegScratch = 9, rmtUSBDrive = 0, rmtSD = 1, rmtTeensy = 2 };
+enum { rWRegCurrMenuWAIT = 3, rwRegScratch = 9, rwRegColorRefStart = 42, NumColorRefs = 7, rmtUSBDrive = 0, rmtSD = 1, rmtTeensy = 2 };
 extern volatile uint8_t *IO1;
 extern char DriveDirPath[];
 

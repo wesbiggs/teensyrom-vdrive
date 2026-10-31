@@ -15,6 +15,7 @@ from py65.memory import ObservableMemory
 
 COLOR_OF = {144: 0, 5: 1, 28: 2, 159: 3, 156: 4, 30: 5, 31: 6, 158: 7, 129: 8, 149: 9, 150: 10, 151: 11, 152: 12, 153: 13, 154: 14, 155: 15}
 STATUS = 0x90
+TXTCOL = 0x0286
 END = 0xFF00            # the return address handed to the program: reaching it means "back in BASIC"
 
 
@@ -185,7 +186,8 @@ class C64:
         self.ret(a=b, carry=0)
 
     def chrout(self):
-        if self.outp is None: self.screen.put(self.cpu.a)
+        if self.outp is None:                       # the text colour is $0286, as in the KERNAL: a colour code sets it, a program may too
+            self.screen.color = self.mem[TXTCOL] & 15; self.screen.put(self.cpu.a); self.mem[TXTCOL] = self.screen.color
         else: self.wbuf.append(self.cpu.a)
         self.ret(carry=0)
 

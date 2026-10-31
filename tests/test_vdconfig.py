@@ -44,6 +44,7 @@ class FakeDrive:
         if usb is not None: self.units[9] = Unit("USB", usb)
         self.chans, self.st = {}, 0
         self.log = []
+        self.colours = None             # the TR menu's colour references for the third "!STATE" line (None: a firmware without it)
 
     # ---- host side helpers ----
     def unit(self, dev): return self.units[dev]
@@ -120,7 +121,8 @@ class FakeDrive:
             if base == "!STATE":
                 if flag.upper() == "W": self.set_status(u, 26, "WRITE PROTECT ON"); self.chans[lf] = Chan("none", dev, name=str(sa)); return
                 path = (u.mounted or "").upper()
-                self.chans[lf] = Chan("r", dev, (path + "\r" + (u.cwd.upper() or "/") + "\r").encode(), str(sa)); self.set_status(u, 0); return
+                text = path + "\r" + (u.cwd.upper() or "/") + "\r" + ("" if self.colours is None else self.colours + "\r")
+                self.chans[lf] = Chan("r", dev, text.encode(), str(sa)); self.set_status(u, 0); return
             if base == "!CONFIG":
                 if flag.upper() == "W":
                     self.chans[lf] = Chan("w", dev, name=str(sa)); self.chans[lf].target = "/vdrive-config.txt"
@@ -210,8 +212,8 @@ class T(unittest.TestCase):
         self.assertTrue((self.entry(7) or ())[:2] == tuple(["4", "/gone/nowhere.d64"]), self.row(7))
         self.assertEqual(self.row(8), "")
         self.assertEqual(self.row(20), "Ready. Alt: 1 tap = SD, 2 taps = USB")
-        self.assertTrue(self.row(21).startswith("Return:Mount"))
-        self.assertEqual(self.row(23), "T:SD/USB List R:Refresh Q:Exit to Menu")
+        self.assertEqual(self.row(21), "Return Mount B Browse+Mount U Unmount")
+        self.assertEqual(self.row(23), "T SD/USB list R Refresh Q Exit to menu")
         # the colour cell: reverse, in colour 5 (green) for entry 1, nothing else on that row is reversed after the path
         cells = [c for c in range(40) if self.b.screen.rev[4][c] and self.b.screen.ch[4][c] == " "]
         self.assertTrue(cells and all(self.b.screen.col[4][c] == 5 for c in cells[-2:]), cells)
@@ -221,6 +223,51 @@ class T(unittest.TestCase):
         for r, col in ((4, 5), (5, 7), (6, 1)):
             cells = [c for c in range(40) if self.b.screen.rev[r][c] and self.b.screen.ch[r][c] == " " and c > 28]
             self.assertTrue(cells and all(self.b.screen.col[r][c] == col for c in cells), (r, cells))
+
+    def colours_at(self, r, text):
+        c = self.row(r).index(text)
+        return {self.b.screen.col[r][i] for i in range(c, c + len(text))}, {self.b.screen.rev[r][i] for i in range(c, c + len(text))}
+
+    def test_menu_colours_default(self):
+        # a firmware without the colour line: the TR menu's defaults (black, purple border and banner, light red, yellow, light blue, light green)
+        self.start(mounted="/games/zork.d64")
+        self.assertEqual((self.b.mem[53280], self.b.mem[53281]), (4, 0))
+        self.assertEqual(self.colours_at(0, "VDrive Config"), ({4}, {True}))
+        self.assertEqual((self.b.mem[0x0427], self.b.mem[0xD827]), (0xA0, 4), "the banner's last column")
+        self.assertEqual(self.colours_at(21, "Return"), ({7}, {True}))      # a key: reverse, option colour
+        self.assertEqual(self.colours_at(21, " Mount"), ({14}, {False}))    # what it does: sources colour
+        self.assertEqual(self.colours_at(1, "SD  8:"), ({7}, {True}))       # the shown unit
+        self.assertEqual(self.colours_at(2, "USB 9:"), ({14}, {False}))
+        self.assertEqual(self.colours_at(1, "/games/zork.d64"), ({13}, {False}))
+        self.assertEqual(self.colours_at(4, "/games/zork.d64"), ({13}, {True}))  # the path on the cursor
+        self.assertEqual(self.colours_at(5, "/util/tools.d64"), ({13}, {False}))
+        self.assertEqual(self.colours_at(3, "Alt: 1 tap"), ({10}, {False}))
+        self.assertEqual(self.colours_at(20, "Ready."), ({10}, {False}))    # messages: time colour
+
+    def test_menu_colours_from_state(self):
+        self.drive = FakeDrive(make_sd() | {"/vdrive-config.txt": CONFIG.encode()})
+        self.drive.colours = "6E1F3C5"                   # background 6, border 14, banner 1, time 15, option 3, sources 12, name 5
+        self.b = C64(PRG, self.drive, {56854: 8, 56855: 0})
+        self.assertEqual(self.b.run(), "key")
+        self.assertEqual((self.b.mem[53280], self.b.mem[53281]), (14, 6))
+        self.assertEqual(self.colours_at(0, "VDrive Config"), ({1}, {True}))
+        self.assertEqual(self.colours_at(22, "+/-"), ({3}, {True}))
+        self.assertEqual(self.colours_at(22, " Reorder"), ({12}, {False}))
+        self.assertEqual(self.colours_at(4, "/games/zork.d64"), ({5}, {True}))
+        self.assertEqual(self.colours_at(20, "Ready."), ({15}, {False}))
+        cells = [c for c in range(40) if self.b.screen.rev[4][c] and self.b.screen.ch[4][c] == " " and c > 28]
+        self.assertTrue(cells and all(self.b.screen.col[4][c] == 5 for c in cells), cells)   # the entry's own colour stays its own
+        self.keys("a")                                   # the browser: names in the name colour, types in the sources colour
+        r = next(r for r in range(4, 12) if "DIR" in self.row(r))
+        self.assertEqual(self.colours_at(r, "DIR"), ({12}, {False}))
+        self.assertEqual(self.colours_at(21, "Return"), ({3}, {True}))
+
+    def test_menu_colours_partial_line_ignored(self):
+        self.drive = FakeDrive(make_sd() | {"/vdrive-config.txt": CONFIG.encode()})
+        self.drive.colours = "6E1"                       # not all seven: the defaults stay
+        self.b = C64(PRG, self.drive, {56854: 8, 56855: 0})
+        self.assertEqual(self.b.run(), "key")
+        self.assertEqual((self.b.mem[53280], self.b.mem[53281]), (4, 0))
 
     def test_cursor_and_mount(self):
         self.start()
@@ -451,7 +498,7 @@ class T(unittest.TestCase):
     def test_lower_case_screen(self):
         self.start()
         self.assertTrue(self.b.screen.lower)
-        self.assertEqual(self.row(0), " VDrive Config")
+        self.assertEqual(self.row(0), " " * 13 + "VDrive Config")
         self.keys("a")
         self.assertTrue(any("DIR" in self.row(r) for r in range(4, 12)), "listing types in capitals")
 

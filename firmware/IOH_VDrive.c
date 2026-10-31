@@ -384,13 +384,15 @@ FLASHMEM static int VD_DirNext(void *ctx, int unit, char name[17], uint32_t *siz
 }
 
 // ---- host text files for the configuration utility (VDrive Config.prg): OPEN n,d,n,"!CONFIG[,W]" and "!STATE" ---------------------
-// !CONFIG is the unit's /vdrive-config.txt (see the Alt button section below), !STATE two lines: the mounted image's path and the
-// folder. Text crosses as PETSCII with CR line ends. One file at a time; opening another (or closing the channel) ends the first.
+// !CONFIG is the unit's /vdrive-config.txt (see the Alt button section below), !STATE three lines: the mounted image's path, the
+// folder and the TR menu's colour references (IO1[rwRegColorRefStart..], NumColorRefs hex digits, so the utility matches the menu).
+// Text crosses as PETSCII with CR line ends. One file at a time; opening another (or closing the channel) ends the first.
 #define VD_ConfigName "/vdrive-config.txt"
+extern volatile uint8_t* IO1;     // defined in IOH_TeensyROM.c, which is included after this file
 static File       hfFile;
 static int        hfKind = -1;
 static bool       hfWriting = false;
-static char       hfText[2 * (VD_CwdLen + 20) + 4];
+static char       hfText[2 * (VD_CwdLen + 20) + NumColorRefs + 6];
 static size_t     hfTextPos = 0, hfTextLen = 0;
 
 FLASHMEM static void VD_HfClose(void *ctx, int unit, int write)
@@ -409,7 +411,10 @@ FLASHMEM static int VD_HfOpen(void *ctx, int unit, int kind, int write)
       path[0] = 0;
       if (u->mounted) VD_PathFor(u, u->imgName, path, sizeof path);
       hfTextLen = snprintf(hfText, sizeof hfText, "%s\n%s\n", path, u->cwd[0] ? u->cwd : "/");
-      if (hfTextLen >= sizeof hfText) hfTextLen = sizeof hfText - 1;
+      if (hfTextLen > sizeof hfText - NumColorRefs - 2) hfTextLen = sizeof hfText - NumColorRefs - 2;
+      for (int i = 0; i < NumColorRefs; i++) hfText[hfTextLen++] = "0123456789ABCDEF"[IO1[rwRegColorRefStart + i] & 15];
+      hfText[hfTextLen++] = '\n';
+      hfText[hfTextLen] = 0;
       hfTextPos = 0; hfKind = kind;
       return 0;
    }
@@ -477,7 +482,6 @@ FLASHMEM static void VD_LoadDevices()
 // launched from there, that image is mounted on the unit of the same storage (SD = unit 0, USB = unit 1) so the program's own
 // LOAD from device 8/9 finds its files. Any other launch re-mounts what the unit had mounted last.
 extern char DriveDirPath[];
-extern volatile uint8_t* IO1;     // defined in IOH_TeensyROM.c, which is included after this file
 extern volatile uint8_t BtnPressed;   // Teensy.ino: the menu button; loop() then resets the C64 into the TR menu
 
 // path = "/a/b/X.D64" (ASCII, no trailing '*'): folder becomes the unit's cwd, then the image is mounted.

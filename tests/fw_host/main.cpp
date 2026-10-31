@@ -7,7 +7,7 @@
 
 FS SD, firstPartition;
 SerialStub Serial;
-static uint8_t io1_mem[16];
+static uint8_t io1_mem[256];
 volatile uint8_t *IO1 = io1_mem;
 void (*fSpecialBtnChange)(bool Up_nDn) = nullptr;
 char DriveDirPath[128];
@@ -846,12 +846,14 @@ int main(int argc, char **argv)
             open_ch(2, "!CONFIG"); back = read_ch(2); close_ch(2);
             check("host file: an empty list reads as nothing", back.empty());
 
+            const uint8_t menuCols[NumColorRefs] = {0, 4, 4, 10, 7, 14, 0xFD};      // the TR defaults, the last one with junk above bit 3
+            for (int i = 0; i < NumColorRefs; i++) IO1[rwRegColorRefStart + i] = menuCols[i];
             cmd15("CD:/"); status15();
             open_ch(2, "!STATE"); back = read_ch(2); close_ch(2);
-            check("host file: !STATE with nothing mounted = empty path line + folder", back == "\r/\r");
+            check("host file: !STATE with nothing mounted = empty path line + folder + the menu colours", back == "\r/\r044A7ED\r");
             cmd15("CD:/SUB/INNER.D64"); status15();
             open_ch(2, "!STATE"); back = read_ch(2); close_ch(2);
-            check("host file: !STATE shows the mounted image and its folder", back == "/SUB/INNER.D64\r/SUB\r");
+            check("host file: !STATE shows the mounted image and its folder", back == "/SUB/INNER.D64\r/SUB\r044A7ED\r");
             open_ch(2, "!STATE,W"); check("host file: !STATE is write protected (26)", status15().rfind("26,", 0) == 0);
             open_ch(2, "!NOPE"); check("host file: unknown name gives 62", status15().rfind("62,", 0) == 0);
             // a second host file replaces the first one

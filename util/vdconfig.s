@@ -8,6 +8,10 @@
 ; (comments, blank lines) stay where they are.
 ; Buffers and tables are BSS at $2000-$4FFF (not in the PRG). The screen is in the lower-case character set: PS swaps the case of the
 ; letters in its strings for that set, strings for the drive (CMDS, types) are as they are.
+; Colours follow the TR menu: its seven colour references (background, border, banner, time, option, sources, name) come as the third
+; line of "!STATE" (hex digits; the menu's defaults when a firmware sends no such line). Bytes C_BAN..C_NAME in a screen string select
+; one (fch sets the text colour from THEME). As in the menu: a reverse banner, keys in reverse in the option colour, their descriptions and
+; labels in the sources colour, paths and names in the name colour, messages in the time colour.
 .setcpu "6502"
 
 SETLFS  = $FFBA
@@ -52,6 +56,11 @@ LARROW  = 95            ; left arrow: cancel; "CD:<-" unmounts
 OUTSCR  = 0             ; OUTM: where fch sends characters
 OUTLINE = 1
 OUTCMD  = 2
+C_BAN   = 3             ; screen string bytes 1-7: colour reference 0-6 of the TR menu (THEME); only these five are used for text
+C_TIME  = 4
+C_OPT   = 5
+C_SRC   = 6
+C_NAME  = 7
 
 .macro LCB s          ; one string or byte for the lower-case screen: 'a'-'z' -> $41-$5A, 'A'-'Z' -> $C1-$DA, anything else as it is
 .if .match({s}, "")
@@ -92,6 +101,26 @@ OUTCMD  = 2
         jsr msgbeg
         PS str
         jsr fpad
+.endmacro
+.macro KEY k, t         ; a key as the TR menu shows it (reverse, option colour) and what it does (sources colour); inside pstr strings
+        .byte 18, C_OPT
+        LCB k
+        .byte 146, C_SRC
+        LCB t
+.endmacro
+.macro KEYS k1, t1, k2, t2, k3, t3, k4, t4 ; print up to four keys
+        jsr pstr
+        KEY k1, t1
+.ifnblank k2
+        KEY k2, t2
+.endif
+.ifnblank k3
+        KEY k3, t3
+.endif
+.ifnblank k4
+        KEY k4, t4
+.endif
+        .byte 0
 .endmacro
 .macro CMDS str         ; CMD = str (as it is: for the drive); fch appends to CMD until scr
         jsr cmdbeg
@@ -152,16 +181,16 @@ start:
         ldy #15
         jsr openc
 @o2:    lda #0
-        sta BORDER
-        sta BGCOL
         sta UN
-        lda #1
-        sta TXTCOL
         lda DEVS
         bne @u
         inc UN                  ; no SD unit: start on the USB list
 @u:     jsr setunit
         jsr readstate
+        lda THEME+1             ; the menu's border and background
+        sta BORDER
+        lda THEME
+        sta BGCOL
         jsr readcfg
         lda #0
         sta CU
@@ -274,7 +303,14 @@ fch:    sta FCH
         sty FY
         ldx OUTM
         bne @buf
-        and #$7F
+        cmp #C_NAME+1
+        bcs @ch
+        tax
+        beq @ch
+        lda THEME-1,x           ; 1-7: a colour reference
+        sta TXTCOL
+        jmp @r
+@ch:    and #$7F
         cmp #$20
         bcc @out
         lda FLDN
@@ -430,7 +466,9 @@ rowbeg: jsr atrow
 
 msgbeg: jsr scr
         ldx #20
-        jmp rowbeg
+        jsr rowbeg
+        lda #C_TIME
+        jmp fch
 
 ; "ERROR nn,message" on row 20
 perr:   jsr msgbeg
@@ -527,7 +565,7 @@ sendcmd:jsr scr
         jmp rdel
 
 ; ---------------------------------------------------------------------------------------------------------------------------------
-; MPL / MPB: the image mounted on each unit, from the first line of "!STATE" (empty when none or no unit).
+; MPL / MPB: the image mounted on each unit, from the first line of "!STATE" (empty when none or no unit); THEME from its third line.
 readstate:
         ldx #1
 @u:     stx U
@@ -538,7 +576,9 @@ readstate:
         lda #128
 @o:     sta UOFS
         lda DEVS,x
-        beq @nx
+        bne @go
+        jmp @nx
+@go:
         CMDS "!STATE"
         jsr scr
         ldx U
@@ -580,7 +620,10 @@ readstate:
 @sk:    lda RS
         and #$40
         beq @rd
-@end:   jsr CLRCHN
+@end:   lda RS                  ; 0: the line ended in CR with more to come
+        bne @ce
+        jsr rdtheme
+@ce:    jsr CLRCHN
         ldx U
         lda LLEN
         sta MPL,x
@@ -591,6 +634,49 @@ readstate:
         bmi @x
         jmp @u
 @x:     rts
+
+; the rest of "!STATE" (input from it): skip the folder line, then THEME = the NumColorRefs hex digits of the third line (all or nothing)
+rdtheme:jsr CHRIN
+        sta CH
+        lda STATUS
+        bne @x
+        lda CH
+        cmp #13
+        bne rdtheme
+        lda #0
+        sta T1
+@h:     jsr CHRIN
+        sta CH
+        lda STATUS
+        and #$BF
+        bne @x
+        lda CH
+        cmp #'0'
+        bcc @x
+        cmp #'9'+1
+        bcc @dg
+        cmp #'A'
+        bcc @x
+        cmp #'F'+1
+        bcs @x
+        sbc #'A'-10-1           ; carry clear: A-'A'+10
+        jmp @st
+@dg:    and #15
+@st:    ldx T1
+        sta THN,x
+        inx
+        stx T1
+        cpx #7
+        bcs @ok
+        lda STATUS
+        beq @h
+@x:     rts
+@ok:    dex
+@cp:    lda THN,x
+        sta THEME,x
+        dex
+        bpl @cp
+        rts
 
 ; P2 / SLEN = the image mounted on unit X
 mpptr:  lda MPL,x
@@ -1104,26 +1190,30 @@ save:   lda TLEN+1
 ; ---------------------------------------------------------------------------------------------------------------------------------
 ; The screen: row 0 title, 1-2 the units, 3 the list header, 4-19 the list, 20 messages, 21-23 the keys.
 drawall:jsr scr
-        PS 147
+        PS C_NAME, 147          ; the menu clears in the name colour
         ldx #0
         jsr rowbeg
-        PS 18, " VDrive Config"
+        PS C_BAN, 18, "             VDrive Config"
         jsr fpad
         PS 146
+        lda #$A0                ; the banner's last column straight into the screen: printing it would link rows 0 and 1
+        sta $0400+39
+        lda THEME+2
+        sta $D800+39
 drawmid:jsr drawdrv
         jsr drawlh
         jsr drawlist
         ldx #21
         jsr rowbeg
-        PS "Return:Mount B:Browse+Mount U:Unmount"
+        KEYS "Return", " Mount ", "B", " Browse+Mount ", "U", " Unmount"
         jsr fpad
         ldx #22
         jsr rowbeg
-        PS "A:Add E:Edit D:Delete +/-:Reorder"
+        KEYS "A", " Add ", "E", " Edit ", "D", " Delete ", "+/-", " Reorder"
         jsr fpad
         ldx #23
         jsr rowbeg
-        PS "T:SD/USB List R:Refresh Q:Exit to Menu"
+        KEYS "T", " SD/USB list ", "R", " Refresh ", "Q", " Exit to menu"
         jmp fpad
 
 ; "SD  8: /path" / "USB 9: (Nothing mounted)" / "USB  : No drive", the shown unit's name in reverse
@@ -1134,10 +1224,11 @@ drawdrv:lda #0
         jsr atrow
         lda #255
         sta FLDN
+        PS C_SRC
         lda U
         cmp UN
         bne @n
-        PS 18
+        PS 18, C_OPT
 @n:     lda U
         bne @usb
         PS "SD "
@@ -1151,7 +1242,7 @@ drawdrv:lda #0
 @d:     ldx #2
         jsr fnum
         PS ": "
-@m:     PS 146
+@m:     PS 146, C_NAME
         lda #32
         sta FLDN
         ldx U
@@ -1176,7 +1267,7 @@ drawdrv:lda #0
 
 drawlh: ldx #3
         jsr rowbeg
-        PS 18, "List: "
+        PS C_SRC, "List: "
         lda UN
         bne @u
         PS "SD"
@@ -1193,14 +1284,13 @@ drawlh: ldx #3
         lda #' '
         jsr fch
         jmp @sp
-@alt:   lda UN
+@alt:   PS C_TIME
+        lda UN
         bne @a2
         PS "Alt: 1 tap"
         jmp @e
 @a2:    PS "Alt: 2 taps"
-@e:     jsr fpad
-        PS 146
-        rts
+@e:     jmp fpad
 
 drawlist:
         lda #0
@@ -1230,6 +1320,7 @@ drawrow:lda KK
         jmp fpad
 @e:     lda #255
         sta FLDN
+        PS C_OPT
         lda #' '
         ldx KK
         cpx CU
@@ -1238,13 +1329,13 @@ drawrow:lda KK
 @c:     jsr fch
         jsr mstar
         jsr fch
+        PS C_SRC
         lda KK
         clc
         adc #1
         ldx #3
         jsr fnum
-        lda #' '
-        jsr fch
+        PS " ", C_NAME
         lda KK
         cmp CU
         bne @p
@@ -1261,17 +1352,16 @@ drawrow:lda KK
         jsr fpath
         lda #255
         sta FLDN
-        PS 146, " "
+        PS 146, C_SRC, " "
         ldx KK
         lda EC,x
         ldx #3
         jsr fnum
         PS " ", 18
         ldx KK
-        ldy EC,x
-        lda colcodes,y
-        jsr fch
-        PS "  ", 146, 5
+        lda EC,x                ; the block in the entry's colour
+        sta TXTCOL
+        PS "  ", 146, C_SRC
         ldx KK
         lda EF,x
         ldx #3
@@ -1279,8 +1369,7 @@ drawrow:lda KK
         lda #'X'
         jmp fch
 
-colcodes:
-        .byte 144, 5, 28, 159, 156, 30, 31, 158, 129, 149, 150, 151, 152, 153, 154, 155
+THEME:  .byte 0, 4, 4, 10, 7, 14, 13 ; the TR menu's colour references (its defaults until "!STATE" gives them): see C_BAN
 
 ; A = '*' when entry KK is the image mounted on the shown unit, else ' '
 mstar:  ldx UN
@@ -1681,6 +1770,8 @@ edline: sta ML
         jsr atrow
         lda #255
         sta FLDN
+        lda #C_SRC
+        jsr fch
         lda LBP
         sta P2
         lda LBP+1
@@ -1692,6 +1783,8 @@ edline: sta ML
         iny
         bne @lb
 @le:    sty T0
+        lda #C_NAME
+        jsr fch
         lda #38
         sec
         sbc T0
@@ -2126,7 +2219,7 @@ types:  .byte "DIRD64D71D81"
 ; the browser screen: row 3 the folder, 4-19 the entries, 21 the keys
 bdraw:  ldx #3
         jsr rowbeg
-        PS 18, "Browse: "
+        PS C_SRC, "Browse: ", C_NAME
         lda #<BP
         sta P2
         lda #>BP
@@ -2135,7 +2228,6 @@ bdraw:  ldx #3
         sta SLEN
         jsr fmem
         jsr fpad
-        PS 146
         lda #0
         sta R
 @r:     lda BW
@@ -2154,12 +2246,14 @@ bdraw:  ldx #3
         jmp @nx
 @e:     lda #255
         sta FLDN
+        PS C_OPT
         lda #' '
         ldx KK
         cpx BQ
         bne @c
         lda #'>'
 @c:     jsr fch
+        PS C_NAME
         lda KK
         cmp BQ
         bne @n
@@ -2171,7 +2265,7 @@ bdraw:  ldx #3
         jsr ffield
         lda #255
         sta FLDN
-        PS 146, " "
+        PS 146, C_SRC, " "
         ldx KK
         lda BTY,x
         sta T0
@@ -2194,7 +2288,7 @@ bdraw:  ldx #3
         jmp @r
 @h:     ldx #21
         jsr rowbeg
-        PS "Return:Open/Select  ", LARROW, ":Cancel"
+        KEYS "Return", " Open/Select  ", LARROW, " Cancel"
         jsr fpad
         ldx #22
         jsr rowbeg
@@ -2300,3 +2394,4 @@ BR:     .res 1
 Q1:     .res 1
 Q2:     .res 1
 NLN:    .res 1
+THN:    .res 7              ; the colours being read (THEME takes them when all seven came)
