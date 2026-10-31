@@ -4,7 +4,7 @@
 
 ### Changed
 - The power-on banner shows the virtual drives' device numbers on the second line: `64K RAM, 38911 FREE, VDRIVE 8+9` (SD first;
-  only the units that are present; nothing without the VDrive firmware). The top line is the stock `COMMODORE 64 BASIC V2` again (the
+  only the units that are present; `VDRIVE N/A` with neither; nothing without the VDrive firmware). The top line is the stock `COMMODORE 64 BASIC V2` again (the
   `TRVDRIVE` bring-up text moved to `bringup/banner.s`, still built as `kernal-banner.bin`). The firmware writes each unit's fixed number,
   "automatic" or "absent" into the KERNAL copy it serves before the C64 starts; for automatic units the KERNAL probes the real bus itself
   at power-on, as the first disk access will (`docs/DESIGN.md` section 34). Firmware 0.9.0.30 and **a rebuilt `kernal-tr.bin`** (either

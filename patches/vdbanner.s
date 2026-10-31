@@ -1,6 +1,7 @@
 ; Power-on banner with the virtual drives' device numbers. The top line stays stock; the second becomes
 ;     64K RAM, 38911 FREE, VDRIVE 8+9
-; (", VDRIVE ..." only for the units that are there: "VDRIVE 9" with only the SD card, nothing without the VDrive firmware).
+; (", VDRIVE ..." only for the units that are there: "VDRIVE 9" with only the SD card, "VDRIVE N/A" with neither, nothing at all
+; without the VDrive firmware).
 ;
 ; BASIC's start-up message routine (INITMS, $E422, in the KERNAL chip) prints the banner string at $E473 (up to " 64K RAM"),
 ; the free bytes ($BDCD), the string at $E460 and ends in `JMP $A644` (NEW). We shorten both strings and point that JMP at
@@ -9,10 +10,11 @@
 ; The mailbox is not live yet when this runs (the TR's menu handler owns IO1 until the program has been loaded), so the numbers
 ; travel in the KERNAL image: vd_units, the two bytes after the ", VDRIVE " string (that string with its 0 is the tag the firmware
 ; looks for, VD_BannerUnits in firmware/IOH_VDrive.c), are written by the firmware into the image it serves, before the C64 starts:
-; per unit (SD, USB) 0 = none, 8-30 = a fixed number (U0>), $FF = automatic. An automatic unit gets the first number from 8 up that
+; per unit (SD, USB) $FE = absent, 8-30 = a fixed number (U0>), $FF = automatic. An automatic unit gets the first number from 8 up that
 ; nobody answers on the real serial bus and that the other unit has not fixed, SD first, which is what the bus scan of the run's
 ; first disk access (bus_scan in vdrive.s) will give it: the probe is the same LISTEN + SECOND $6F, but through the stock routines
-; without the mailbox hooks (iec_listen / iec_second / iec_unlsn). The image as built says 0 / 0: no VDrive text.
+; without the mailbox hooks (iec_listen / iec_second / iec_unlsn). No number to show (both absent, or every number taken): "N/A".
+; The image as built says 0 / 0 (no VDrive firmware wrote it: plain Kernal Replace, an older firmware): no VDrive text at all.
 ;
 ; Code in reclaimed tape space $FB97-$FCD0 (tape-only routines: called only from tape code at $F8A1-$F8D6 and from the tape
 ; code vdrive.s already reclaimed). Zero page $FB-$FD: no program is running yet.
@@ -43,7 +45,9 @@ vd_banner:
         sta UNIT
 @unit:  ldx UNIT
         lda vd_units,x
-        beq @next               ; no such unit
+        beq @next               ; no information (0)
+        cmp #$FE
+        beq @next               ; absent
         cmp #$FF
         bne @show               ; a fixed number
 @try:   inc N                   ; automatic: the next number that is free
@@ -73,7 +77,18 @@ vd_banner:
         lda UNIT
         cmp #2
         bcc @unit
-        lda #$0D
+        lda SEP
+        bne @cr                 ; a number was printed
+        lda vd_units
+        ora vd_units+1
+        beq @cr                 ; no VDrive firmware: no text
+        lda #<s_vdrive
+        ldy #>s_vdrive
+        jsr STROUT
+        lda #<s_na
+        ldy #>s_na
+        jsr STROUT              ; ", VDRIVE N/A": neither unit has a number
+@cr:    lda #$0D
         jsr CHROUT
         jmp NEW
 
@@ -112,10 +127,11 @@ prdec:  ldx #'0'
 @one:   pla
         jmp CHROUT
 
+s_na:   .byte "N/A", 0
 s_vdrive:
         .byte ", VDRIVE ", 0    ; also the tag the firmware finds vd_units by
 vd_units:
-        .byte 0, 0              ; written by the firmware: SD, USB (0 none, 8-30 fixed, $FF automatic)
+        .byte 0, 0              ; written by the firmware: SD, USB ($FE absent, 8-30 fixed, $FF automatic; 0 0 = not written)
 vd_banner_end:
 .assert vd_units = s_vdrive + 10, error, "the firmware expects vd_units right after the tag"
 .assert vd_banner_end <= $FCD1, lderror, "banner code overflows the reclaimed tape routines into $FCD1 (used by serial SAVE)"

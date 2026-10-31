@@ -82,7 +82,7 @@ Firmware integration and usage: `firmware/README.md`.
   this change no longer match the firmware: rebuild and re-copy `kernal-tr.bin`.**
 * Default device 8 for `LOAD`/`SAVE`/`VERIFY` without a number, as on the SX-64 (`P_E1DA` in `patches/vdrive.s`, docs/DESIGN.md 33). KERNAL only; VICE `basic` run; **not on hardware yet**. Rebuild `kernal-tr.bin`.
 * 0.9.0.30: the banner's second line shows the drives, ` 64K RAM, 38911 FREE, VDRIVE 8+9` (`patches/vdbanner.s`, docs/DESIGN.md 34); the top line is stock again (the `TRVDRIVE` text is `bringup/banner.s`, only in `kernal-banner.bin`).
-  The firmware writes per unit 0 / fixed number / `$FF` automatic after the tag `", VDRIVE ",0` in `KernalFast` (`VD_BannerUnits`); the KERNAL probes the real bus for automatic units with the hook-free `iec_listen`/`iec_second`/`iec_unlsn`.
+  The firmware writes per unit `$FE` absent / fixed number / `$FF` automatic (`0 0` as built = not written: no text; nothing to show: `VDRIVE N/A`) after the tag `", VDRIVE ",0` in `KernalFast` (`VD_BannerUnits`); the KERNAL probes the real bus for automatic units with the hook-free `iec_listen`/`iec_second`/`iec_unlsn`.
   py65 (`tests/test_banner.py`), `tests/fw_host`, VICE (`basic`: `VDRIVE 8`; `scan`: `VDRIVE 9+11`); **not on hardware yet**. Rebuild `kernal-tr.bin`.
 * Known open risks: C128 not supported (see above); tape (device 1) intentionally broken (its code space was reclaimed: $F8E2-$FB8D, $FB97-$FCD0).
 
@@ -97,7 +97,7 @@ util/            VDCOPY: vdcopy.s (all machine code, BASIC SYS stub at $0801, ta
                 VDrive Config: vdconfig.bas (BASIC, tokenised with petcat by tools/make_util.py into build/util/"VDrive Config.prg")
 patches/        ca65 sources overlaid on the stock KERNAL by tools/build.py; segment name P_XXXX = load address
   vdrive.s        serial entry hooks, fast LOAD ($F4C8) / SAVE ($F605), bus scan, code placed in reclaimed tape space $F8E2-$FB8D (666 of 683 bytes used; `irq_border` for the border flash included, the build asserts the limit)
-  vdbanner.s      the drive numbers in the power-on banner (INITMS strings + `JMP` at $E444; code in reclaimed tape routines $FB97-$FCD0, 158 of 314 bytes)
+  vdbanner.s      the drive numbers in the power-on banner (INITMS strings + `JMP` at $E444; code in reclaimed tape routines $FB97-$FCD0, 192 of 314 bytes)
 bringup/banner.s  proof patch (`TRVDRIVE 64 BASIC V2`), only in `make build/kernal-banner.bin`
 firmware/       TeensyROM integration: IOH_VDrive.c (Special IO), IOH_VDriveSwift.c / IOH_VDriveSwiftREU.c (combined Special IOs) and
                 teensyrom-vdrive.patch (git apply onto TeensyROM)

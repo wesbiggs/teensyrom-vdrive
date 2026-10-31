@@ -128,7 +128,7 @@ def main(kernal, scenario="basic"):
     # in `scan` (a stick is attached there) and absent in `basic`
     kimg = bytearray(pathlib.Path(kernal).read_bytes())
     tag = kimg.find(b", VDRIVE \x00")
-    if tag >= 0: kimg[tag + 10:tag + 12] = bytes([0xFF, 0xFF if scan else 0])
+    if tag >= 0: kimg[tag + 10:tag + 12] = bytes([0xFF, 0xFF if scan else 0xFE])
     kernal = str(workdir / "kernal.bin"); pathlib.Path(kernal).write_bytes(kimg)
     vice = subprocess.Popen(["x64sc", "-warp", *drives, "-kernal", kernal,
                              "-binarymonitor", "-binarymonitoraddress", "ip4://127.0.0.1:6502"],

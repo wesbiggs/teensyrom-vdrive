@@ -182,10 +182,10 @@ index d7213cf..c2557a1 100644
  
 diff --git a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c
 new file mode 100644
-index 0000000..18f9ecf
+index 0000000..ae0221a
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c
-@@ -0,0 +1,1004 @@
+@@ -0,0 +1,1005 @@
 +// "VDrive" Special IO for TeensyROM+: replacement KERNAL + virtual IEC drive.
 +//   unit 0 = SD card, unit 1 = USB drive. Device numbers are automatic by default: the first free numbers from 8 up
 +//   (the KERNAL probes the real serial bus on the first disk access of a run, see vdrive_io.h), so 8 (SD) and 9 (USB) when
@@ -729,7 +729,8 @@ index 0000000..18f9ecf
 +
 +// The power-on banner ends in ", VDRIVE 8+9" (patches/vdbanner.s). The C64 prints it before this handler owns the mailbox, so the
 +// numbers travel in the KERNAL image being served: the two bytes after the tag (the printed ", VDRIVE " and its 0) say per unit
-+// (SD, USB) 0 = absent, 8-30 = a fixed (U0>) number, $FF = automatic. The KERNAL probes the real bus for the automatic ones the way
++// (SD, USB) $FE = absent, 8-30 = a fixed (U0>) number, $FF = automatic (0 / 0, as built, means "not written": no VDrive text;
++// both absent, or no number left, prints "VDRIVE N/A"). The KERNAL probes the real bus for the automatic ones the way
 +// the run's first disk access will (bus_scan), so the banner shows the numbers that scan is going to give. An image without the
 +// tag (an older kernal-tr.bin, another KERNAL) is left alone. Runs while the C64 still waits in the TR menu, so nothing reads them yet.
 +static const uint8_t VD_BannerTag[10] = { ',', ' ', 'V', 'D', 'R', 'I', 'V', 'E', ' ', 0 };
@@ -740,7 +741,7 @@ index 0000000..18f9ecf
 +      if (memcmp(img + a, VD_BannerTag, sizeof VD_BannerTag) == 0)
 +      {
 +         for (int i = 0; i < 2; i++)
-+            img[a + sizeof VD_BannerTag + i] = !vio->vd.unit[i].present ? 0 : vio->vd.pin[i] ? vio->vd.dev[i] : 0xFF;
++            img[a + sizeof VD_BannerTag + i] = !vio->vd.unit[i].present ? 0xFE : vio->vd.pin[i] ? vio->vd.dev[i] : 0xFF;
 +         return;
 +      }
 +}

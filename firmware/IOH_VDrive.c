@@ -541,7 +541,8 @@ FLASHMEM void VDrive_PreStart()
 
 // The power-on banner ends in ", VDRIVE 8+9" (patches/vdbanner.s). The C64 prints it before this handler owns the mailbox, so the
 // numbers travel in the KERNAL image being served: the two bytes after the tag (the printed ", VDRIVE " and its 0) say per unit
-// (SD, USB) 0 = absent, 8-30 = a fixed (U0>) number, $FF = automatic. The KERNAL probes the real bus for the automatic ones the way
+// (SD, USB) $FE = absent, 8-30 = a fixed (U0>) number, $FF = automatic (0 / 0, as built, means "not written": no VDrive text;
+// both absent, or no number left, prints "VDRIVE N/A"). The KERNAL probes the real bus for the automatic ones the way
 // the run's first disk access will (bus_scan), so the banner shows the numbers that scan is going to give. An image without the
 // tag (an older kernal-tr.bin, another KERNAL) is left alone. Runs while the C64 still waits in the TR menu, so nothing reads them yet.
 static const uint8_t VD_BannerTag[10] = { ',', ' ', 'V', 'D', 'R', 'I', 'V', 'E', ' ', 0 };
@@ -552,7 +553,7 @@ FLASHMEM void VD_BannerUnits(uint8_t *img, int size)
       if (memcmp(img + a, VD_BannerTag, sizeof VD_BannerTag) == 0)
       {
          for (int i = 0; i < 2; i++)
-            img[a + sizeof VD_BannerTag + i] = !vio->vd.unit[i].present ? 0 : vio->vd.pin[i] ? vio->vd.dev[i] : 0xFF;
+            img[a + sizeof VD_BannerTag + i] = !vio->vd.unit[i].present ? 0xFE : vio->vd.pin[i] ? vio->vd.dev[i] : 0xFF;
          return;
       }
 }
