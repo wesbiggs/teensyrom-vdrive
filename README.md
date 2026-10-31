@@ -44,7 +44,7 @@ The C64's ability to read the 8 KB of RAM under KERNAL ROM ($E000-$FFFF) is used
    | File | SHA-256 |
    |---|---|
    | stock `kernal-901227-03.bin` (input) | `83c60d47047d7beab8e5b7bf6f67f80daa088b7a6a27de0d7e016f6484042721` |
-   | `kernal-tr.bin` from this revision | `cab3608f434fd29c1137c3e75227a5102e7a7fd0e373a84c7ea42f2363db5bb4` |
+   | `kernal-tr.bin` from this revision | `09f755f114afd9ee2799e5835d7ea3c510329d1f74b71f79b70a55dbc7875ca0` |
    | `kernal-tr.bin` last run on a real C64 (0.9.0.28, commit `bf3c74c`; same patches through `9270008`) | `e1db8e02b6cab9f6eb99a597a1c04f2b5a67fac914a36dc1e4259d7272f53af2` |
 
    A different stock hash means a different ROM dump; the patches may not fit it. The "this revision" row is checked by `make test`.
@@ -72,6 +72,13 @@ The "VDrive+Swift+REU" Special IO adds an REU (RAM Expansion Unit) to those two.
 ## Using it
 
 Once enabled, your TeensyROM+ provides two virtual devices. By default, device numbers are automatic (SD and USB take the first free numbers from 8 up); they can be changed/fixed with `U0>` (see below).
+The power-on banner shows them, SD first:
+```
+    **** COMMODORE 64 BASIC V2 ****
+
+ 64K RAM, 38911 FREE, VDRIVE 8+9
+```
+(`VDRIVE 9` with only a card, no `VDRIVE` part with no card or stick, or when the image runs under plain Kernal Replace or older firmware.)
 
 Each of the SD and USB virtual drives can have one `.d64`, `.d71`, or `.d81` file mounted at any given time (or can be unmounted, akin to removing the disk from a real drive). When unmounted, the devices provide access to the actual SD or USB filesystem: you can navigate, load plain `PRG` files, create and remove folders, and create or mount images.
 
@@ -128,12 +135,13 @@ CBM listing modifier and is not a path. With an image mounted, a bare name is a 
 a component with an image suffix (`X.D64/`) or `..` makes it a path; leave the image with `CD:←`.
 
 ### Device numbers
-The KERNAL image contains no device numbers, so one image serves every setup. Device number assignment is automatic by default: on the first disk access of a run (the first `LISTEN` / `TALK` / `LOAD` / `SAVE`, so after the program has been
+The KERNAL image file contains no device numbers, so one image serves every setup (the firmware writes the banner's numbers into the copy it serves, see below). Device number assignment is automatic by default: on the first disk access of a run (the first `LISTEN` / `TALK` / `LOAD` / `SAVE`, so after the program has been
 loaded) the KERNAL probes the real serial bus at 8, 9, 10, ... and the SD drive takes the first free number, the USB drive the next
 (only units whose card / stick is present). With no other drive attached that is 8 and 9, and the probe costs a few milliseconds; with a
 physical drive at 8 the SD drive becomes 9, and so on.
 
-`PEEK(56854)` (SD) and `PEEK(56855)` (USB) show the current numbers (0 = none;
+The power-on banner shows the numbers the scan is going to give: the KERNAL does the same probe at power-on, on the real bus only (the
+mailbox is not live yet then), for the automatic units the firmware tells it about. `PEEK(56854)` (SD) and `PEEK(56855)` (USB) show the current numbers (0 = none;
 defaults until the first disk access), the directory header id shows it too (`0 "SD:/" 09 2A`), and the serial console prints the numbers
 at start-up. Nothing is probed when nothing needs a number (no card, or both numbers fixed). A drive that has not powered up yet when the
 first access happens looks like a gap, so fix the numbers if some device boots slowly (e.g. a Wi-Fi drive).

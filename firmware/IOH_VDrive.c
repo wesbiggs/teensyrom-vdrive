@@ -496,6 +496,8 @@ void InitHndlr_KernalReplace();   // re-stages the KERNAL bus hook (IOH_KernalRe
 // All storage access (SD/USB probing, sizing) happens here, called from KERNALPreStart() while the C64 is still
 // waiting for the TR ("WaitForTRDots"). Doing it later is unsafe: SD reads mask interrupts, and once the replacement
 // KERNAL is live every C64 instruction fetch from $E000-$FFFF depends on the bus ISR running.
+void VD_BannerUnits(uint8_t *img, int size);   // below
+
 FLASHMEM void VDrive_PreStart()
 {
 #ifdef VD_ALLOC_HEAP
@@ -529,11 +531,30 @@ FLASHMEM void VDrive_PreStart()
    VD_StartupMount(1, IO1[rWRegCurrMenuWAIT] == rmtUSBDrive);
    int scanPending = vio_arm_scan(vio);   // automatic numbers: the KERNAL probes the real bus on the run's first disk access
    vio_publish_devices(vio);
+   VD_BannerUnits(KernalFast, 8192);   // the image InitHndlr_KERNALReplace_PreStart() just loaded, before the C64 prints its banner
    vioReady = true;                 // only now may the bus handlers answer
    Serial.printf("VDrive: dev %d (SD) %s, dev %d (USB) %s%s\n",
                  vio->vd.dev[0], vio->vd.unit[0].present ? "ready" : "absent",
                  vio->vd.dev[1], vio->vd.unit[1].present ? "ready" : "absent",
                  scanPending ? " (numbers are settled by the first bus scan)" : "");
+}
+
+// The power-on banner ends in ", VDRIVE 8+9" (patches/vdbanner.s). The C64 prints it before this handler owns the mailbox, so the
+// numbers travel in the KERNAL image being served: the two bytes after the tag (the printed ", VDRIVE " and its 0) say per unit
+// (SD, USB) 0 = absent, 8-30 = a fixed (U0>) number, $FF = automatic. The KERNAL probes the real bus for the automatic ones the way
+// the run's first disk access will (bus_scan), so the banner shows the numbers that scan is going to give. An image without the
+// tag (an older kernal-tr.bin, another KERNAL) is left alone. Runs while the C64 still waits in the TR menu, so nothing reads them yet.
+static const uint8_t VD_BannerTag[10] = { ',', ' ', 'V', 'D', 'R', 'I', 'V', 'E', ' ', 0 };
+
+FLASHMEM void VD_BannerUnits(uint8_t *img, int size)
+{
+   for (int a = 0; a + (int)sizeof VD_BannerTag + 2 <= size; a++)
+      if (memcmp(img + a, VD_BannerTag, sizeof VD_BannerTag) == 0)
+      {
+         for (int i = 0; i < 2; i++)
+            img[a + sizeof VD_BannerTag + i] = !vio->vd.unit[i].present ? 0 : vio->vd.pin[i] ? vio->vd.dev[i] : 0xFF;
+         return;
+      }
 }
 
 // Handler start (the C64 is already running): only re-stage the KERNAL bus hook. No storage access here.

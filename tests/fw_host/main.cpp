@@ -20,6 +20,9 @@ static int g_fs_probes = 0;
 bool SDFullInit() { g_fs_probes++; return fs_::exists(SD.root); }
 bool USBFileSystemWait() { g_fs_probes++; return fs_::exists(firstPartition.root); }
 void InitHndlr_KernalReplace() {}
+uint8_t KernalFast[8192];                             // the image IOH_KernalReplace.c serves (VDrive_PreStart writes the banner bytes)
+static const int kBannerTag = 0x1BB0;                 // where the tag sits in this fake image (anywhere: the glue searches for it)
+static int banner(int unit) { return KernalFast[kBannerTag + 10 + unit]; }
 
 #include "glue.c"          // = firmware/IOH_VDrive.c (with ../vdrive/*.c resolved by the build script)
 
@@ -145,7 +148,19 @@ int main(int argc, char **argv)
     { FILE *f = fopen(argv[3], "rb"); char b[4096]; size_t n; while ((n = fread(b, 1, sizeof b, f)) > 0) hello_expect.append(b, n); fclose(f); }
 
     memset(EEPROM.m, 0xFF, sizeof EEPROM.m);               // erased flash: no setting stored yet
+    memcpy(KernalFast + kBannerTag, ", VDRIVE ", 10);       // patches/vdbanner.s: the tag, then the two unit bytes (0 as built)
     VDrive_PreStart();
+    check("banner bytes: both units present and automatic ($FF $FF)", banner(0) == 0xFF && banner(1) == 0xFF);
+    {
+        uint8_t img[64]; memset(img, 0x55, sizeof img); memcpy(img + 20, ", VDRIVE ", 10); img[30] = img[31] = 0;
+        vio->vd.unit[1].present = 0; VD_BannerUnits(img, sizeof img); vio->vd.unit[1].present = 1;
+        check("banner bytes: an absent unit is 0", img[30] == 0xFF && img[31] == 0 && img[29] == 0 && img[32] == 0x55);
+        uint8_t old[64]; memset(old, 0x55, sizeof old); memcpy(old + 20, ", VDRIVE", 8);   // no tag (an older image): untouched
+        uint8_t ref[64]; memcpy(ref, old, sizeof ref); VD_BannerUnits(old, sizeof old);
+        check("banner bytes: an image without the tag is left alone", memcmp(old, ref, sizeof ref) == 0);
+        memcpy(img + 54, ", VDRIVE ", 10); memset(img + 20, 0x55, 12); VD_BannerUnits(img, sizeof img);   // tag at the very end: no room
+        check("banner bytes: a tag with no room for the two bytes is ignored", img[63] == 0);
+    }
     check("pre-start probed SD and USB", g_fs_probes == 2);
     InitHndlr_VDrive();
     check("handler start does no storage access", g_fs_probes == 2);
@@ -422,9 +437,11 @@ int main(int argc, char **argv)
     g_real_drives = {8};
     VDrive_PreStart(); g_scans = 0; call(VD_LISTEN, 12); call(VD_UNLSN);
     check("fixed SD number is kept, USB takes the first free one (9)", g_scans == 1 && r1(VIO_DEV0) == 12 && r1(VIO_DEV1) == 9);
+    check("banner bytes: SD fixed 12, USB automatic", banner(0) == 12 && banner(1) == 0xFF);
     EEPROM.m[eepAdVDriveDevs] = 12; EEPROM.m[eepAdVDriveDevs + 1] = 13;
     VDrive_PreStart(); g_scans = 0; call(VD_LISTEN, 12); call(VD_UNLSN);
     check("both fixed: no scan at all", g_scans == 0 && r1(VIO_DEV0) == 12 && r1(VIO_DEV1) == 13);
+    check("banner bytes: both fixed (12, 13)", banner(0) == 12 && banner(1) == 13);
 
     // ---- remote control: VDrive_RemoteStatus / VDrive_RemoteSet (the TCP 2112 get / set commands) ----
     {

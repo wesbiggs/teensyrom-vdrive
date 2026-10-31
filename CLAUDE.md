@@ -15,7 +15,7 @@ Firmware integration and usage: `firmware/README.md`.
 * **Works on hardware (real C64, TR+ with this patch).** `make test` also passes on the host: C unit tests via ctypes against `c1541`, the 6502 patches in VICE through a
   monitor-driven mailbox mock, and the firmware glue compiled as C++ against host stubs. Toolchain for the firmware: `arduino-cli`, `teensy:avr@1.61.0`,
   `CRC32@2.0.1`; do NOT use Teensyduino 1.62.0 (SD read stalls). Build/fit: RAM1 padding −976 B, flash +15.7 KB, RAM2 +4.5 KB vs stock.
-* **Verified on hardware by the owner (SD and USB):** handler listing and SD/USB detection, mailbox registers, stock and banner KERNAL control (banner shows
+* **Verified on hardware by the owner (SD and USB):** handler listing and SD/USB detection, mailbox registers, stock and banner KERNAL control (the bring-up banner image showed
   `TRVDRIVE 64 BASIC V2` on F2), mounting with `CD:`, directory/`LOAD` of small and 6000-byte files, `SAVE`, `VERIFY`, the error channel, repeated directory listings,
   device 9 (USB stick), `U0>` renumbering and its EEPROM persistence, `CD:/`, the no-handler time-out, `SEQTEST`, `GETRAW`, `SOAK`, `DOSTEST`, `CDTEST`, `RENUM`,
   scratch / rename / `N:`, paths (`LOAD"$/dir/image.d64"`, `$==`), auto-mount and remembered mounts (`/.vdrive` sidecar), VDrive+SwiftLink, remote get/set with
@@ -36,7 +36,7 @@ Firmware integration and usage: `firmware/README.md`.
   found two real bugs that unit tests missed: `CIOUT` must return `A` = the byte sent (CHROUT tail-jumps into it; BASIC's PRINT broke after a
   number), and `U0>` must also be accepted with PRINT#'s trailing CR.
 * **Lessons from bring-up (keep):** (1) a flat NTSC C128 in C64 mode did not reliably serve the replacement KERNAL: use a real C64, and
-  verify "is it really served" with the banner image or `PEEK(58483+I)` at `$E473` (a stock image can't show it). (2) All SD/USB probing
+  verify "is it really served" with the banner (`kernal-tr.bin` from 0.9.0.30 prints `VDRIVE n` on the second line, `kernal-banner.bin` `TRVDRIVE` on the first; a stock image can't show either). (2) All SD/USB probing
   must happen in `VDrive_PreStart()` while the C64 waits, not at handler start. (3) Bus-handler data in fast RAM1, token STAT handshake,
   abort on a failed block (see Gotchas). (4) `FILE_WRITE` creates missing files on SD/USB: always probe with `FILE_READ` first.
   (5) `npm run flash` needs the Teensy program button (the TR exposes no soft reboot); copying the `.hex` to the card and pressing
@@ -81,7 +81,10 @@ Firmware integration and usage: `firmware/README.md`.
   replace `KernalCheck` on `fBusSnoop`: `IO2Hndlr_VDriveSwiftREU` hands it back (`VDREU_Snoop`). Host tests, VICE, firmware build; **works on a real C64 (owner, 2026-10-23)**. **KERNAL images built before
   this change no longer match the firmware: rebuild and re-copy `kernal-tr.bin`.**
 * Default device 8 for `LOAD`/`SAVE`/`VERIFY` without a number, as on the SX-64 (`P_E1DA` in `patches/vdrive.s`, docs/DESIGN.md 33). KERNAL only; VICE `basic` run; **not on hardware yet**. Rebuild `kernal-tr.bin`.
-* Known open risks: C128 not supported (see above); tape (device 1) intentionally broken (its code space was reclaimed).
+* 0.9.0.30: the banner's second line shows the drives, ` 64K RAM, 38911 FREE, VDRIVE 8+9` (`patches/vdbanner.s`, docs/DESIGN.md 34); the top line is stock again (the `TRVDRIVE` text is `bringup/banner.s`, only in `kernal-banner.bin`).
+  The firmware writes per unit 0 / fixed number / `$FF` automatic after the tag `", VDRIVE ",0` in `KernalFast` (`VD_BannerUnits`); the KERNAL probes the real bus for automatic units with the hook-free `iec_listen`/`iec_second`/`iec_unlsn`.
+  py65 (`tests/test_banner.py`), `tests/fw_host`, VICE (`basic`: `VDRIVE 8`; `scan`: `VDRIVE 9+11`); **not on hardware yet**. Rebuild `kernal-tr.bin`.
+* Known open risks: C128 not supported (see above); tape (device 1) intentionally broken (its code space was reclaimed: $F8E2-$FB8D, $FB97-$FCD0).
 
 ## Layout
 ```
@@ -94,13 +97,14 @@ util/            VDCOPY: vdcopy.s (all machine code, BASIC SYS stub at $0801, ta
                 VDrive Config: vdconfig.bas (BASIC, tokenised with petcat by tools/make_util.py into build/util/"VDrive Config.prg")
 patches/        ca65 sources overlaid on the stock KERNAL by tools/build.py; segment name P_XXXX = load address
   vdrive.s        serial entry hooks, fast LOAD ($F4C8) / SAVE ($F605), bus scan, code placed in reclaimed tape space $F8E2-$FB8D (666 of 683 bytes used; `irq_border` for the border flash included, the build asserts the limit)
-  banner.s        proof patch (changes the power-on banner)
+  vdbanner.s      the drive numbers in the power-on banner (INITMS strings + `JMP` at $E444; code in reclaimed tape routines $FB97-$FCD0, 158 of 314 bytes)
+bringup/banner.s  proof patch (`TRVDRIVE 64 BASIC V2`), only in `make build/kernal-banner.bin`
 firmware/       TeensyROM integration: IOH_VDrive.c (Special IO), IOH_VDriveSwift.c / IOH_VDriveSwiftREU.c (combined Special IOs) and
                 teensyrom-vdrive.patch (git apply onto TeensyROM)
 tools/          build.py (patch overlay), make_tr_patch.sh (regenerate the TeensyROM patch), vdrive_mock.py (VICE mock),
                 d64py.py (ctypes wrappers incl. register-level VIO), xref.py (reference finder over a disassembly)
 tests/          test_d64*.py, test_vdrive.py, test_vio.py (unit), fw_host/ (glue vs host stubs), devcfg.c,
-                test_vdconfig.py + basic_interp.py (VDrive Config in a BASIC interpreter model), test_irq_border.py (py65)
+                test_vdconfig.py + basic_interp.py (VDrive Config in a BASIC interpreter model), test_irq_border.py, test_banner.py (py65)
 build/          generated, git-ignored (kernal images derived from the ROM, libd64.dylib, disassembly)
 ```
 
@@ -108,6 +112,7 @@ build/          generated, git-ignored (kernal images derived from the ROM, libd
 * `make test` — everything (rebuilds `build/libd64.dylib`, runs unit tests, device-number check, firmware host test, two VICE runs: `basic` and
   `scan`, the latter with true-drive 1541s at 8 and 10; about 4 minutes).
 * `make test-border` — the `irq_border` 6502 routine in py65 (skipped without `pip install py65`; also part of `make test`).
+* `make test-banner` — the banner's `vd_banner` in py65 with a fake serial bus (same; also part of `make test`).
 * `make util` — `build/util/vdcopy.prg`, the file copy utility between any two units (also on the test disk), and `build/util/VDrive Config.prg` (needs petcat).
 * `make test-vdconfig` — VDrive Config in the BASIC interpreter model (pure Python; also part of `make test`).
 * `make build/kernal-tr.bin STOCK=/path/to/kernal-901227-03.bin` — hardware image (mailbox `$DE10`, window `$DF80`).
