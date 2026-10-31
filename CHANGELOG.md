@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.9.0.36
+
+### Changed
+- The power-on banner shows the virtual drives' device numbers on the second line, as wide as the stock one:
+  `64K RAM  38911 FREE  VDRIVE SD 8 USB 9` (`SD10 USB11`, `NOSD` / `NOUSB` for a missing card or stick; the stock line without the VDrive firmware). The top line is the stock `COMMODORE 64 BASIC V2` again (the
+  `TRVDRIVE` bring-up text moved to `bringup/banner.s`, still built as `kernal-banner.bin`). The firmware writes each unit's number (fixed, or what the menu's
+  bus probe gave), or "absent", into the KERNAL copy it serves before the C64 starts; a KERNAL launched without the menu probe probes
+  the real bus itself at power-on for automatic units, as the first disk access will (`docs/DESIGN.md` section 38). Firmware 0.9.0.36 and **a rebuilt `kernal-tr.bin`** (either
+  alone works, without the numbers). Host tests (py65 with a fake bus, firmware glue) and VICE with true-drive 1541s; not on hardware.
+
 ## v0.9.0.35
 
 Works on hardware (owner, 2026-10-30).

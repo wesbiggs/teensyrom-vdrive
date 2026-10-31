@@ -22,6 +22,9 @@ bool USBFileSystemWait() { g_fs_probes++; return fs_::exists(firstPartition.root
 void InitHndlr_KernalReplace() {}
 uint8_t HIRAM_State = 0;
 volatile uint8_t BtnPressed = 0;
+uint8_t KernalFast[8192];                             // the image IOH_KernalReplace.c serves (VDrive_PreStart writes the banner bytes)
+static const int kBannerTag = 0x1BB0;                 // where the tag sits in this fake image (anywhere: the glue searches for it)
+static int banner(int unit) { return KernalFast[kBannerTag + 8 + unit]; }
 
 #include "glue.c"          // = firmware/IOH_VDrive.c (with ../vdrive/*.c resolved by the build script)
 
@@ -165,7 +168,22 @@ int main(int argc, char **argv)
     { FILE *f = fopen(argv[3], "rb"); char b[4096]; size_t n; while ((n = fread(b, 1, sizeof b, f)) > 0) hello_expect.append(b, n); fclose(f); }
 
     memset(EEPROM.m, 0xFF, sizeof EEPROM.m);               // erased flash: no setting stored yet
+    memcpy(KernalFast + kBannerTag, "VDUNITS:", 8);          // patches/vdbanner.s: the tag, then the two unit bytes (0 as built)
     prestart();
+    check("banner bytes: the menu probe settled both (8, 9)", banner(0) == 8 && banner(1) == 9);
+    {
+        uint8_t img[64]; memset(img, 0x55, sizeof img); memcpy(img + 20, "VDUNITS:", 8); img[28] = img[29] = 0;
+        vio->vd.unit[1].present = 0; VD_BannerUnits(img, sizeof img, false); vio->vd.unit[1].present = 1;
+        check("banner bytes: an absent unit is $FE", img[28] == 0xFF && img[29] == 0xFE && img[27] == ':' && img[30] == 0x55);
+        uint8_t old[64]; memset(old, 0x55, sizeof old); memcpy(old + 20, "VDUNITS", 7);   // no tag (an older image): untouched
+        uint8_t ref[64]; memcpy(ref, old, sizeof ref); VD_BannerUnits(old, sizeof old, false);
+        check("banner bytes: an image without the tag is left alone", memcmp(old, ref, sizeof ref) == 0);
+        memset(img, 0, sizeof img); memcpy(img + 55, "VDUNITS:", 8); VD_BannerUnits(img, sizeof img, false);   // tag at the very end: no room
+        check("banner bytes: a tag with no room for the two bytes is ignored", img[62] == ':' && img[63] == 0);
+        vio->vd.unit[0].present = vio->vd.unit[1].present = 0; memset(img, 0, sizeof img); memcpy(img, "VDUNITS:", 8);
+        VD_BannerUnits(img, sizeof img, false); vio->vd.unit[0].present = vio->vd.unit[1].present = 1;
+        check("banner bytes: neither unit present ($FE $FE: NOSD NOUSB)", img[8] == 0xFE && img[9] == 0xFE);
+    }
     check("pre-start probed SD and USB", g_fs_probes == 2);
     InitHndlr_VDrive();
     check("handler start does no storage access", g_fs_probes == 2);
@@ -527,9 +545,20 @@ int main(int argc, char **argv)
     g_real_drives = {8};
     prestart(false); InitHndlr_VDrive(); g_scans = 0; call(VD_LISTEN, 12); call(VD_UNLSN);
     check("fixed SD number is kept, USB takes the first free one (9)", g_scans == 1 && r1(VIO_DEV0) == 12 && r1(VIO_DEV1) == 9);
+    check("banner bytes: SD fixed 12, USB automatic", banner(0) == 12 && banner(1) == 0xFF);
     EEPROM.m[eepAdVDriveDevs] = 12; EEPROM.m[eepAdVDriveDevs + 1] = 13;
     prestart(false); InitHndlr_VDrive(); g_scans = 0; call(VD_LISTEN, 12); call(VD_UNLSN);
     check("both fixed: no scan at all", g_scans == 0 && r1(VIO_DEV0) == 12 && r1(VIO_DEV1) == 13);
+    check("banner bytes: both fixed (12, 13)", banner(0) == 12 && banner(1) == 13);
+    EEPROM.m[eepAdVDriveDevs] = 12; EEPROM.m[eepAdVDriveDevs + 1] = 0;
+    VDrive_PreStart(); IO1[rwRegScratch] = 0;   // (a PreStart on its own, the probe not run yet: rwRegScratch asks for it)
+    check("banner bytes before the menu probe: SD fixed 12, USB automatic ($FF)", banner(0) == 12 && banner(1) == 0xFF);
+    prestart(); InitHndlr_VDrive();
+    check("banner bytes after the menu probe: 12 and the probed 9 (8 is a real drive)", banner(0) == 12 && banner(1) == 9);
+    for (int d = 8; d <= 30; d++) g_real_drives.insert(d);
+    prestart(); InitHndlr_VDrive();
+    check("banner bytes: the menu ran out of numbers: USB has none ($FE, NOUSB)", banner(0) == 12 && banner(1) == 0xFE);
+    g_real_drives.clear();
 
     // ---- remote control: VDrive_RemoteStatus / VDrive_RemoteSet (the TCP 2112 get / set commands) ----
     {

@@ -87,6 +87,7 @@ C_FREE   = 15
 
 ; ---- stubs in reclaimed space ----------------------------------------------
 .segment "P_F8E2"
+.export iec_listen, iec_second, iec_unlsn   ; the real bus only: patches/vdbanner.s probes it before the mailbox is live
 
 ; in: command in A, argument already in MBX_ARG and saved in $A7 (hooks do both).
 ; Preserves X, Y. Waits up to ~1 s for the Teensy; a mailbox that never answers
@@ -213,9 +214,10 @@ hk_listen:
         sta $A7
         lda #C_LISTEN
         jsr vcall
-        bcs @orig
+        bcs iec_listen
         rts
-@orig:  ora #$20
+iec_listen:                     ; the stock LISTEN without the hook (also called by the power-on banner, patches/vdbanner.s)
+        ora #$20
 tl_common:
         jsr $F0A4
         jmp $ED11
@@ -225,9 +227,10 @@ hk_second:
         sta $A7
         lda #C_SECOND
         jsr vcall
-        bcs @orig
+        bcs iec_second
         rts
-@orig:  sta $95
+iec_second:                     ; stock SECOND without the hook
+        sta $95
         jsr $ED36
         jmp $EDBE
 
@@ -273,9 +276,10 @@ hk_untlk:
 hk_unlsn:
         lda #C_UNLSN
         jsr vcall
-        bcs @orig
+        bcs iec_unlsn
         rts
-@orig:  lda #$3F
+iec_unlsn:                      ; stock UNLSN without the hook
+        lda #$3F
         jsr $ED11
         jmp $EE03
 

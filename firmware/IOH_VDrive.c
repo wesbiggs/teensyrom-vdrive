@@ -520,6 +520,7 @@ void InitHndlr_KernalReplace();   // re-stages the KERNAL bus hook (IOH_KernalRe
 // waiting for the TR ("WaitForTRDots"). Doing it later is unsafe: SD reads mask interrupts, and once the replacement
 // KERNAL is live every C64 instruction fetch from $E000-$FFFF depends on the bus ISR running.
 FLASHMEM static void VD_ProbeBegin();
+void VD_BannerUnits(uint8_t *img, int size, bool settled);   // below
 
 FLASHMEM void VDrive_PreStart()
 {
@@ -555,6 +556,7 @@ FLASHMEM void VDrive_PreStart()
    VD_StartupMount(1, IO1[rWRegCurrMenuWAIT] == rmtUSBDrive);
    int scanPending = vio_arm_scan(vio);   // automatic numbers: probed by the menu next (else by the KERNAL on the first disk access)
    vio_publish_devices(vio);
+   VD_BannerUnits(KernalFast, 8192, false);   // the image InitHndlr_KERNALReplace_PreStart() just loaded, before the C64 prints its banner
    vioReady = true;                 // only now may the bus handlers answer
    Serial.printf("VDrive: dev %d (SD) %s, dev %d (USB) %s%s\n",
                  vio->vd.dev[0], vio->vd.unit[0].present ? "ready" : "absent",
@@ -590,6 +592,7 @@ FLASHMEM static void VD_ProbeFinish()
    vdProbing = false;
    HIRAM_State = HIRAM_State_Unknown;
    fBusSnoop = vdProbeSnoop;
+   VD_BannerUnits(KernalFast, 8192, true);   // the probed numbers, so the banner need not probe again
    Serial.printf("VDrive: bus probe gave dev %d (SD), %d (USB)\n", vio->vd.dev[0], vio->vd.dev[1]);
 }
 
@@ -602,6 +605,30 @@ FLASHMEM bool VDrive_ProbeStep()
    if (!left) VD_ProbeFinish();
    IO1[rwRegScratch] = (uint8_t)left;
    return true;
+}
+
+// The power-on banner's second line ends in "VDRIVE SD 8 USB 9" (patches/vdbanner.s). The C64 prints it before this handler owns the
+// mailbox, so the numbers travel in the KERNAL image being served: the two bytes after the tag "VDUNITS:" (not printed) say per unit
+// (SD, USB) $FE = absent or no number ("NOSD" / "NOUSB"), 8-30 = the number, $FF = automatic and not settled yet; 0 / 0, as built,
+// means "not written" and prints the stock line. PreStart writes the pinned numbers and $FF for automatic units; when the menu's bus
+// probe finishes (settled), the numbers it gave replace the $FF. Without that probe (another launch path, or a menu without it) the
+// KERNAL probes the real bus for the $FF units itself, the way the run's first disk access will (bus_scan), so the banner shows the
+// numbers that scan is going to give. An image without the tag (an older kernal-tr.bin, another KERNAL) is left alone. Runs while
+// the C64 still waits in the TR menu, so nothing reads them yet.
+static const uint8_t VD_BannerTag[8] = { 'V', 'D', 'U', 'N', 'I', 'T', 'S', ':' };
+
+FLASHMEM void VD_BannerUnits(uint8_t *img, int size, bool settled)
+{
+   for (int a = 0; a + (int)sizeof VD_BannerTag + 2 <= size; a++)
+      if (memcmp(img + a, VD_BannerTag, sizeof VD_BannerTag) == 0)
+      {
+         for (int i = 0; i < 2; i++)
+         {
+            uint8_t d = vio->vd.dev[i];
+            img[a + sizeof VD_BannerTag + i] = !vio->vd.unit[i].present ? 0xFE : !vio->vd.pin[i] && !settled ? 0xFF : d ? d : 0xFE;
+         }
+         return;
+      }
 }
 
 // Handler start (the C64 is already running): only re-stage the KERNAL bus hook. No storage access here.

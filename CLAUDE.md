@@ -8,14 +8,14 @@ real IEC code, so physical drives keep working. LOAD/SAVE have block-transfer fa
 second, the first free numbers from 8 up: the KERNAL probes the real bus on the first disk access of a run) or fixed from BASIC with
 `OPEN15,8,15,"U0>"+CHR$(n)` (kept in EEPROM, `CHR$(0)` = automatic, no reflash). Names and `CD` take paths: `LOAD"$/GAMES/G.D64",8`.
 
-Full design and per-milestone notes: `docs/DESIGN.md` (sections 1-36, in order of construction).
+Full design and per-milestone notes: `docs/DESIGN.md` (sections 1-38, in order of construction).
 Firmware integration and usage: `firmware/README.md`.
 
 ## Status (read this first)
 * **Works on hardware (real C64, TR+ with this patch).** `make test` also passes on the host: C unit tests via ctypes against `c1541`, the 6502 patches in VICE through a
   monitor-driven mailbox mock, and the firmware glue compiled as C++ against host stubs. Toolchain for the firmware: `arduino-cli`, `teensy:avr@1.61.0`,
   `CRC32@2.0.1`; do NOT use Teensyduino 1.62.0 (SD read stalls). Build/fit: RAM1 padding −976 B, flash +15.7 KB, RAM2 +4.5 KB vs stock.
-* **Verified on hardware by the owner (SD and USB):** handler listing and SD/USB detection, mailbox registers, stock and banner KERNAL control (banner shows
+* **Verified on hardware by the owner (SD and USB):** handler listing and SD/USB detection, mailbox registers, stock and banner KERNAL control (the bring-up banner image showed
   `TRVDRIVE 64 BASIC V2` on F2), mounting with `CD:`, directory/`LOAD` of small and 6000-byte files, `SAVE`, `VERIFY`, the error channel, repeated directory listings,
   device 9 (USB stick), `U0>` renumbering and its EEPROM persistence, `CD:/`, the no-handler time-out, `SEQTEST`, `GETRAW`, `SOAK`, `DOSTEST`, `CDTEST`, `RENUM`,
   scratch / rename / `N:`, paths (`LOAD"$/dir/image.d64"`, `$==`), auto-mount and remembered mounts (`/.vdrive` sidecar), VDrive+SwiftLink, remote get/set with
@@ -41,7 +41,7 @@ Firmware integration and usage: `firmware/README.md`.
   found two real bugs that unit tests missed: `CIOUT` must return `A` = the byte sent (CHROUT tail-jumps into it; BASIC's PRINT broke after a
   number), and `U0>` must also be accepted with PRINT#'s trailing CR.
 * **Lessons from bring-up (keep):** (1) a flat NTSC C128 in C64 mode did not reliably serve the replacement KERNAL: use a real C64, and
-  verify "is it really served" with the banner image or `PEEK(58483+I)` at `$E473` (a stock image can't show it). (2) All SD/USB probing
+  verify "is it really served" with the banner (`kernal-tr.bin` from 0.9.0.36 prints `VDRIVE SD n USB n` on the second line, `kernal-banner.bin` `TRVDRIVE` on the first; a stock image can't show either). (2) All SD/USB probing
   must happen in `VDrive_PreStart()` while the C64 waits, not at handler start. (3) Bus-handler data in fast RAM1, token STAT handshake,
   abort on a failed block (see Gotchas). (4) `FILE_WRITE` creates missing files on SD/USB: always probe with `FILE_READ` first.
   (5) `npm run flash` needs the Teensy program button (the TR exposes no soft reboot); copying the `.hex` to the card and pressing
@@ -93,7 +93,10 @@ Firmware integration and usage: `firmware/README.md`.
 * 0.9.0.34: SwiftLink Tx fix to upstream (`firmware/swiftlink-tx-fix.patch`, applied by `make_tr_patch.sh` after the Kernal Replace fixes). NativeEthernet's `client.write()` busy-waits for send-buffer space;
   with the stack polled from `loop()` (0.9.0.14) a full buffer hung `loop()` for good (no retransmits; SkinnyAI's 8 KB POST stalled after a lost segment, `~/tr.pcap`). Tx bytes now go
   into a 256-byte buffer, sent after a 2 ms pause / 20 ms / full, never more than `availableForWrite()`; while it is full Tx stays not empty. **Works on hardware (owner, 2026-10-29)**: the stalled 8 KB uploads complete.
-* Known open risks: C128 not supported (see above); tape (device 1) intentionally broken (its code space was reclaimed).
+* 0.9.0.36: the banner's second line shows the drives, ` 64K RAM  38911 FREE  VDRIVE SD 8 USB 9` (38 wide like stock; `SD10`, `NOSD`, `NOUSB`; `patches/vdbanner.s`, docs/DESIGN.md 38); the top line is stock again (the `TRVDRIVE` text is `bringup/banner.s`, only in `kernal-banner.bin`).
+  The firmware writes per unit `$FE` absent / fixed number / `$FF` automatic (`0 0` as built = not written: the stock line) after the tag `VDUNITS:` in `KernalFast` (`VD_BannerUnits`, in PreStart and again with the probed numbers in `VD_ProbeFinish`); without the menu probe the KERNAL probes the real bus for automatic units with the hook-free `iec_listen`/`iec_second`/`iec_unlsn`.
+  py65 (`tests/test_banner.py`), `tests/fw_host`, VICE (`basic`: `SD 8 NOUSB`; `scan`: `SD 9 USB11`); **not on hardware yet**. Rebuild `kernal-tr.bin`.
+* Known open risks: C128 not supported (see above); tape (device 1) intentionally broken (its code space was reclaimed: $F8E2-$FB8D, $FB97-$FCD0).
 
 ## Layout
 ```
@@ -106,13 +109,14 @@ util/            VDCOPY: vdcopy.s (all machine code, BASIC SYS stub at $0801, ta
                 VDrive Config: vdconfig.s (all machine code, same stub/BSS scheme, BSS $2000-$4FFF; tools/make_util.py assembles it into build/util/"VDrive Config.prg")
 patches/        ca65 sources overlaid on the stock KERNAL by tools/build.py; segment name P_XXXX = load address
   vdrive.s        serial entry hooks, fast LOAD ($F4C8) / SAVE ($F605), bus scan, code placed in reclaimed tape space $F8E2-$FB8D (666 of 683 bytes used; `irq_border` for the border flash included, the build asserts the limit)
-  banner.s        proof patch (changes the power-on banner)
+  vdbanner.s      the drive numbers in the power-on banner (INITMS: `JSR` at $E42D, `JMP` at $E43D, banner string cut at $E49A; code in reclaimed tape routines $FB97-$FCD0, 296 of 314 bytes)
+bringup/banner.s  proof patch (`TRVDRIVE 64 BASIC V2`), only in `make build/kernal-banner.bin`
 firmware/       TeensyROM integration: IOH_VDrive.c (Special IO), IOH_VDriveSwift.c / IOH_VDriveREU.c / IOH_VDriveSwiftREU.c (combined Special IOs) and
                 teensyrom-vdrive.patch (git apply onto TeensyROM); vdrive_probe.asm (the TR menu's launch-time bus probe, ACME, inserted into MainMenu.asm)
 tools/          build.py (patch overlay), make_tr_patch.sh (regenerate the TeensyROM patch), vdrive_mock.py (VICE mock),
                 d64py.py (ctypes wrappers incl. register-level VIO), xref.py (reference finder over a disassembly)
 tests/          test_d64*.py, test_vdrive.py, test_vio.py (unit), fw_host/ (glue vs host stubs), devcfg.c,
-                test_vdconfig.py + c64_sim.py (VDrive Config's PRG in py65, KERNAL calls answered in Python), test_irq_border.py (py65),
+                test_vdconfig.py + c64_sim.py (VDrive Config's PRG in py65, KERNAL calls answered in Python), test_irq_border.py, test_banner.py (py65),
                 menuprobe_vice.py (the menu's probe routine in VICE with true-drive 1541s)
 build/          generated, git-ignored (kernal images derived from the ROM, libd64.dylib, disassembly)
 ```
@@ -121,6 +125,7 @@ build/          generated, git-ignored (kernal images derived from the ROM, libd
 * `make test` — everything (rebuilds `build/libd64.dylib`, runs unit tests, device-number check, firmware host test, VDrive Config in py65, three VICE runs: `basic`,
   `scan` (true-drive 1541s at 8 and 10) and the menu's bus probe; about 4 minutes).
 * `make test-border` — the `irq_border` 6502 routine in py65 (skipped without `pip install py65`; also part of `make test`).
+* `make test-banner` — the banner's `vd_banner` in py65 with a fake serial bus (skipped without py65; also part of `make test`).
 * `make util` — `build/util/vdcopy.prg`, the file copy utility between any two units (also on the test disk), and `build/util/VDrive Config.prg`.
 * `make test-vdconfig` — VDrive Config's PRG in py65 against a drive model (skipped without py65; also part of `make test`).
 * `make test-menuprobe` — the TR menu's bus probe routine in VICE, 1541s at 8 and 10 (skipped without `acme`; also part of `make test`).

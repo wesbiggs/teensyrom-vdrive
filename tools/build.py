@@ -26,6 +26,9 @@ if "EA32" in segs:   # the border flash retargets the IRQ routine's `JSR $FFEA` 
     assert stock[0xEA31 - 0xE000:0xEA34 - 0xE000] == bytes([0x20, 0xEA, 0xFF]), "no JSR $FFEA at $EA31: not a 901227-03 KERNAL?"
 if "E1DA" in segs:   # the default LOAD/SAVE device is the operand of `LDX #$01` at $E1D9
     assert stock[0xE1D9 - 0xE000:0xE1DB - 0xE000] == bytes([0xA2, 0x01]), "no LDX #$01 at $E1D9: not a 901227-03 KERNAL?"
+if "E444" in segs:   # the banner (patches/vdbanner.s) rewrites the strings INITMS prints and its closing `JMP $A644`
+    assert stock[0xE429 - 0xE000:0xE447 - 0xE000] == bytes.fromhex("a973a0e4201eaba537 38e52baaa538e52c20cdbd a960a0e4201eab4c44a6".replace(" ", "")), \
+        "INITMS at $E429 is not the 901227-03 one (strings at $E473 / $E460, JMP $A644)"
 
 with tempfile.TemporaryDirectory() as t:
     t = pathlib.Path(t)

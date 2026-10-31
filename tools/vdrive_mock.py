@@ -124,6 +124,12 @@ def main(kernal, scenario="basic"):
                            check=True, capture_output=True)
         drives = ["-drive8type", "1541", "-drive8truedrive", "-drive9type", "0", "-drive10type", "1541", "-drive10truedrive", "-drive11type", "0",
                   "-8", str(workdir / "real8.d64"), "-10", str(workdir / "real10.d64")]
+    # the banner bytes as VD_BannerUnits (firmware/IOH_VDrive.c) writes them into the served image: SD automatic, USB automatic
+    # in `scan` (a stick is attached there) and absent in `basic`
+    kimg = bytearray(pathlib.Path(kernal).read_bytes())
+    tag = kimg.find(b"VDUNITS:")
+    if tag >= 0: kimg[tag + 8:tag + 10] = bytes([0xFF, 0xFF if scan else 0xFE])
+    kernal = str(workdir / "kernal.bin"); pathlib.Path(kernal).write_bytes(kimg)
     # -config + -default: start from VICE's defaults, not the user's vicerc (another VICE session saved e.g. Drive8Type=1581 with
     # TrapDevice8 there, which put a virtual drive at 8 and moved the SD drive to 9); a blank config file here also catches SaveResourcesOnExit
     (workdir / "vicerc").write_text("")
@@ -233,6 +239,8 @@ def main(kernal, scenario="basic"):
             print(("PASS" if cond else "FAIL"), label)
             ok = ok and cond
 
+        banner = " 64K RAM  38911 FREE  VDRIVE " + ("SD 9 USB11" if scan else "SD 8 NOUSB")
+        check("banner: %r (the KERNAL probed the bus itself at power-on)" % banner, banner in m.screen())
         if scan:
             # the first transaction below is a LOAD: the Teensy answers "scan first", the KERNAL probes 8, 9, 10, 11 and reports the free ones
             run('LOAD"$",9\r', "SEARCHING FOR $")
