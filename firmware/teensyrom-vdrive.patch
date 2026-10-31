@@ -3168,10 +3168,10 @@ index 0000000..20f3ecc
 +#endif
 diff --git a/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.c b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.c
 new file mode 100644
-index 0000000..5b23659
+index 0000000..2986fe4
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.c
-@@ -0,0 +1,1089 @@
+@@ -0,0 +1,1092 @@
 +#include "vdrive.h"
 +#include "vd_cfg.h"
 +#include <string.h>
@@ -4231,6 +4231,9 @@ index 0000000..5b23659
 +            u->stat_len = u->stat_pos = 0;             /* a new DOS operation replaces the status message: whatever was left
 +                                                          unread is dropped (as on a real drive / in VICE), so callers need
 +                                                          not drain it. Reading it in pieces between operations still works. */
++        if (op == 0xF0 || (op == 0x60 && ch == 15))
++            set_err(u, 0, 0, 0);                       /* an OPEN or a command starts at 00, OK: an error nobody read does not outlive it
++                                                          (a 1541 reports 00 after any command that succeeds) */
 +        if (op == 0xF0) {
 +            if (ch == 15) exec_command(v, v->act, u, v->wbuf, v->wlen);
 +            else chan_open(v, v->act, u, ch, v->wbuf, v->wlen);

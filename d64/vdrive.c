@@ -1057,6 +1057,9 @@ VD_COLD int vdrive_mailbox(vdrive_t *v, uint8_t cmd, uint8_t arg, uint8_t *data,
             u->stat_len = u->stat_pos = 0;             /* a new DOS operation replaces the status message: whatever was left
                                                           unread is dropped (as on a real drive / in VICE), so callers need
                                                           not drain it. Reading it in pieces between operations still works. */
+        if (op == 0xF0 || (op == 0x60 && ch == 15))
+            set_err(u, 0, 0, 0);                       /* an OPEN or a command starts at 00, OK: an error nobody read does not outlive it
+                                                          (a 1541 reports 00 after any command that succeeds) */
         if (op == 0xF0) {
             if (ch == 15) exec_command(v, v->act, u, v->wbuf, v->wlen);
             else chan_open(v, v->act, u, ch, v->wbuf, v->wlen);

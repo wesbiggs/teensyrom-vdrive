@@ -1,6 +1,6 @@
 0 rem vdsuite: the hardware checklist in one program (tests/basic/README.md)
 10 print chr$(147);"vdrive test suite"
-20 d=8:input"device";d:open15,d,15:gosub 900
+20 d=8:input"device";d:open15,d,15
 30 dim fl$(20),sp(9),sf(9),im$(3),dn$(3),fr(3),lt(3),dh(3),sn$(9)
 40 for k=1 to 3:read dn$(k),im$(k),fr(k),lt(k),dh(k):next
 50 data vs64,vs64.d64,664,35,18,vs71,vs71.d71,1328,70,18,vs81,vs81.d81,3160,80,40
