@@ -44,7 +44,7 @@ The C64's ability to read the 8 KB of RAM under KERNAL ROM ($E000-$FFFF) is used
    | File | SHA-256 |
    |---|---|
    | stock `kernal-901227-03.bin` (input) | `83c60d47047d7beab8e5b7bf6f67f80daa088b7a6a27de0d7e016f6484042721` |
-   | `kernal-tr.bin` from this revision | `14a7d27e0393c56185116679db217fb8ca3cb9c2a79e37e91ebc477ba71b25d6` |
+   | `kernal-tr.bin` from this revision | `d7b5d6e79906e5858cd1f9ee213fea688b3d635d7d539298e79ea57e9628cfe0` |
    | `kernal-tr.bin` last run on a real C64 (0.9.0.28, commit `bf3c74c`; same patches through `9270008`) | `e1db8e02b6cab9f6eb99a597a1c04f2b5a67fac914a36dc1e4259d7272f53af2` |
 
    A different stock hash means a different ROM dump; the patches may not fit it. The "this revision" row is checked by `make test`.
@@ -76,9 +76,9 @@ The power-on banner shows them, SD first:
 ```
     **** COMMODORE 64 BASIC V2 ****
 
- 64K RAM, 38911 FREE, VDRIVE 8+9
+ 64K RAM  38911 FREE  VDRIVE SD 8 USB 9
 ```
-(`VDRIVE 9` with only a card, `VDRIVE N/A` with neither card nor stick; no `VDRIVE` part when the image runs under plain Kernal Replace or older firmware.)
+(`SD10 USB11` with two-digit numbers, `NOSD` / `NOUSB` for a missing card or stick; under plain Kernal Replace or older firmware the line is the stock `64K RAM SYSTEM  38911 BASIC BYTES FREE`.)
 
 Each of the SD and USB virtual drives can have one `.d64`, `.d71`, or `.d81` file mounted at any given time (or can be unmounted, akin to removing the disk from a real drive). When unmounted, the devices provide access to the actual SD or USB filesystem: you can navigate, load plain `PRG` files, create and remove folders, and create or mount images.
 

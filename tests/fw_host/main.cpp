@@ -22,7 +22,7 @@ bool USBFileSystemWait() { g_fs_probes++; return fs_::exists(firstPartition.root
 void InitHndlr_KernalReplace() {}
 uint8_t KernalFast[8192];                             // the image IOH_KernalReplace.c serves (VDrive_PreStart writes the banner bytes)
 static const int kBannerTag = 0x1BB0;                 // where the tag sits in this fake image (anywhere: the glue searches for it)
-static int banner(int unit) { return KernalFast[kBannerTag + 10 + unit]; }
+static int banner(int unit) { return KernalFast[kBannerTag + 8 + unit]; }
 
 #include "glue.c"          // = firmware/IOH_VDrive.c (with ../vdrive/*.c resolved by the build script)
 
@@ -148,21 +148,21 @@ int main(int argc, char **argv)
     { FILE *f = fopen(argv[3], "rb"); char b[4096]; size_t n; while ((n = fread(b, 1, sizeof b, f)) > 0) hello_expect.append(b, n); fclose(f); }
 
     memset(EEPROM.m, 0xFF, sizeof EEPROM.m);               // erased flash: no setting stored yet
-    memcpy(KernalFast + kBannerTag, ", VDRIVE ", 10);       // patches/vdbanner.s: the tag, then the two unit bytes (0 as built)
+    memcpy(KernalFast + kBannerTag, "VDUNITS:", 8);          // patches/vdbanner.s: the tag, then the two unit bytes (0 as built)
     VDrive_PreStart();
     check("banner bytes: both units present and automatic ($FF $FF)", banner(0) == 0xFF && banner(1) == 0xFF);
     {
-        uint8_t img[64]; memset(img, 0x55, sizeof img); memcpy(img + 20, ", VDRIVE ", 10); img[30] = img[31] = 0;
+        uint8_t img[64]; memset(img, 0x55, sizeof img); memcpy(img + 20, "VDUNITS:", 8); img[28] = img[29] = 0;
         vio->vd.unit[1].present = 0; VD_BannerUnits(img, sizeof img); vio->vd.unit[1].present = 1;
-        check("banner bytes: an absent unit is $FE", img[30] == 0xFF && img[31] == 0xFE && img[29] == 0 && img[32] == 0x55);
-        uint8_t old[64]; memset(old, 0x55, sizeof old); memcpy(old + 20, ", VDRIVE", 8);   // no tag (an older image): untouched
+        check("banner bytes: an absent unit is $FE", img[28] == 0xFF && img[29] == 0xFE && img[27] == ':' && img[30] == 0x55);
+        uint8_t old[64]; memset(old, 0x55, sizeof old); memcpy(old + 20, "VDUNITS", 7);   // no tag (an older image): untouched
         uint8_t ref[64]; memcpy(ref, old, sizeof ref); VD_BannerUnits(old, sizeof old);
         check("banner bytes: an image without the tag is left alone", memcmp(old, ref, sizeof ref) == 0);
-        memcpy(img + 54, ", VDRIVE ", 10); memset(img + 20, 0x55, 12); VD_BannerUnits(img, sizeof img);   // tag at the very end: no room
-        check("banner bytes: a tag with no room for the two bytes is ignored", img[63] == 0);
-        vio->vd.unit[0].present = vio->vd.unit[1].present = 0; memset(img, 0, sizeof img); memcpy(img, ", VDRIVE ", 10);
+        memset(img, 0, sizeof img); memcpy(img + 55, "VDUNITS:", 8); VD_BannerUnits(img, sizeof img);   // tag at the very end: no room
+        check("banner bytes: a tag with no room for the two bytes is ignored", img[62] == ':' && img[63] == 0);
+        vio->vd.unit[0].present = vio->vd.unit[1].present = 0; memset(img, 0, sizeof img); memcpy(img, "VDUNITS:", 8);
         VD_BannerUnits(img, sizeof img); vio->vd.unit[0].present = vio->vd.unit[1].present = 1;
-        check("banner bytes: neither unit present ($FE $FE, the banner says N/A)", img[10] == 0xFE && img[11] == 0xFE);
+        check("banner bytes: neither unit present ($FE $FE: NOSD NOUSB)", img[8] == 0xFE && img[9] == 0xFE);
     }
     check("pre-start probed SD and USB", g_fs_probes == 2);
     InitHndlr_VDrive();

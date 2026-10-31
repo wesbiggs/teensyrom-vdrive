@@ -127,8 +127,8 @@ def main(kernal, scenario="basic"):
     # the banner bytes as VD_BannerUnits (firmware/IOH_VDrive.c) writes them into the served image: SD automatic, USB automatic
     # in `scan` (a stick is attached there) and absent in `basic`
     kimg = bytearray(pathlib.Path(kernal).read_bytes())
-    tag = kimg.find(b", VDRIVE \x00")
-    if tag >= 0: kimg[tag + 10:tag + 12] = bytes([0xFF, 0xFF if scan else 0xFE])
+    tag = kimg.find(b"VDUNITS:")
+    if tag >= 0: kimg[tag + 8:tag + 10] = bytes([0xFF, 0xFF if scan else 0xFE])
     kernal = str(workdir / "kernal.bin"); pathlib.Path(kernal).write_bytes(kimg)
     vice = subprocess.Popen(["x64sc", "-warp", *drives, "-kernal", kernal,
                              "-binarymonitor", "-binarymonitoraddress", "ip4://127.0.0.1:6502"],
@@ -236,7 +236,7 @@ def main(kernal, scenario="basic"):
             print(("PASS" if cond else "FAIL"), label)
             ok = ok and cond
 
-        banner = " 64K RAM, 38911 FREE, VDRIVE " + ("9+11" if scan else "8")
+        banner = " 64K RAM  38911 FREE  VDRIVE " + ("SD 9 USB11" if scan else "SD 8 NOUSB")
         check("banner: %r (the KERNAL probed the bus itself at power-on)" % banner, banner in m.screen())
         if scan:
             # the first transaction below is a LOAD: the Teensy answers "scan first", the KERNAL probes 8, 9, 10, 11 and reports the free ones

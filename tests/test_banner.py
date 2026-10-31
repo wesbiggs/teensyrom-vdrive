@@ -21,12 +21,13 @@ with tempfile.TemporaryDirectory() as t:
     subprocess.run([sys.executable, "-I", str(ROOT / "tools/build.py"), str(t / "stock.bin"), str(t / "k.bin")], check=True, capture_output=True)
     img = bytearray((t / "k.bin").read_bytes())
 
-TAG = b", VDRIVE \x00"                      # what the firmware searches for (VD_BannerUnits, firmware/IOH_VDrive.c)
+TAG = b"VDUNITS:"                          # what the firmware searches for (VD_BannerUnits, firmware/IOH_VDrive.c)
 tag = img.find(TAG)
 assert tag > 0 and img.find(TAG, tag + 1) < 0, "exactly one tag in the image"
-assert img[tag + 10:tag + 12] == b"\x00\x00", "built with no units: no VDrive text"
-assert img[0x444] == 0x4C, "INITMS ends in a JMP to the banner code"
-assert img[0x460:0x466] == b" FREE\x00" and img[0x49A:0x4A5] == b" 64K RAM, \x00"
+assert img[tag + 8:tag + 10] == b"\x00\x00", "built with no units: the stock line"
+assert img[0x42D] == 0x20 and img[0x43D] == 0x4C, "INITMS: JSR vd_head, JMP vd_banner"
+assert img[0x49A] == 0, "the banner string at $E473 ends after the top line"
+img[0x460:0x473] = b" BASIC BYTES FREE\r\x00"   # the stock string at $E460 the no-firmware case prints (not in the synthetic image)
 ST = 0x90
 
 
@@ -34,8 +35,9 @@ def run(units, bus=()):
     """units: the two bytes the firmware writes; bus: device numbers a real drive answers at. -> (text, probes, bus log)"""
     m = MPU()
     m.memory[0xE000:0xE000 + 8192] = list(img)
-    m.memory[0xE000 + tag + 10] = units[0]; m.memory[0xE000 + tag + 11] = units[1]
-    m.pc, m.sp = m.memory[0xE445] | m.memory[0xE446] << 8, 0xF0
+    m.memory[0xE000 + tag + 8] = units[0]; m.memory[0xE000 + tag + 9] = units[1]
+    m.memory[0x2B:0x2D] = [0x01, 0x08]; m.memory[0x37:0x39] = [0x00, 0xA0]   # BASIC from $0801 to $A000: 38911 bytes free
+    m.pc, m.sp = 0xE429, 0xF0                       # INITMS after its memory check: banner string, free bytes, the rest
     out, log, cur = [], [], [None]
 
     def rts():
@@ -49,6 +51,7 @@ def run(units, bus=()):
             a = m.a | m.y << 8
             while m.memory[a]: out.append(chr(m.memory[a])); a += 1
             m.x = m.y = 0x55; rts()                     # it clobbers X and Y
+        elif pc == 0xBDCD: out.append(str(m.a << 8 | m.x)); rts()   # LINPRT: no leading space
         elif pc == 0xFFD2: out.append(chr(m.a)); rts()
         elif pc == 0xF0A4: rts()                        # RS-232 NMI check before LISTEN
         elif pc == 0xED11:                              # byte under ATN: LISTEN n, or UNLISTEN $3F
@@ -64,7 +67,7 @@ def run(units, bus=()):
             rts()
         elif pc in (0xEDBE, 0xEE03): rts()              # release ATN, end of UNLSN
         else:
-            assert pc >= 0xE000 + 0x1000 or pc in range(0xE444, 0xE447), "ran into stock code at $%04X" % pc
+            assert pc >= 0xE000 + 0x1000 or 0xE429 <= pc < 0xE440, "ran into stock code at $%04X" % pc
             m.step()
     else:
         raise AssertionError("no end")
@@ -74,31 +77,33 @@ def run(units, bus=()):
     return text[:-1], [int(e.split()[1]) for e in log if e.startswith("LISTEN")], log
 
 
-def check(units, bus, text, probes=None):
+def check(units, bus, field, probes=None):
+    """field: the 10-character drive field, or None for the stock line"""
     got, pr, log = run(units, bus)
-    assert got == text, (units, bus, got)
+    want = " 64K RAM SYSTEM  38911 BASIC BYTES FREE" if field is None else " 64K RAM  38911 FREE  VDRIVE " + field
+    assert got == want, (units, bus, got)
+    assert len(got) == 39, got                          # like the stock line: one leading space, 38 characters
     if probes is not None: assert pr == probes, (units, bus, pr)
     for i, e in enumerate(log):                         # every probe is LISTEN n, SECOND $6F (unless LISTEN failed), and UNLSN when found
         if e.startswith("LISTEN") and bus:
             assert log[i + 1] == "SECOND 6F", log
             n = int(e.split()[1])
             assert (log[i + 2:i + 3] == ["UNLSN"]) == (n in bus), log
-    return got
 
 
-check((0, 0), (), "", [])                                          # image as built / no VDrive firmware: stock-like line, no bus traffic
-check((0xFF, 0xFF), (), ", VDRIVE 8+9", [8, 9])                    # empty bus
-check((0xFF, 0xFF), (8, 10), ", VDRIVE 9+11", [8, 9, 10, 11])      # real drives at 8 and 10 (the VICE `scan` set-up)
-check((0xFF, 0xFE), (8,), ", VDRIVE 9", [8, 9])                    # no USB stick
-check((0xFE, 0xFF), (), ", VDRIVE 8", [8])                         # no SD card
-check((0xFE, 0xFE), (8,), ", VDRIVE N/A", [])                      # neither: N/A, no probe
-check((0xFE, 12), (), ", VDRIVE 12", [])
-check((9, 0xFF), (), ", VDRIVE 9+8", [8])                          # SD fixed at 9: USB takes 8; 9 is never probed
-check((8, 0xFF), (9,), ", VDRIVE 8+10", [9, 10])                   # 8 fixed (skipped, not probed), 9 a real drive
-check((0xFF, 8), (), ", VDRIVE 9+8", [9])                          # USB fixed at 8: SD skips it
-check((12, 13), (8,), ", VDRIVE 12+13", [])                        # both fixed: no probe at all
-check((30, 0xFE), (), ", VDRIVE 30", [])
-check((0xFF, 0xFF), tuple(range(8, 31)), ", VDRIVE N/A", list(range(8, 31)))   # every number taken: N/A, stops at 30
-check((0xFF, 0xFF), tuple(range(8, 30)), ", VDRIVE 30", list(range(8, 31)))
-check((0xFF, 0xFF), tuple(range(8, 19)) + (20,), ", VDRIVE 19+21", list(range(8, 22)))
-print("PASS vd_banner: not written / absent (N/A) / automatic / fixed / mixed / full bus / two digits; probes are LISTEN + SECOND $6F (+ UNLSN)")
+check((0, 0), (), None, [])                                        # image as built / no VDrive firmware: the stock line, no bus traffic
+check((0xFF, 0xFF), (), "SD 8 USB 9", [8, 9])                      # empty bus
+check((0xFF, 0xFF), (8, 10), "SD 9 USB11", [8, 9, 10, 11])         # real drives at 8 and 10 (the VICE `scan` set-up)
+check((0xFF, 0xFE), (8,), "SD 9 NOUSB", [8, 9])                    # no USB stick
+check((0xFE, 0xFF), (), "NOSD USB 8", [8])                         # no SD card
+check((0xFE, 0xFE), (8,), "NOSD NOUSB", [])                        # neither: no probe
+check((0xFE, 12), (), "NOSD USB12", [])
+check((9, 0xFF), (), "SD 9 USB 8", [8])                            # SD fixed at 9: USB takes 8; 9 is never probed
+check((8, 0xFF), (9,), "SD 8 USB10", [9, 10])                      # 8 fixed (skipped, not probed), 9 a real drive
+check((0xFF, 8), (), "SD 9 USB 8", [9])                            # USB fixed at 8: SD skips it
+check((10, 11), (8,), "SD10 USB11", [])                            # both fixed: no probe at all
+check((30, 0xFE), (), "SD30 NOUSB", [])
+check((0xFF, 0xFF), tuple(range(8, 31)), "NOSD NOUSB", list(range(8, 31)))   # every number taken: stops at 30
+check((0xFF, 0xFF), tuple(range(8, 30)), "SD30 NOUSB", list(range(8, 31)))
+check((0xFF, 0xFF), tuple(range(8, 19)) + (20,), "SD19 USB21", list(range(8, 22)))
+print("PASS vd_banner: stock line without firmware / automatic / fixed / absent / full bus / two digits; always 38 wide; probes are LISTEN + SECOND $6F (+ UNLSN)")

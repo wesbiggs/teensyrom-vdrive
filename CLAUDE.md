@@ -36,7 +36,7 @@ Firmware integration and usage: `firmware/README.md`.
   found two real bugs that unit tests missed: `CIOUT` must return `A` = the byte sent (CHROUT tail-jumps into it; BASIC's PRINT broke after a
   number), and `U0>` must also be accepted with PRINT#'s trailing CR.
 * **Lessons from bring-up (keep):** (1) a flat NTSC C128 in C64 mode did not reliably serve the replacement KERNAL: use a real C64, and
-  verify "is it really served" with the banner (`kernal-tr.bin` from 0.9.0.30 prints `VDRIVE n` on the second line, `kernal-banner.bin` `TRVDRIVE` on the first; a stock image can't show either). (2) All SD/USB probing
+  verify "is it really served" with the banner (`kernal-tr.bin` from 0.9.0.30 prints `VDRIVE SD n USB n` on the second line, `kernal-banner.bin` `TRVDRIVE` on the first; a stock image can't show either). (2) All SD/USB probing
   must happen in `VDrive_PreStart()` while the C64 waits, not at handler start. (3) Bus-handler data in fast RAM1, token STAT handshake,
   abort on a failed block (see Gotchas). (4) `FILE_WRITE` creates missing files on SD/USB: always probe with `FILE_READ` first.
   (5) `npm run flash` needs the Teensy program button (the TR exposes no soft reboot); copying the `.hex` to the card and pressing
@@ -81,9 +81,9 @@ Firmware integration and usage: `firmware/README.md`.
   replace `KernalCheck` on `fBusSnoop`: `IO2Hndlr_VDriveSwiftREU` hands it back (`VDREU_Snoop`). Host tests, VICE, firmware build; **works on a real C64 (owner, 2026-10-23)**. **KERNAL images built before
   this change no longer match the firmware: rebuild and re-copy `kernal-tr.bin`.**
 * Default device 8 for `LOAD`/`SAVE`/`VERIFY` without a number, as on the SX-64 (`P_E1DA` in `patches/vdrive.s`, docs/DESIGN.md 33). KERNAL only; VICE `basic` run; **not on hardware yet**. Rebuild `kernal-tr.bin`.
-* 0.9.0.30: the banner's second line shows the drives, ` 64K RAM, 38911 FREE, VDRIVE 8+9` (`patches/vdbanner.s`, docs/DESIGN.md 34); the top line is stock again (the `TRVDRIVE` text is `bringup/banner.s`, only in `kernal-banner.bin`).
-  The firmware writes per unit `$FE` absent / fixed number / `$FF` automatic (`0 0` as built = not written: no text; nothing to show: `VDRIVE N/A`) after the tag `", VDRIVE ",0` in `KernalFast` (`VD_BannerUnits`); the KERNAL probes the real bus for automatic units with the hook-free `iec_listen`/`iec_second`/`iec_unlsn`.
-  py65 (`tests/test_banner.py`), `tests/fw_host`, VICE (`basic`: `VDRIVE 8`; `scan`: `VDRIVE 9+11`); **not on hardware yet**. Rebuild `kernal-tr.bin`.
+* 0.9.0.30: the banner's second line shows the drives, ` 64K RAM  38911 FREE  VDRIVE SD 8 USB 9` (38 wide like stock; `SD10`, `NOSD`, `NOUSB`; `patches/vdbanner.s`, docs/DESIGN.md 34); the top line is stock again (the `TRVDRIVE` text is `bringup/banner.s`, only in `kernal-banner.bin`).
+  The firmware writes per unit `$FE` absent / fixed number / `$FF` automatic (`0 0` as built = not written: the stock line) after the tag `VDUNITS:` in `KernalFast` (`VD_BannerUnits`); the KERNAL probes the real bus for automatic units with the hook-free `iec_listen`/`iec_second`/`iec_unlsn`.
+  py65 (`tests/test_banner.py`), `tests/fw_host`, VICE (`basic`: `SD 8 NOUSB`; `scan`: `SD 9 USB11`); **not on hardware yet**. Rebuild `kernal-tr.bin`.
 * Known open risks: C128 not supported (see above); tape (device 1) intentionally broken (its code space was reclaimed: $F8E2-$FB8D, $FB97-$FCD0).
 
 ## Layout
@@ -97,7 +97,7 @@ util/            VDCOPY: vdcopy.s (all machine code, BASIC SYS stub at $0801, ta
                 VDrive Config: vdconfig.bas (BASIC, tokenised with petcat by tools/make_util.py into build/util/"VDrive Config.prg")
 patches/        ca65 sources overlaid on the stock KERNAL by tools/build.py; segment name P_XXXX = load address
   vdrive.s        serial entry hooks, fast LOAD ($F4C8) / SAVE ($F605), bus scan, code placed in reclaimed tape space $F8E2-$FB8D (666 of 683 bytes used; `irq_border` for the border flash included, the build asserts the limit)
-  vdbanner.s      the drive numbers in the power-on banner (INITMS strings + `JMP` at $E444; code in reclaimed tape routines $FB97-$FCD0, 192 of 314 bytes)
+  vdbanner.s      the drive numbers in the power-on banner (INITMS: `JSR` at $E42D, `JMP` at $E43D, banner string cut at $E49A; code in reclaimed tape routines $FB97-$FCD0, 296 of 314 bytes)
 bringup/banner.s  proof patch (`TRVDRIVE 64 BASIC V2`), only in `make build/kernal-banner.bin`
 firmware/       TeensyROM integration: IOH_VDrive.c (Special IO), IOH_VDriveSwift.c / IOH_VDriveSwiftREU.c (combined Special IOs) and
                 teensyrom-vdrive.patch (git apply onto TeensyROM)

@@ -539,13 +539,13 @@ FLASHMEM void VDrive_PreStart()
                  scanPending ? " (numbers are settled by the first bus scan)" : "");
 }
 
-// The power-on banner ends in ", VDRIVE 8+9" (patches/vdbanner.s). The C64 prints it before this handler owns the mailbox, so the
-// numbers travel in the KERNAL image being served: the two bytes after the tag (the printed ", VDRIVE " and its 0) say per unit
-// (SD, USB) $FE = absent, 8-30 = a fixed (U0>) number, $FF = automatic (0 / 0, as built, means "not written": no VDrive text;
-// both absent, or no number left, prints "VDRIVE N/A"). The KERNAL probes the real bus for the automatic ones the way
-// the run's first disk access will (bus_scan), so the banner shows the numbers that scan is going to give. An image without the
-// tag (an older kernal-tr.bin, another KERNAL) is left alone. Runs while the C64 still waits in the TR menu, so nothing reads them yet.
-static const uint8_t VD_BannerTag[10] = { ',', ' ', 'V', 'D', 'R', 'I', 'V', 'E', ' ', 0 };
+// The power-on banner's second line ends in "VDRIVE SD 8 USB 9" (patches/vdbanner.s). The C64 prints it before this handler owns the
+// mailbox, so the numbers travel in the KERNAL image being served: the two bytes after the tag "VDUNITS:" (not printed) say per unit
+// (SD, USB) $FE = absent ("NOSD" / "NOUSB"), 8-30 = a fixed (U0>) number, $FF = automatic; 0 / 0, as built, means "not written" and
+// prints the stock line. The KERNAL probes the real bus for the automatic ones the way the run's first disk access will (bus_scan),
+// so the banner shows the numbers that scan is going to give. An image without the tag (an older kernal-tr.bin, another KERNAL) is
+// left alone. Runs while the C64 still waits in the TR menu, so nothing reads them yet.
+static const uint8_t VD_BannerTag[8] = { 'V', 'D', 'U', 'N', 'I', 'T', 'S', ':' };
 
 FLASHMEM void VD_BannerUnits(uint8_t *img, int size)
 {
