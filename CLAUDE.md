@@ -26,7 +26,7 @@ Firmware integration and usage: `firmware/README.md`.
   (`vdrive_mock.py scan`: copy all, skip existing, replace, list/range selection, SD to USB, SD to 1541 and back, 1541 to USB; byte-exact PRG and SEQ), **on hardware (owner): the BASIC version worked vdrive to vdrive and vdrive to 1541; the machine-code rewrite is not on hardware yet**. Building it found a real-drive bug: the UNLSN hook at `$EDFE` overwrote the
   operand of the `BIT` that stock UNTLK falls through, so the real drive never got UNTALK (garbled bytes in `GET#` after the first `CLRCHN`). `hk_untlk` now spells the whole routine out. Any KERNAL image built before
   that fix must be rebuilt (`make build/kernal-tr.bin`). Lesson: a hook that overwrites bytes at an entry point inside another routine's operand needs every fall-through into those bytes checked.
-* **Alt-button disk switching (0.9.0.17, `docs/DESIGN.md` 22): host-tested only (`tests/fw_host`, the 6502 routine under py65 in a scratch script), NOT on hardware, not run in VICE (no ROM in the cloud session).**
+* **Alt-button disk switching (0.9.0.17, `docs/DESIGN.md` 22): works on hardware (owner, 2026-10-30: single and double tap);** host-tested in `tests/fw_host` and the 6502 routine under py65 (`make test-border`); not run in VICE.
   Taps on the TR+ Alt button (setting "None" only) cycle `/vdrive-config.txt` (SD: one tap, USB: two taps within 1 s); border flash through the new `BORDER` register `$DE18` and `irq_border` in the KERNAL IRQ routine. Rebuild `kernal-tr.bin` and re-copy it with the firmware.
 * **VDrive Config.prg (0.9.0.18; machine code since, `util/vdconfig.s`, docs/DESIGN.md 23): works on hardware (owner, 2026-10-30, the 0.9.0.35 build from the TR menu); not run in VICE;** host-tested in `tests/test_vdconfig.py` (the real PRG in py65, `tests/c64_sim.py`
   answering its KERNAL calls, against a drive model), plus the new `"!CONFIG"` / `"!STATE"` host text channels in `tests/test_vio.py` and `tests/fw_host`.
@@ -35,7 +35,8 @@ Firmware integration and usage: `firmware/README.md`.
 * **0.9.0.35: the TR menu probes the bus before every VDrive launch (docs/DESIGN.md 37): host tests and the 6502 routine in VICE with true-drive 1541s (`make test-menuprobe`); works on hardware (owner, 2026-10-30).** `firmware/vdrive_probe.asm` is inserted into
   `MainMenu.asm` by `make_tr_patch.sh`, which also rebuilds `TeensyROMC64.h` with the TR's `tools/build-c64.mjs` (needs `acme` 0.97 and `node`). No new menu registers: the PreStart handshake is reused (`rwRegScratch`, `VDrive_ProbeStep()` first in `KERNALPreStart()`); `fBusSnoop` is
   held back while the probe runs. Also `VIO_MENU` (mailbox command 16): back to the TR menu.
-* **Not yet checked on hardware:** the time the bus scan adds to the first access,
+* **Bus scan time on the first access:** no noticeable delay on hardware (owner, 2026-10-30).
+* **Not yet checked on hardware:**
   `.d71` at all, `STATUS` compared with a real drive, IRQ/STOP-key interplay during loads.
 * **BASIC test programs** (`tests/basic/`, built into `build/testdisk/vdtest.d64` by `make testdisk`) run inside VICE in `make test` and on the C64; they
   found two real bugs that unit tests missed: `CIOUT` must return `A` = the byte sent (CHROUT tail-jumps into it; BASIC's PRINT broke after a
