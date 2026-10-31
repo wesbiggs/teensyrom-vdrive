@@ -126,15 +126,20 @@ edit("Source/Teensy/MainMenuItems.h",
      '#ifdef Fab04_VDrive\n'
      '     rtFilePrg  , IOH_VDrive       , (char*)"VDrive Config             +VDrive", (uint8_t*)vdconfig_prg               , sizeof(vdconfig_prg) ,\n'
      '#endif\n')
-# Added as a case of its own ahead of upstream's, instead of rewriting upstream's IOHandlerInit() line: an open upstream PR
-# strips that line's trailing space, which would break a hunk that has it as context.
+# A macro around the whole of IOHandlerSelectInit(), not an edit inside it: upstream PRs rewrite its first lines (#81 puts a
+# GEOS case ahead of the menu one), and any hunk within three lines of them would not apply. The remap leaves every handler
+# but SwiftLink, REU and VDrive alone (GEOS's GeoRAM / REU_TRPage pass through).
 edit("Source/Teensy/IOHandlers.ino",
-     "   PendingfBusSnoop = NULL; //clean slate for whatever InitHndlr below is about to stage\n",
-     "   PendingfBusSnoop = NULL; //clean slate for whatever InitHndlr below is about to stage\n"
+     "void IOHandlerSelectInit()\n",
      "#ifdef Fab04_VDrive\n"
-     "   if (IO1[rWRegCurrMenuWAIT] == rmtTeensy && MenuSource[SelItemFullIdx].IOHndlrAssoc != IOH_None)\n   {\n"
-     "      IOHandlerInit(VDriveSwift_Remap(MenuSource[SelItemFullIdx].IOHndlrAssoc));   //SwiftLink programs keep the virtual drive\n      return;\n   }\n"
-     "#endif\n")
+     "   //menu programs keep the virtual drive: SwiftLink / REU ones get the matching VDrive Special IO (VDriveSwift_Remap)\n"
+     "   #define IOHandlerInit(h) IOHandlerInit(VDriveSwift_Remap(h))\n"
+     "#endif\n"
+     "void IOHandlerSelectInit()\n")
+edit("Source/Teensy/IOHandlers.ino",
+     "   else IOHandlerNextInit();\n}\n",
+     "   else IOHandlerNextInit();\n}\n"
+     "#ifdef Fab04_VDrive\n   #undef IOHandlerInit\n#endif\n")
 PY
 cp "$HERE/firmware/IOH_VDrive.c" "$HERE/firmware/IOH_VDriveSwift.c" "$HERE/firmware/IOH_VDriveREU.c" "$HERE/firmware/IOH_VDriveSwiftREU.c" \
    "$C/IO_Handlers/"
