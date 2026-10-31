@@ -26,7 +26,8 @@ VDCOPY, the default device 8, and `.d71` images. The test disk (`make testdisk`,
 [Building and testing](#building-and-testing)) has a BASIC test program for most of them.
 
 The original TR does not have the Kernal Replace functionality needed for this software, though it may be possible in the future to create a more limited TR-compatible version. 
-The C128 is not yet supported, but this is likely possible in the future.
+The C128 in C64 mode is untested: since 0.9.0.37 the firmware includes upstream's DMA HIRAM sense for Kernal Replace on a C128
+([TeensyROM PR 78](https://github.com/SensoriumEmbedded/TeensyROM/pull/78), confirmed on a C128 by the TR maintainer), but VDrive has not been run on one.
 
 Tape (device 1) no longer works in any VDrive setup because its KERNAL code space was reused; for convenience, in its place `LOAD`, `SAVE` and `VERIFY` without a device number use device 8, as on the SX-64.
 

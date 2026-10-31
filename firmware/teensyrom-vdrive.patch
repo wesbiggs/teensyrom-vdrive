@@ -109,7 +109,7 @@ index 46e27c6..72c265a 100644
       rtFileCrt  , IOH_None         , (char*)"Super Expander 64"                , (uint8_t*)super_expander_64_crt      , sizeof(super_expander_64_crt) ,
       rtFileCrt  , IOH_None         , (char*)"Epyx Fast Load Cart"              , (uint8_t*)Epyx_Fast_Load_crt         , sizeof(Epyx_Fast_Load_crt) ,
 diff --git a/Source/Teensy/MinimalBoot/Common/Common_Defs.h b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
-index 2122be4..3fac565 100644
+index a0a6e5f..f447e16 100644
 --- a/Source/Teensy/MinimalBoot/Common/Common_Defs.h
 +++ b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
 @@ -14,6 +14,7 @@
@@ -125,7 +125,7 @@ index 2122be4..3fac565 100644
  
  
 -#define TRVersion              "0.9"    //*VERSION*
-+#define TRVersion              "0.9.0.36"    //*VERSION*  (stock 0.9 + VDrive rev 36)
++#define TRVersion              "0.9.0.37"    //*VERSION*  (stock 0.9 + VDrive rev 37)
  #ifdef Fab04_Features
     char strVersionNumber[] = "TeensyROM+ v" TRVersion; 
  #else
@@ -201,7 +201,7 @@ index ae1d60b..097c10e 100644
        &IOHndlr_KernalReplace,      //IOH_KernalReplace,
     #endif  
 diff --git a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_KernalReplace.c b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_KernalReplace.c
-index d7213cf..c2557a1 100644
+index 7b80443..ed2fc07 100644
 --- a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_KernalReplace.c
 +++ b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_KernalReplace.c
 @@ -48,6 +48,15 @@ stcIOHandlers IOHndlr_KernalReplace =
@@ -220,22 +220,7 @@ index d7213cf..c2557a1 100644
  
  enum enumHIRAM_States
  {
-@@ -68,14 +77,21 @@ FASTRUN bool KernalCheck(uint16_t Address, bool R_Wn)
-    if (!R_Wn || (Address & 0xe000) != 0xe000 || !GP9_BA(ReadGPIO9)) return false;  //continue with cycle processing
- 
-    // CPU read access from address $E000..$FFFF
--   
-+
-+
-+#ifndef KERNAL_MONITOR_ONLY
-+   //HIRAM known to be RAM (no write to $00/$01 since it was sensed): the C64's own RAM answers,
-+   //so leave /GAME and the data bus alone. Asserting /GAME (Ultimax) here disturbs the RAM read.
-+   if (HIRAM_State == HIRAM_State_RAM) return true;
-+#endif
-+
-    //prepare modified Address for Skoe HIRAM check (if needed)
-    uint32_t RegAddrBits = ((Address & 0xbfff) << 16); //drive A14 low
-    CORE_PIN19_PORTSET = RegAddrBits; //set address port value to be ready for output drive
+@@ -235,7 +244,7 @@ FASTRUN bool KernalCheck(uint16_t Address, bool R_Wn)
     CORE_PIN19_PORTCLEAR = ~RegAddrBits & GP6_AddrMask;
     
     //prepare the kernal byte to be pushed onto the bus (if needed)
@@ -244,7 +229,7 @@ index d7213cf..c2557a1 100644
     uint32_t RegDataBits = (Data & 0x0F) | ((Data & 0xF0) << 12);
     CORE_PIN10_PORTSET = RegDataBits;
     CORE_PIN10_PORTCLEAR = ~RegDataBits & GP7_DataMask;
-@@ -98,7 +114,6 @@ FASTRUN bool KernalCheck(uint16_t Address, bool R_Wn)
+@@ -258,7 +267,6 @@ FASTRUN bool KernalCheck(uint16_t Address, bool R_Wn)
        while (ARM_DWT_CYCCNT - begin < Cyc_KernProp);
        
        HIRAM_State = (GP9_ROMH(ReadGPIO9)==0 ? HIRAM_State_ROM : HIRAM_State_RAM); //read ROMH to determine if it's a Kernal or RAM access
@@ -252,18 +237,17 @@ index d7213cf..c2557a1 100644
        SetAddrPortDirIn;//set address ports to input
        SetAddrBufsIn;   //set address buffers to input
        SetExROMDeassert;
-@@ -206,6 +221,10 @@ FLASHMEM void InitHndlr_KERNALReplace_PreStart() //not called automatically via
+@@ -366,6 +374,9 @@ FLASHMEM void InitHndlr_KERNALReplace_PreStart() //not called automatically via
     //Serial.printf("Read %lu Bytes in %lumS\n", CharNum, millis()-StartmS);
     Serial.printf("Read %lu Bytes\nKernal replace Enabled\n", CharNum);
     LoadFile.close();
 +#ifndef KERNAL_NO_DTCM
 +   memcpy(KernalFast, KernalBin, 8192); //fast copy for the bus ISR
 +#endif
-+
-    delay(250);
-    
-    //hook kernal checks: runs before BASIC init, well before any PRG-load handshake (see
-@@ -215,6 +234,10 @@ FLASHMEM void InitHndlr_KERNALReplace_PreStart() //not called automatically via
+    KSenseApplyMode();
+ #ifdef Fab04_FullDMACapable
+    KDS_State = KDS_Idle;
+@@ -381,6 +392,10 @@ FLASHMEM void InitHndlr_KERNALReplace_PreStart() //not called automatically via
     fKernRepl = &KernalCheck;
  #else
     fBusSnoop = &KernalCheck;
@@ -352,10 +336,10 @@ index adca184..6f80b52 100644
           {
 diff --git a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c
 new file mode 100644
-index 0000000..76c7d76
+index 0000000..f4c2c71
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c
-@@ -0,0 +1,1090 @@
+@@ -0,0 +1,1094 @@
 +// "VDrive" Special IO for TeensyROM+: replacement KERNAL + virtual IEC drive.
 +//   unit 0 = SD card, unit 1 = USB drive. Device numbers are automatic by default: the first free numbers from 8 up
 +//   (the KERNAL probes the real serial bus on the first disk access of a run, see vdrive_io.h), so 8 (SD) and 9 (USB) when
@@ -949,6 +933,10 @@ index 0000000..76c7d76
 +{
 +   vdProbing = false;
 +   HIRAM_State = HIRAM_State_Unknown;
++#ifdef Fab04_FullDMACapable
++   KDS_State = KDS_Idle;            // the C128's DMA HIRAM sense: KernalCheck was unhooked, no sense can be in flight
++   KDS_Read01Valid = false;
++#endif
 +   fBusSnoop = vdProbeSnoop;
 +   VD_BannerUnits(KernalFast, 8192, true);   // the probed numbers, so the banner need not probe again
 +   Serial.printf("VDrive: bus probe gave dev %d (SD), %d (USB)\n", vio->vd.dev[0], vio->vd.dev[1]);
@@ -4731,10 +4719,10 @@ index 0000000..33f4d7a
 +#endif
 +#endif
 diff --git a/Source/Teensy/SerUSBIO.ino b/Source/Teensy/SerUSBIO.ino
-index b54638c..800a484 100644
+index 9a1901b..0b10eca 100644
 --- a/Source/Teensy/SerUSBIO.ino
 +++ b/Source/Teensy/SerUSBIO.ino
-@@ -608,6 +608,12 @@ FLASHMEM void ProcessCommand()
+@@ -622,6 +622,12 @@ FLASHMEM void ProcessCommand()
        case FWCheckToken: //Check firmware type
           SendU16(FWFullToken);
           return;   
@@ -4747,7 +4735,7 @@ index b54638c..800a484 100644
     }
  
  
-@@ -617,6 +623,21 @@ FLASHMEM void ProcessCommand()
+@@ -631,6 +637,21 @@ FLASHMEM void ProcessCommand()
         TokenVal == GetDirectoryToken || TokenVal == GetDirNDJSONToken ||
         TokenVal == SendFileToken     || TokenVal == PostFileToken     ||
         TokenVal == CopyFileToken     || TokenVal == DeleteFileToken);
@@ -4769,7 +4757,7 @@ index b54638c..800a484 100644
  
     if (CurrentIOHandler != IOH_TeensyROM && !ASIDAllowed)
     {
-@@ -826,6 +847,82 @@ FLASHMEM void LaunchFile()
+@@ -840,6 +861,82 @@ FLASHMEM void LaunchFile()
     }
  }
  

@@ -37,14 +37,14 @@ Firmware integration and usage: `firmware/README.md`.
   held back while the probe runs. Also `VIO_MENU` (mailbox command 16): back to the TR menu.
 * **Bus scan time on the first access:** no noticeable delay on hardware (owner, 2026-10-30).
 * **Not yet checked on hardware:**
-  `.d71` at all, `STATUS` compared with a real drive, IRQ/STOP-key interplay during loads.
+  `.d71` at all, `STATUS` compared with a real drive, IRQ/STOP-key interplay during loads, a C128 in C64 mode (0.9.0.37).
 * **BASIC test programs** (`tests/basic/`, built into `build/testdisk/vdtest.d64` by `make testdisk`) run inside VICE in `make test` and on the C64; they
   found two real bugs that unit tests missed: `CIOUT` must return `A` = the byte sent (CHROUT tail-jumps into it; BASIC's PRINT broke after a
   number), and `U0>` must also be accepted with PRINT#'s trailing CR.
   `VDSUITE` (tests/basic/vdsuite.bas, the "Not yet checked" items in one menu program; 176 checks, all pass in the `basic` VICE run, **not on hardware yet**) also needs `vdbad.d64` and
   `vdplain.prg` from `make testdisk` (`tools/suite_files.py`, shared with the mock) in the card root. It found a drive bug, fixed in 0.9.0.36: a successful command did not reset an error nobody
   read (a 1541 says `00, OK` after it), so a stale `62` from an earlier `LOAD` came back after a good `CD:/`. Now every OPEN and command starts at `00` (`VD_UNLSN` in `vdrive.c`; CLOSE keeps its own error).
-* **Lessons from bring-up (keep):** (1) a flat NTSC C128 in C64 mode did not reliably serve the replacement KERNAL: use a real C64, and
+* **Lessons from bring-up (keep):** (1) a flat NTSC C128 in C64 mode did not reliably serve the replacement KERNAL (the Skoe HIRAM sense cannot work there; upstream's DMA sense, in since 0.9.0.37, is meant to fix it, untested with VDrive): use a real C64, and
   verify "is it really served" with the banner (`kernal-tr.bin` from 0.9.0.36 prints `VDRIVE SD n USB n` on the second line, `kernal-banner.bin` `TRVDRIVE` on the first; a stock image can't show either). (2) All SD/USB probing
   must happen in `VDrive_PreStart()` while the C64 waits, not at handler start. (3) Bus-handler data in fast RAM1, token STAT handshake,
   abort on a failed block (see Gotchas). (4) `FILE_WRITE` creates missing files on SD/USB: always probe with `FILE_READ` first.
@@ -100,7 +100,10 @@ Firmware integration and usage: `firmware/README.md`.
 * 0.9.0.36: the banner's second line shows the drives, ` 64K RAM  38911 FREE  VDRIVE SD 8 USB 9` (38 wide like stock; `SD10`, `NOSD`, `NOUSB`; `patches/vdbanner.s`, docs/DESIGN.md 38); the top line is stock again (the `TRVDRIVE` text is `bringup/banner.s`, only in `kernal-banner.bin`).
   The firmware writes per unit `$FE` absent / fixed number / `$FF` automatic (`0 0` as built = not written: the stock line) after the tag `VDUNITS:` in `KernalFast` (`VD_BannerUnits`, in PreStart and again with the probed numbers in `VD_ProbeFinish`); without the menu probe the KERNAL probes the real bus for automatic units with the hook-free `iec_listen`/`iec_second`/`iec_unlsn`.
   py65 (`tests/test_banner.py`), `tests/fw_host`, VICE (`basic`: `SD 8 NOUSB`; `scan`: `SD 9 USB11`); **not on hardware yet**. Rebuild `kernal-tr.bin`.
-* Known open risks: C128 not supported (see above); tape (device 1) intentionally broken (its code space was reclaimed: $F8E2-$FB8D, $FB97-$FCD0).
+* 0.9.0.37: rebased on upstream with [TeensyROM PR 78](https://github.com/SensoriumEmbedded/TeensyROM/pull/78) merged (Kernal Replace senses HIRAM by DMA on a C128: the Skoe sense's A14 never reaches
+  the PLA there). The PR carries the same early `HIRAM_State_RAM` return as our fix, so that hunk left `kernalreplace-fixes.patch` (which keeps `KernalFast`, the Ethernet poll and the trace);
+  `VD_ProbeFinish` also resets the DMA sense state (`KDS_State`) when it re-hooks `KernalCheck`. Firmware builds (`TeensyROM+_0.9.0.37_full.hex`); the DMA sense is confirmed on a C128 by the TR maintainer, **VDrive not run on a C128**.
+* Known open risks: C128 untested with VDrive (the DMA sense above should fix lesson 1; not run); tape (device 1) intentionally broken (its code space was reclaimed: $F8E2-$FB8D, $FB97-$FCD0).
 
 ## Layout
 ```

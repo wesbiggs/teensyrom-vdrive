@@ -591,6 +591,10 @@ FLASHMEM static void VD_ProbeFinish()
 {
    vdProbing = false;
    HIRAM_State = HIRAM_State_Unknown;
+#ifdef Fab04_FullDMACapable
+   KDS_State = KDS_Idle;            // the C128's DMA HIRAM sense: KernalCheck was unhooked, no sense can be in flight
+   KDS_Read01Valid = false;
+#endif
    fBusSnoop = vdProbeSnoop;
    VD_BannerUnits(KernalFast, 8192, true);   // the probed numbers, so the banner need not probe again
    Serial.printf("VDrive: bus probe gave dev %d (SD), %d (USB)\n", vio->vd.dev[0], vio->vd.dev[1]);

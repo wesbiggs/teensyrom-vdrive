@@ -34,6 +34,7 @@ Real C64 (breadbin), TR+ firmware 0.9 plus the VDrive patch (the handler is not 
 ## Fix (VDrive firmware 0.9.0.13, `firmware/kernalreplace-fixes.patch`)
 Confirmed on hardware: once HIRAM is known to be RAM (sensed, and no write to `$00`/`$01` since), `KernalCheck` returns before `SetGameAssert`.
 `VAULTTEST` is then clean (0 errors in every column), with the stock image and ours. Quest for the King plays for long stretches.
+Upstream since [TeensyROM PR 78](https://github.com/SensoriumEmbedded/TeensyROM/pull/78) (with the C128 DMA HIRAM sense); `kernalreplace-fixes.patch` no longer carries it (0.9.0.37).
 
 Three more findings from that work, useful for the Kernal Replace code in general:
 * **HIRAM cannot be tracked from the writes.** The 6510 does not put the value of an on-chip port write (`$00`/`$01`) on the external data bus (the bus
