@@ -116,7 +116,7 @@ index 46e27c6..72c265a 100644
       rtFileCrt  , IOH_None         , (char*)"Super Expander 64"                , (uint8_t*)super_expander_64_crt      , sizeof(super_expander_64_crt) ,
       rtFileCrt  , IOH_None         , (char*)"Epyx Fast Load Cart"              , (uint8_t*)Epyx_Fast_Load_crt         , sizeof(Epyx_Fast_Load_crt) ,
 diff --git a/Source/Teensy/MinimalBoot/Common/Common_Defs.h b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
-index a0a6e5f..ddde967 100644
+index a0a6e5f..10536ad 100644
 --- a/Source/Teensy/MinimalBoot/Common/Common_Defs.h
 +++ b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
 @@ -14,6 +14,7 @@
@@ -132,7 +132,7 @@ index a0a6e5f..ddde967 100644
  
  
 -#define TRVersion              "0.9"    //*VERSION*
-+#define TRVersion              "0.9.0.40"    //*VERSION*  (stock 0.9 + VDrive rev 40)
++#define TRVersion              "0.9.0.41"    //*VERSION*  (stock 0.9 + VDrive rev 41)
  #ifdef Fab04_Features
     char strVersionNumber[] = "TeensyROM+ v" TRVersion; 
  #else
@@ -208,7 +208,7 @@ index ae1d60b..097c10e 100644
        &IOHndlr_KernalReplace,      //IOH_KernalReplace,
     #endif  
 diff --git a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_KernalReplace.c b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_KernalReplace.c
-index 7b80443..ed2fc07 100644
+index 7b80443..57ce96f 100644
 --- a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_KernalReplace.c
 +++ b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_KernalReplace.c
 @@ -48,6 +48,15 @@ stcIOHandlers IOHndlr_KernalReplace =
@@ -244,7 +244,16 @@ index 7b80443..ed2fc07 100644
        SetAddrPortDirIn;//set address ports to input
        SetAddrBufsIn;   //set address buffers to input
        SetExROMDeassert;
-@@ -366,6 +374,9 @@ FLASHMEM void InitHndlr_KERNALReplace_PreStart() //not called automatically via
+@@ -313,6 +321,8 @@ FLASHMEM void FreeKernalBin()
+ #endif
+ }
+ 
++void FnetLoopPollStart(); //Teensy.ino
++
+ FLASHMEM void InitHndlr_KERNALReplace_PreStart() //not called automatically via init; called earlier, manually, from KERNALPreStart()
+ {
+ #ifdef Fab04_GlobalKernalReplace
+@@ -366,6 +376,9 @@ FLASHMEM void InitHndlr_KERNALReplace_PreStart() //not called automatically via
     //Serial.printf("Read %lu Bytes in %lumS\n", CharNum, millis()-StartmS);
     Serial.printf("Read %lu Bytes\nKernal replace Enabled\n", CharNum);
     LoadFile.close();
@@ -254,12 +263,12 @@ index 7b80443..ed2fc07 100644
     KSenseApplyMode();
  #ifdef Fab04_FullDMACapable
     KDS_State = KDS_Idle;
-@@ -381,6 +392,10 @@ FLASHMEM void InitHndlr_KERNALReplace_PreStart() //not called automatically via
+@@ -381,6 +394,10 @@ FLASHMEM void InitHndlr_KERNALReplace_PreStart() //not called automatically via
     fKernRepl = &KernalCheck;
  #else
     fBusSnoop = &KernalCheck;
 +#endif
-+   { extern void FnetLoopPollStart(); FnetLoopPollStart(); } //Ethernet poll off the PIT timer from now on, not only once loop() sees the new handler (~0.4 s later: ~15 late ISRs)
++   FnetLoopPollStart(); //Ethernet poll off the PIT timer from now on (see FnetLoopPollService in Teensy.ino)
 +#ifdef LATE_ISR_TRACE  //late-ISR counters (ISRs.c) count from the launch on
 +   { extern volatile uint32_t LateIsrCnt, LateIsrBkt[4], TraceStartMs, TraceLoops; LateIsrCnt = 0; for (int i = 0; i < 4; i++) LateIsrBkt[i] = 0; TraceStartMs = millis(); TraceLoops = 0; }
  #endif
@@ -1694,31 +1703,37 @@ index 59ce0b0..9185bc4 100644
     }
     //else
 diff --git a/Source/Teensy/MinimalBoot/Common/IO_Handlers/Swift_ATcommands.c b/Source/Teensy/MinimalBoot/Common/IO_Handlers/Swift_ATcommands.c
-index 24be470..4d34d53 100644
+index 24be470..0ec0eeb 100644
 --- a/Source/Teensy/MinimalBoot/Common/IO_Handlers/Swift_ATcommands.c
 +++ b/Source/Teensy/MinimalBoot/Common/IO_Handlers/Swift_ATcommands.c
-@@ -410,7 +410,7 @@ FLASHMEM ATRespCode AT_Hook(char* CmdArg)
+@@ -410,7 +410,11 @@ FLASHMEM ATRespCode AT_Hook(char* CmdArg)
  }
  
  
--FLASHMEM ATRespCode ProcessATCommand()
-+FLASHMEM ATRespCode ProcessATCommandInner()
++#if defined(Fab04_GlobalKernalReplace) || defined(Fab04_VDrive)
++FLASHMEM ATRespCode ProcessATCommandInner()  //wrapped by ProcessATCommand() below
++#else
+ FLASHMEM ATRespCode ProcessATCommand()
++#endif
  {
     char* CmdMsg = TxMsg; //local pointer for manipulation
     stcATCommand ATCommands[] =
-@@ -466,3 +466,12 @@ FLASHMEM ATRespCode ProcessATCommand()
+@@ -466,3 +470,15 @@ FLASHMEM ATRespCode ProcessATCommand()
     AddToPETSCIIStrToRxQueueLN(TxMsg);
     return ATRC_ERROR;
  }
 +
++#if defined(Fab04_GlobalKernalReplace) || defined(Fab04_VDrive)
 +extern volatile bool FnetLoopPoll;
 +FLASHMEM ATRespCode ProcessATCommand()
-+{  //connect/DHCP/DNS block in here waiting for the stack, which then needs its PIT poll timer (masked while the poll runs from loop())
++{  //SwiftLink can run while the KERNAL is replaced: connect/DHCP/DNS block in here waiting for the stack, which then needs
++   //its PIT poll timer (masked while the poll runs from loop(), see FnetLoopPollService in Teensy.ino)
 +   if (FnetLoopPoll) NVIC_ENABLE_IRQ(IRQ_PIT);
 +   ATRespCode r = ProcessATCommandInner();
 +   if (FnetLoopPoll) NVIC_DISABLE_IRQ(IRQ_PIT);
 +   return r;
 +}
++#endif
 diff --git a/Source/Teensy/MinimalBoot/Common/ISRs.c b/Source/Teensy/MinimalBoot/Common/ISRs.c
 index 0425e49..c6dc4f9 100644
 --- a/Source/Teensy/MinimalBoot/Common/ISRs.c
@@ -6149,27 +6164,30 @@ index 0000000..4b0970a
 +
 +#endif /* VDCONFIG_PRG_H */
 diff --git a/Source/Teensy/Teensy.ino b/Source/Teensy/Teensy.ino
-index 3530c17..cc0c070 100644
+index 3530c17..a9e8113 100644
 --- a/Source/Teensy/Teensy.ino
 +++ b/Source/Teensy/Teensy.ino
-@@ -55,6 +55,16 @@ uint8_t RAM_Image[RAM_ImageSize]; //Main RAM1 file storage buffer
+@@ -55,6 +55,19 @@ uint8_t RAM_Image[RAM_ImageSize]; //Main RAM1 file storage buffer
  volatile uint8_t BtnPressed = false; 
  volatile uint8_t EmulateVicCycles = false;
  uint8_t CurrentIOHandler = IOH_None;
 +#ifdef LATE_ISR_TRACE
 +volatile uint32_t TraceStartMs = 0, TraceLoops = 0; //startup LATE-ISR trace, set at Kernal Replace/VDrive PreStart
 +#endif
-+volatile bool FnetLoopPoll = false; //Ethernet stack polled from loop(), PIT timer masked (see loop)
-+volatile bool FnetPollHold = false; //set by Kernal Replace/VDrive PreStart, before CurrentIOHandler changes; cleared with the main menu
-+void FnetLoopPollStart()
-+{
++#ifdef Fab04_KernalReplace
++volatile bool FnetLoopPoll = false; //Ethernet stack polled from loop(), PIT timer masked (see FnetLoopPollService)
++volatile bool FnetPollHold = false; //set by Kernal Replace PreStart, before CurrentIOHandler changes; cleared with the main menu
++void FnetLoopPollService();
++FLASHMEM void FnetLoopPollStart()
++{  //start polling from loop() right away: loop() only sees the new handler ~0.4 s after the launch, and late phi2 interrupts in that time crashed programs
 +   FnetPollHold = true;
 +   if (fnet_netif_get_default() != 0 && !FnetLoopPoll) { NVIC_DISABLE_IRQ(IRQ_PIT); FnetLoopPoll = true; }
 +}
++#endif
  StructMenuItem *DriveDirMenu = NULL;
  uint16_t NumDrvDirMenuItems = 0;
  char DriveDirPath[MaxPathLength];
-@@ -377,6 +387,78 @@ void loop()
+@@ -377,6 +390,54 @@ void loop()
     if (IO1[rwRegPwrUpDefaults2] & rpud2TRContEnabled)
        if (USBHostSerial.available()) ServiceSerial(&USBHostSerial);
  
@@ -6217,46 +6235,58 @@ index 3530c17..cc0c070 100644
 +      }
 +   }
 +#endif
-+   {  //While a handler that snoops the bus is active, run the Ethernet stack poll from here instead of NativeEthernet's 1ms PIT timer ISR:
-+      //measured with the Kernal Replace late-ISR counters, the poll in the PIT interrupt made ~39 phi2 interrupts/s late (>1.1us) even with
-+      //the GPIO interrupt at a higher priority; called from loop() they are down to about one every 2s. (The PIT is only used by that timer,
-+      //except for ASID, which is not in this list.)
-+      static uint32_t lastPollUs = 0;
-+      bool want = FnetPollHold || (CurrentIOHandler == IOH_Swiftlink)
-+#ifdef Fab04_GlobalKernalReplace
-+                  || (fKernRepl != NULL)
-+#endif
 +#ifdef Fab04_KernalReplace
-+                  || (CurrentIOHandler == IOH_KernalReplace)
++   FnetLoopPollService();
 +#endif
-+#ifdef Fab04_VDrive
-+                  || (CurrentIOHandler == IOH_VDrive) || (CurrentIOHandler == IOH_VDriveSwift)
-+#endif
-+                  ;
-+      want = want && (fnet_netif_get_default() != 0); //stack initialized
-+      if (want != FnetLoopPoll)
-+      {
-+         FnetLoopPoll = want;
-+         if (want) NVIC_DISABLE_IRQ(IRQ_PIT); else NVIC_ENABLE_IRQ(IRQ_PIT);
-+      }
-+      if (FnetLoopPoll && micros() - lastPollUs >= 1000)
-+      {
-+         lastPollUs = micros();
-+         fnet_poll();
-+      }
-+   }
++
  #ifdef FeatTCPListen
     if (NetListenEnable)
     {
-@@ -405,6 +487,7 @@ FLASHMEM void SetUpMainMenuROM()
+@@ -399,11 +460,43 @@ void loop()
+    if (IOHandler[CurrentIOHandler]->PollingHndlr != NULL) IOHandler[CurrentIOHandler]->PollingHndlr();
+ }
+ 
++#ifdef Fab04_KernalReplace
++FLASHMEM void FnetLoopPollService()
++{  //While Kernal Replace serves the KERNAL, run the Ethernet stack poll from here instead of NativeEthernet's 1ms PIT timer ISR:
++   //with the poll in the PIT interrupt, ~39 phi2 interrupts/s were late (>1.1us) even with the GPIO interrupt at a higher priority,
++   //and a late one on the HIRAM sense after a $01 write corrupts the read; called from loop() they are down to about one every 2s.
++   //(The PIT is only used by that timer, except for ASID, which masks it itself.)
++   static uint32_t lastPollUs = 0;
++   bool want = FnetPollHold || (CurrentIOHandler == IOH_KernalReplace)
++#ifdef Fab04_VDrive
++               || VD_IsHandler(CurrentIOHandler)
++#endif
++#ifdef Fab04_GlobalKernalReplace
++               || (fKernRepl != NULL)
++#endif
++               ;
++   want = want && (fnet_netif_get_default() != 0); //stack initialized
++   if (want != FnetLoopPoll)
++   {
++      FnetLoopPoll = want;
++      if (want) NVIC_DISABLE_IRQ(IRQ_PIT); else NVIC_ENABLE_IRQ(IRQ_PIT);
++   }
++   if (FnetLoopPoll && micros() - lastPollUs >= 1000)
++   {
++      lastPollUs = micros();
++      fnet_poll();
++   }
++}
++#endif
++
+ FLASHMEM void SetUpMainMenuROM()
+ {
+    PendingfBusSnoop = fBusSnoop = NULL;
  #ifdef Fab04_GlobalKernalReplace
     fKernRepl = NULL;
- #endif
++#endif
++#ifdef Fab04_KernalReplace
 +   FnetPollHold = false;
+ #endif
     SetDMADeassert;
     SetIRQDeassert;
-    SetNMIDeassert;
-@@ -530,6 +613,11 @@ FLASHMEM void SetEEPDefaults()
+@@ -530,6 +623,11 @@ FLASHMEM void SetEEPDefaults()
     EEPROM.write(eepAdMIDISettings, 0xff);  //see RegMIDISettingsMasks
     EEPROM.write(eepAdMIDISettings2, 0x0f); //see RegMIDISettingsMasks2
     

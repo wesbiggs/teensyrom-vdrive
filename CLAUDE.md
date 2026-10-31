@@ -61,7 +61,7 @@ Firmware integration and usage: `firmware/README.md`.
   docs/UPSTREAM-kernal-replace-ram-under-rom.md). Fixed in 0.9.0.13 (`firmware/kernalreplace-fixes.patch`: no `/GAME` assert when HIRAM is known to be RAM; the image is served from a DTCM copy).
   (2) With Ethernet initialized (no cable needed) NativeEthernet runs the whole stack from a 1 ms PIT timer ISR, which made ~39 phi2 interrupts/s late; the first read after a `$01` write
   (the HIRAM sense) then answered late and q4k and CCGMS+SwiftLink over TCP glitched, NMI'd or froze. Masking the ENET interrupt did nothing. 0.9.0.14 masks `IRQ_PIT` and calls
-  `fnet_poll()` from `loop()` while a Kernal Replace/VDrive/SwiftLink handler runs (`ProcessATCommand` turns PIT back on while it runs, since `connect` etc. block). 0.9.0.15 starts that
+  `fnet_poll()` from `loop()` while a Kernal Replace/VDrive handler runs (`ProcessATCommand` turns PIT back on while it runs, since `connect` etc. block; plain SwiftLink on the stock KERNAL dropped from the list in 0.9.0.41, see below). 0.9.0.15 starts that
   poll in `PreStart` (until then ~15 late ISRs in the first 0.4 s after a launch crashed q4k; found with `LATE_ISR_TRACE`, a compile-time debug trace, see firmware/README.md); steady state is 0-1 late ISRs/s. CCGMS still glitches early in a BBS receive (not crashing; cause open).
   Tried and dropped: a partial-serve map (broke disk access). Ideas left: an AT command to stop Ethernet; find the rest of the late ISRs.
 * **Feature notes (all hardware-verified unless listed above as not checked):**
@@ -111,6 +111,11 @@ Firmware integration and usage: `firmware/README.md`.
 * 0.9.0.39: `S:NAME.D64` (`.D71`/`.D81`, a comma list, a path or CMD path) with nothing mounted deletes image files on the card (host callback `scratch`, glue `VD_Scratch`, `cmd_scratch_images` in `vdrive.c`;
   docs/DESIGN.md 39). Exact names only (33 for a pattern), images only (64); a file with the FAT read-only attribute stays (26: SdFat will not open it for writing). `L:` on a card image
   is **not possible**: Teensyduino 1.61's SdFat 2.1.2 has no call that sets the attribute (set it on a PC). Unit, glue host and VICE (VDSUITE `8`) tests; not on hardware.
+* 0.9.0.41: the Ethernet poll from `loop()` is now upstream [TeensyROM PR 85](https://github.com/SensoriumEmbedded/TeensyROM/pull/85), carried byte for byte as `firmware/kernal-fnet-poll.patch`
+  (applied first by `make_tr_patch.sh`; drop it when #85 merges). `kernalreplace-fixes.patch` keeps only `KernalFast` and the `LATE_ISR_TRACE` trace, on top of it. Differences from 0.9.0.40:
+  the poll code is a `FLASHMEM` function (`FnetLoopPollService`), guarded by `Fab04_KernalReplace`; plain SwiftLink on the stock KERNAL no longer switches to the loop poll (never measured);
+  `make_tr_patch.sh` adds the VDrive Special IOs (`VD_IsHandler`) to the poll list and compiles the `ProcessATCommand` PIT unmask under `Fab04_VDrive` as well (#85 has it only under
+  `Fab04_GlobalKernalReplace`), since VDrive+SwiftLink runs AT commands with the poll on. Firmware builds (TR+ main image RAM1 free for locals 66172, padding 25592); fw_host passes; not on hardware.
 * Known open risks: C128 untested with VDrive (the DMA sense above should fix lesson 1; not run); tape (device 1) intentionally broken (its code space was reclaimed: $F8E2-$FB8D, $FB97-$FCD0).
 
 ## Layout
@@ -169,7 +174,7 @@ The full `make test`, VICE runs included, works in a cloud session; do not skip 
   patch edits). It shows on the C64 menu title, in the hex file name (`TeensyROM+_0.9.0.1_full.hex`, never confused with stock
   `0.9_full.hex`) and in the flash tool. Keep it digits-and-dots: `tools/lib/trserial.mjs` parses `TeensyROM+? v[\d.]+`.
 * **Keep the patch hunks away from lines upstream is changing.** `tools/make_tr_patch.sh` places edits so they apply on current `main` *and* on the open TeensyROM PRs that touch the same files
-  (written for #39 and #61-#70, all merged by `5728ddc9`; checked at the 0.9.0.38 rebase on `fa509421` against open #79, #81-#83; #80 is our SwiftLink Tx fix, which conflicts with `swiftlink-tx-fix.patch` by design: drop that patch when it merges): the VDrive entries in the `enumIOHandlers` / `IOHandler[]` lists sit *before* the Kernal Replace entries (upstream appends GeoRAM after `IOH_Debug`),
+  (written for #39 and #61-#70, all merged by `5728ddc9`; checked at the 0.9.0.38 rebase on `fa509421` against open #79, #81-#83; #80 is our SwiftLink Tx fix, which conflicts with `swiftlink-tx-fix.patch` by design: drop that patch when it merges; likewise #85 and `kernal-fnet-poll.patch`, 0.9.0.41 checked against #81-#83): the VDrive entries in the `enumIOHandlers` / `IOHandler[]` lists sit *before* the Kernal Replace entries (upstream appends GeoRAM after `IOH_Debug`),
   the Busy-refusal bypass in `SerUSBIO.ino` is a block after the `ASIDAllowed` statement (not a rewrite of the `if`), the menu remap in `IOHandlers.ino` is an `IOHandlerInit` macro defined before `IOHandlerSelectInit()` and `#undef`'d after it (0.9.0.38: #81 rewrites the function's first lines; the old case ahead of upstream's call also bypassed its GEOS case), and `FnetPollHold = false` follows the `#endif`
   in `SetUpMainMenuROM()`. Test a regenerated patch with `git apply --check` on `git archive origin/main` and on `git merge-tree --write-tree origin/main pr/N` trees. The Special IO list order is VDrive, VDrive+Swift,
   VDrive+Swift+REU, VDrive+REU, Kernal Replace, Debug (0.9.0.31): a stored default Special IO (`eepAdNextIOHndlr`, an index) of Kernal Replace from an older build now selects a VDrive entry.

@@ -12,7 +12,9 @@ mkdir -p "$W/Source/Teensy"; cp "$TR/Source/Teensy/Teensy.ino" "$TR/Source/Teens
 M=Source/C64/MainMenuCRT/source; mkdir -p "$W/$M" "$W/Source/Teensy/TRMenuFiles/ROMs"
 cp "$TR/$M/MainMenu.asm" "$W/$M/"; cp "$TR/Source/Teensy/TRMenuFiles/ROMs/TeensyROMC64.h" "$W/Source/Teensy/TRMenuFiles/ROMs/"
 cd "$W"; git init -q; git add -A; git -c user.name=x -c user.email=x@x commit -qm base
-# fixes to upstream Kernal Replace (RAM under the KERNAL, fast image copy, late-ISR counters): applied before the edits below
+# upstream PR #85 (Ethernet stack polled from loop() while Kernal Replace serves the KERNAL), byte for byte; drop it once merged
+git apply "$HERE/firmware/kernal-fnet-poll.patch"
+# fixes to upstream Kernal Replace (fast image copy, late-ISR counters), on top of #85: applied before the edits below
 git apply "$HERE/firmware/kernalreplace-fixes.patch"
 # fix to upstream SwiftLink: Tx bytes coalesced, never a blocking client.write() (it hung loop() with the stack polled from there)
 git apply "$HERE/firmware/swiftlink-tx-fix.patch"
@@ -28,6 +30,15 @@ edit(f"{C}/Common_Defs.h",
      "   #define Fab04_KernalReplace        //include Kernal Replacement support\n",
      "   #define Fab04_KernalReplace        //include Kernal Replacement support\n"
      "   #define Fab04_VDrive               //virtual IEC drive for the replacement KERNAL (needs Fab04_KernalReplace)\n")
+# #85's loop poll and AT-command PIT unmask also for the VDrive Special IOs (all serve the replaced KERNAL; VDrive+SwiftLink runs AT commands)
+edit("Source/Teensy/Teensy.ino",
+     "   bool want = FnetPollHold || (CurrentIOHandler == IOH_KernalReplace)\n",
+     "   bool want = FnetPollHold || (CurrentIOHandler == IOH_KernalReplace)\n"
+     "#ifdef Fab04_VDrive\n               || VD_IsHandler(CurrentIOHandler)\n#endif\n")
+for old in ("#ifdef Fab04_GlobalKernalReplace\nFLASHMEM ATRespCode ProcessATCommandInner()",
+            "#ifdef Fab04_GlobalKernalReplace\nextern volatile bool FnetLoopPoll;"):
+    edit(f"{C}/IO_Handlers/Swift_ATcommands.c", old,
+         old.replace("#ifdef Fab04_GlobalKernalReplace", "#if defined(Fab04_GlobalKernalReplace) || defined(Fab04_VDrive)"))
 import re
 base = re.search(r'#define TRVersion\s+"([^"]+)"', open(f"{C}/Common_Defs.h").read()).group(1)
 rev = open(sys.argv[2]).read().strip()                      # firmware/REV: bumped by hand on firmware-affecting commits
