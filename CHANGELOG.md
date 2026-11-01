@@ -8,6 +8,47 @@
   and the answers came late. Rebased on upstream `136baa83`, which picks the C64 or C128 check once per launch. Firmware only; the KERNAL
   image is unchanged.
 
+## v0.9.0.41
+
+### Changed
+- The Ethernet loop poll (Kernal Replace with Ethernet initialized: `fnet_poll()` from `loop()` instead of the 1 ms PIT interrupt) is now
+  carried as upstream [TeensyROM PR 85](https://github.com/SensoriumEmbedded/TeensyROM/pull/85), byte for byte (`firmware/kernal-fnet-poll.patch`,
+  applied first by `tools/make_tr_patch.sh`); `kernalreplace-fixes.patch` keeps only `KernalFast` and the `LATE_ISR_TRACE` debug trace. The VDrive
+  Special IOs join the poll list, and the AT-command PIT unmask also builds under `Fab04_VDrive`. Plain SwiftLink on the stock KERNAL no
+  longer switches to the loop poll, as in the PR (it was never measured). Firmware builds for TR+ and TR; not on hardware.
+
+## v0.9.0.40
+
+### Changed
+- `VDrive Config` takes the TR menu's colour theme and look: a reverse banner, keys in reverse in the option colour with their meaning in
+  the sources colour, paths in the name colour, messages in the time colour. The colours come as a third `!STATE` line (the seven colour
+  references as hex digits, which the Teensy keeps after handing over to the VDrive handler); without it, the menu's defaults. Host tests
+  (py65, firmware glue); not on hardware.
+
+## v0.9.0.39
+
+### Added
+- **Deleting image files on the card:** with nothing mounted, `S:NAME.D64` (also `.D71` / `.D81`, a comma list, a folder path or a CMD
+  path) deletes image files. Exact names only (`33` for a pattern), images only (`64`), no such name `34`; a file with the FAT read-only
+  attribute stays (`26`). Answers `01,FILES SCRATCHED,nn` as on a disk (`docs/DESIGN.md` section 39). `L:` for card images is not
+  possible (SdFat 2.1.2 cannot set the attribute). VDSUITE gets section 8 (clean-up) and 186 checks. Unit, glue and VICE tests; not on hardware.
+
+## v0.9.0.38
+
+### Changed
+- The VDrive menu remap in `IOHandlers.ino` is now a macro defined before `IOHandlerSelectInit()` instead of a case inserted above
+  upstream's menu case, so the patch also applies on top of TeensyROM PR 81 (which rewrites that line and adds a GEOS case first);
+  the VDrive+SwiftLink remap leaves GEOS's handlers alone. No change in behaviour. Not on hardware.
+
+## v0.9.0.37
+
+### Changed
+- Rebased on upstream TeensyROM `fa509421`, which includes [PR 78](https://github.com/SensoriumEmbedded/TeensyROM/pull/78): Kernal Replace
+  senses HIRAM by DMA on a C128, and its early return when HIRAM is known to be RAM replaces the hunk `kernalreplace-fixes.patch` carried.
+  After the menu's bus probe the DMA sense state is reset when `KernalCheck` is hooked back in. The patch applies on upstream main and on
+  open PRs 79, 82 and 83. VDrive has not been run on a C128. This build and the next four corrupted directory listings on a C64
+  (late bus answers; fixed in 0.9.0.42).
+
 ## v0.9.0.36
 
 ### Changed
@@ -17,6 +58,17 @@
   bus probe gave), or "absent", into the KERNAL copy it serves before the C64 starts; a KERNAL launched without the menu probe probes
   the real bus itself at power-on for automatic units, as the first disk access will (`docs/DESIGN.md` section 38). Firmware 0.9.0.36 and **a rebuilt `kernal-tr.bin`** (either
   alone works, without the numbers). Host tests (py65 with a fake bus, firmware glue) and VICE with true-drive 1541s; not on hardware.
+
+### Fixed
+- A command or `OPEN` that succeeds now resets an error nobody had read, as a 1541 answers `00, OK` after any successful command: a stale
+  `62` from a `LOAD` of a missing file came back after a `CD:/` that worked. Found by VDSUITE.
+
+### Added
+- **VDSUITE** (`tests/basic/vdsuite.bas`, on `vdtest.d64`): the hardware checklist as one BASIC menu program. It makes a scratch folder with a
+  D64, a D71 and a D81, runs the SEQ, DOS, block and REL checks on each, bad sectors from an error table, plain files and `MD:` / `RD:`, and
+  the CMD path syntax, and lists the checks that need a person. `make testdisk` also writes `vdbad.d64` and `vdplain.prg` for the card root.
+
+Also checked on hardware (owner, 2026-10-30): the first-access bus scan adds no noticeable delay; single and double taps of the Alt button switch disks.
 
 ## v0.9.0.35
 
