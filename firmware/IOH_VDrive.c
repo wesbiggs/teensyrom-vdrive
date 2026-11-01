@@ -604,7 +604,7 @@ FLASHMEM static void VD_ProbeBegin()
    int need = vio_probe_begin(vio);
    IO1[rwRegScratch] = (uint8_t)need;
    if (!need) return;
-   vdProbeSnoop = fBusSnoop;        // KernalCheck, as InitHndlr_KERNALReplace_PreStart() just hooked it (NULL if no image)
+   vdProbeSnoop = fBusSnoop;        // the KERNAL check InitHndlr_KERNALReplace_PreStart() just hooked (NULL if no image)
    fBusSnoop = NULL;
    vdProbing = true;
 }
@@ -612,12 +612,9 @@ FLASHMEM static void VD_ProbeBegin()
 FLASHMEM static void VD_ProbeFinish()
 {
    vdProbing = false;
-   HIRAM_State = HIRAM_State_Unknown;
-#ifdef Fab04_FullDMACapable
-   KDS_State = KDS_Idle;            // the C128's DMA HIRAM sense: KernalCheck was unhooked, no sense can be in flight
+   KDS_State = KDS_Idle;            // the C128's DMA HIRAM sense: the check was unhooked, no sense can be in flight
    KDS_Read01Valid = false;
-#endif
-   fBusSnoop = vdProbeSnoop;
+   fBusSnoop = vdProbeSnoop ? KernalCheckArm() : NULL;   // the C64's or the C128's check, with HIRAM_State set for it
    VD_BannerUnits(KernalFast, 8192, true);   // the probed numbers, so the banner need not probe again
    Serial.printf("VDrive: bus probe gave dev %d (SD), %d (USB)\n", vio->vd.dev[0], vio->vd.dev[1]);
 }

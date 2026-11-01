@@ -116,7 +116,7 @@ index 46e27c6..72c265a 100644
       rtFileCrt  , IOH_None         , (char*)"Super Expander 64"                , (uint8_t*)super_expander_64_crt      , sizeof(super_expander_64_crt) ,
       rtFileCrt  , IOH_None         , (char*)"Epyx Fast Load Cart"              , (uint8_t*)Epyx_Fast_Load_crt         , sizeof(Epyx_Fast_Load_crt) ,
 diff --git a/Source/Teensy/MinimalBoot/Common/Common_Defs.h b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
-index a0a6e5f..10536ad 100644
+index a0a6e5f..29120b2 100644
 --- a/Source/Teensy/MinimalBoot/Common/Common_Defs.h
 +++ b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
 @@ -14,6 +14,7 @@
@@ -132,7 +132,7 @@ index a0a6e5f..10536ad 100644
  
  
 -#define TRVersion              "0.9"    //*VERSION*
-+#define TRVersion              "0.9.0.41"    //*VERSION*  (stock 0.9 + VDrive rev 41)
++#define TRVersion              "0.9.0.42"    //*VERSION*  (stock 0.9 + VDrive rev 42)
  #ifdef Fab04_Features
     char strVersionNumber[] = "TeensyROM+ v" TRVersion; 
  #else
@@ -208,7 +208,7 @@ index ae1d60b..097c10e 100644
        &IOHndlr_KernalReplace,      //IOH_KernalReplace,
     #endif  
 diff --git a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_KernalReplace.c b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_KernalReplace.c
-index 7b80443..57ce96f 100644
+index 3ba276c..449bef5 100644
 --- a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_KernalReplace.c
 +++ b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_KernalReplace.c
 @@ -48,6 +48,15 @@ stcIOHandlers IOHndlr_KernalReplace =
@@ -227,7 +227,7 @@ index 7b80443..57ce96f 100644
  
  enum enumHIRAM_States
  {
-@@ -235,7 +244,7 @@ FASTRUN bool KernalCheck(uint16_t Address, bool R_Wn)
+@@ -229,7 +238,7 @@ FASTRUN bool KernalCheck(uint16_t Address, bool R_Wn)
     CORE_PIN19_PORTCLEAR = ~RegAddrBits & GP6_AddrMask;
     
     //prepare the kernal byte to be pushed onto the bus (if needed)
@@ -236,7 +236,7 @@ index 7b80443..57ce96f 100644
     uint32_t RegDataBits = (Data & 0x0F) | ((Data & 0xF0) << 12);
     CORE_PIN10_PORTSET = RegDataBits;
     CORE_PIN10_PORTCLEAR = ~RegDataBits & GP7_DataMask;
-@@ -258,7 +267,6 @@ FASTRUN bool KernalCheck(uint16_t Address, bool R_Wn)
+@@ -252,7 +261,6 @@ FASTRUN bool KernalCheck(uint16_t Address, bool R_Wn)
        while (ARM_DWT_CYCCNT - begin < Cyc_KernProp);
        
        HIRAM_State = (GP9_ROMH(ReadGPIO9)==0 ? HIRAM_State_ROM : HIRAM_State_RAM); //read ROMH to determine if it's a Kernal or RAM access
@@ -244,7 +244,7 @@ index 7b80443..57ce96f 100644
        SetAddrPortDirIn;//set address ports to input
        SetAddrBufsIn;   //set address buffers to input
        SetExROMDeassert;
-@@ -313,6 +321,8 @@ FLASHMEM void FreeKernalBin()
+@@ -334,6 +342,8 @@ FLASHMEM void FreeKernalBin()
  #endif
  }
  
@@ -253,7 +253,7 @@ index 7b80443..57ce96f 100644
  FLASHMEM void InitHndlr_KERNALReplace_PreStart() //not called automatically via init; called earlier, manually, from KERNALPreStart()
  {
  #ifdef Fab04_GlobalKernalReplace
-@@ -366,6 +376,9 @@ FLASHMEM void InitHndlr_KERNALReplace_PreStart() //not called automatically via
+@@ -387,6 +397,9 @@ FLASHMEM void InitHndlr_KERNALReplace_PreStart() //not called automatically via
     //Serial.printf("Read %lu Bytes in %lumS\n", CharNum, millis()-StartmS);
     Serial.printf("Read %lu Bytes\nKernal replace Enabled\n", CharNum);
     LoadFile.close();
@@ -261,12 +261,12 @@ index 7b80443..57ce96f 100644
 +   memcpy(KernalFast, KernalBin, 8192); //fast copy for the bus ISR
 +#endif
     KSenseApplyMode();
- #ifdef Fab04_FullDMACapable
     KDS_State = KDS_Idle;
-@@ -381,6 +394,10 @@ FLASHMEM void InitHndlr_KERNALReplace_PreStart() //not called automatically via
-    fKernRepl = &KernalCheck;
+    KDS_Read01Valid = false;
+@@ -399,6 +412,10 @@ FLASHMEM void InitHndlr_KERNALReplace_PreStart() //not called automatically via
+    fKernRepl = KernalCheckArm();
  #else
-    fBusSnoop = &KernalCheck;
+    fBusSnoop = KernalCheckArm();
 +#endif
 +   FnetLoopPollStart(); //Ethernet poll off the PIT timer from now on (see FnetLoopPollService in Teensy.ino)
 +#ifdef LATE_ISR_TRACE  //late-ISR counters (ISRs.c) count from the launch on
@@ -352,10 +352,10 @@ index adca184..6f80b52 100644
           {
 diff --git a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c
 new file mode 100644
-index 0000000..0771c05
+index 0000000..cf4260b
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c
-@@ -0,0 +1,1116 @@
+@@ -0,0 +1,1113 @@
 +// "VDrive" Special IO for TeensyROM+: replacement KERNAL + virtual IEC drive.
 +//   unit 0 = SD card, unit 1 = USB drive. Device numbers are automatic by default: the first free numbers from 8 up
 +//   (the KERNAL probes the real serial bus on the first disk access of a run, see vdrive_io.h), so 8 (SD) and 9 (USB) when
@@ -962,7 +962,7 @@ index 0000000..0771c05
 +   int need = vio_probe_begin(vio);
 +   IO1[rwRegScratch] = (uint8_t)need;
 +   if (!need) return;
-+   vdProbeSnoop = fBusSnoop;        // KernalCheck, as InitHndlr_KERNALReplace_PreStart() just hooked it (NULL if no image)
++   vdProbeSnoop = fBusSnoop;        // the KERNAL check InitHndlr_KERNALReplace_PreStart() just hooked (NULL if no image)
 +   fBusSnoop = NULL;
 +   vdProbing = true;
 +}
@@ -970,12 +970,9 @@ index 0000000..0771c05
 +FLASHMEM static void VD_ProbeFinish()
 +{
 +   vdProbing = false;
-+   HIRAM_State = HIRAM_State_Unknown;
-+#ifdef Fab04_FullDMACapable
-+   KDS_State = KDS_Idle;            // the C128's DMA HIRAM sense: KernalCheck was unhooked, no sense can be in flight
++   KDS_State = KDS_Idle;            // the C128's DMA HIRAM sense: the check was unhooked, no sense can be in flight
 +   KDS_Read01Valid = false;
-+#endif
-+   fBusSnoop = vdProbeSnoop;
++   fBusSnoop = vdProbeSnoop ? KernalCheckArm() : NULL;   // the C64's or the C128's check, with HIRAM_State set for it
 +   VD_BannerUnits(KernalFast, 8192, true);   // the probed numbers, so the banner need not probe again
 +   Serial.printf("VDrive: bus probe gave dev %d (SD), %d (USB)\n", vio->vd.dev[0], vio->vd.dev[1]);
 +}
@@ -4812,7 +4809,7 @@ index 0000000..33f4d7a
 +#endif
 +#endif
 diff --git a/Source/Teensy/SerUSBIO.ino b/Source/Teensy/SerUSBIO.ino
-index 9a1901b..0b10eca 100644
+index b9a4cd2..013f6c1 100644
 --- a/Source/Teensy/SerUSBIO.ino
 +++ b/Source/Teensy/SerUSBIO.ino
 @@ -622,6 +622,12 @@ FLASHMEM void ProcessCommand()

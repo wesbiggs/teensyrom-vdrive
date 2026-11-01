@@ -14,7 +14,7 @@ Firmware integration and usage: `firmware/README.md`.
 ## Status (read this first)
 * **Works on hardware (real C64, TR+ with this patch).** `make test` also passes on the host: C unit tests via ctypes against `c1541`, the 6502 patches in VICE through a
   monitor-driven mailbox mock, and the firmware glue compiled as C++ against host stubs. Toolchain for the firmware: `arduino-cli`, `teensy:avr@1.61.0`,
-  `CRC32@2.0.1`; do NOT use Teensyduino 1.62.0 (SD read stalls). Build/fit (0.9.0.40 vs stock `fa509421`, TR+ main image): RAM1 variables +13.7 KB (free for locals 66 KB), RAM1 code +1.6 KB (padding 25.4 KB left), flash code +43 KB, RAM2 +7 KB.
+  `CRC32@2.0.1`; do NOT use Teensyduino 1.62.0 (SD read stalls). Build/fit (0.9.0.40 vs stock `fa509421`, TR+ main image; 0.9.0.42 on `136baa83`: the same RAM1): RAM1 variables +13.7 KB (free for locals 66 KB), RAM1 code +1.6 KB (padding 25.4 KB left), flash code +43 KB, RAM2 +7 KB.
   `node tools/build-firmware.mjs --target tr-plus` (in a TeensyROM tree with the patch applied) writes `build/firmware/TeensyROM+_<version>_full.hex`; `--force` to overwrite.
   On the owner's Mac `ARDUINO_DIRECTORIES_USER=~/code/3p/Arduino` (set in the shell profile; CRC32 lives in its `libraries/`), not the default `~/Documents/Arduino`:
   Documents is iCloud Drive and an evicted `CRC32.h` made builds fail with "Operation timed out". A shell started before the profile change lacks the variable: pass it on the command.
@@ -81,6 +81,9 @@ Firmware integration and usage: `firmware/README.md`.
   data lines are driven. 0.9.0.11 reads IO1 registers straight from the struct (about 10x fewer errors) and the KERNAL reads ST/DATA, the fast-LOAD header and every
   window byte twice in a row until two reads agree, and reads back window writes. `VD_TRACE` is off by default (it prints right after the answer, but was not the cause).
   Keep new bus-handler code as short as possible and never add work before `DataPortWriteWait`.
+  That includes the bus snoop (`KernalCheck`), which runs ahead of every IO1/IO2 answer: 0.9.0.37-0.9.0.41 corrupted directory listings on a C64 (owner, bisected: 0.9.0.36 clean,
+  0.9.0.37 not) because upstream PR 78's one extra test there made GCC save six registers on every cycle (`push {r3-r7, lr}`; compare `objdump -d` of `Teensy.ino.elf`
+  from a `--keep-work` build). Upstream `136baa83` hooks a C64 or C128 check once per launch (`KernalCheckArm`); fixed in 0.9.0.42. Check that disassembly after any change near it.
 * 0.9.0.16: direct sector access (`OPEN n,d,n,"#"`, `U1`/`U2`/`UA`/`UB`, `B-R`/`B-W` as aliases, `B-P`, `B-A`, `B-F`; docs/DESIGN.md 21). Unit tests (`tests/test_vdrive.py`) and `BLKTEST` in VICE pass; **not on hardware yet**. No `M-R`/`M-W`/`M-E`.
 * 0.9.0.19: `C:new=old[,old2...]` copy / join on the mounted image (`d64_copy`, docs/DESIGN.md 24). Unit tests and `DOS2TEST` in VICE pass; **not on hardware yet**.
 * 0.9.0.20: REL files (`,L,`+length, `P`, one record per `PRINT#`, side sectors; D81 super side sectors; `C` and `S` handle them; docs/DESIGN.md 25, `tests/test_rel.py`). Unit tests and `RELTEST` in VICE pass; **not on hardware yet**.
@@ -116,6 +119,9 @@ Firmware integration and usage: `firmware/README.md`.
   the poll code is a `FLASHMEM` function (`FnetLoopPollService`), guarded by `Fab04_KernalReplace`; plain SwiftLink on the stock KERNAL no longer switches to the loop poll (never measured);
   `make_tr_patch.sh` adds the VDrive Special IOs (`VD_IsHandler`) to the poll list and compiles the `ProcessATCommand` PIT unmask under `Fab04_VDrive` as well (#85 has it only under
   `Fab04_GlobalKernalReplace`), since VDrive+SwiftLink runs AT commands with the poll on. Firmware builds (TR+ main image RAM1 free for locals 66172, padding 25592); fw_host passes; not on hardware.
+* 0.9.0.42: rebased on upstream `136baa83` (Kernal Replace hooks `KernalCheck` on a C64, `KernalCheckDMA` on a C128, chosen once per launch by `KernalCheckArm()`), which fixes the
+  corrupted directory listings of 0.9.0.37-0.9.0.41 (see Bus timing margin). `kernal-fnet-poll.patch` (#85 rebased: its PreStart hunk sits after `fBusSnoop = KernalCheckArm();`) and
+  `kernalreplace-fixes.patch` regenerated on it; `VD_ProbeFinish` re-hooks through `KernalCheckArm()` instead of restoring the saved pointer with `HIRAM_State` Unknown. **Works on hardware (owner, 2026-11-01): directory loads clean again.** Not run on a C128.
 * Known open risks: C128 untested with VDrive (the DMA sense above should fix lesson 1; not run); tape (device 1) intentionally broken (its code space was reclaimed: $F8E2-$FB8D, $FB97-$FCD0).
 
 ## Layout

@@ -119,6 +119,10 @@ extern bool (*fBusSnoop)(uint16_t Address, bool R_Wn);
 bool KernalCheck(uint16_t Address, bool R_Wn);
 extern uint8_t HIRAM_State;
 enum { HIRAM_State_Unknown = 0, HIRAM_State_ROM, HIRAM_State_RAM };
+extern volatile uint8_t KDS_State;                    // IOH_KernalReplace.c: the C128's DMA HIRAM sense
+extern bool KDS_Read01Valid;
+enum { KDS_Idle = 0 };
+bool (*KernalCheckArm())(uint16_t Address, bool R_Wn); // the check a launch hooks (KernalCheck on a C64)
 extern volatile uint8_t BtnPressed;
 
 enum { rwRegPwrUpDefaults2 = 8, rpud2AltBtnActionMask = 0b00111000, rpud2AltBtnAutoLaunch = 0, rpud2AltBtnPause = 0b00001000, rpud2AltBtnNone = 0b00100000 };

@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.9.0.42
+
+### Fixed
+- Directory listings (and other reads from the virtual drives) came through with lost or wrong bytes on a C64 since 0.9.0.37. Upstream's
+  C128 HIRAM sense (TeensyROM PR 78) put a test in front of every IO1/IO2 answer that made the bus handler save registers on each cycle,
+  and the answers came late. Rebased on upstream `136baa83`, which picks the C64 or C128 check once per launch. Firmware only; the KERNAL
+  image is unchanged.
+
 ## v0.9.0.36
 
 ### Changed

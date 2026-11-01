@@ -21,6 +21,8 @@ bool SDFullInit() { g_fs_probes++; return fs_::exists(SD.root); }
 bool USBFileSystemWait() { g_fs_probes++; return fs_::exists(firstPartition.root); }
 void InitHndlr_KernalReplace() {}
 uint8_t HIRAM_State = 0;
+volatile uint8_t KDS_State = 0;
+bool KDS_Read01Valid = false;
 volatile uint8_t BtnPressed = 0;
 uint8_t KernalFast[8192];                             // the image IOH_KernalReplace.c serves (VDrive_PreStart writes the banner bytes)
 static const int kBannerTag = 0x1BB0;                 // where the tag sits in this fake image (anywhere: the glue searches for it)
@@ -56,6 +58,7 @@ void IO2Hndlr_REU(uint8_t a, bool R_Wn)
     }
 }
 bool KernalCheck(uint16_t, bool) { g_kc++; return false; }
+bool (*KernalCheckArm())(uint16_t, bool) { HIRAM_State = HIRAM_State_Unknown; return &KernalCheck; }   // a C64
 #include "IO_Handlers/vdreu.c"      // = firmware/IOH_VDriveREU.c
 #include "IO_Handlers/swiftreu.c"   // = firmware/IOH_VDriveSwiftREU.c
 

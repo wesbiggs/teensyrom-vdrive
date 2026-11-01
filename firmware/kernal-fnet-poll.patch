@@ -1,8 +1,8 @@
 diff --git a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_KernalReplace.c b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_KernalReplace.c
-index 7b804431..241100e5 100644
+index 3ba276c8..d3e657ce 100644
 --- a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_KernalReplace.c
 +++ b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_KernalReplace.c
-@@ -313,6 +313,8 @@ FLASHMEM void FreeKernalBin()
+@@ -334,6 +334,8 @@ FLASHMEM void FreeKernalBin()
  #endif
  }
  
@@ -11,9 +11,9 @@ index 7b804431..241100e5 100644
  FLASHMEM void InitHndlr_KERNALReplace_PreStart() //not called automatically via init; called earlier, manually, from KERNALPreStart()
  {
  #ifdef Fab04_GlobalKernalReplace
-@@ -382,6 +384,7 @@ FLASHMEM void InitHndlr_KERNALReplace_PreStart() //not called automatically via
+@@ -400,6 +402,7 @@ FLASHMEM void InitHndlr_KERNALReplace_PreStart() //not called automatically via
  #else
-    fBusSnoop = &KernalCheck;
+    fBusSnoop = KernalCheckArm();
  #endif
 +   FnetLoopPollStart(); //Ethernet poll off the PIT timer from now on (see FnetLoopPollService in Teensy.ino)
  }
