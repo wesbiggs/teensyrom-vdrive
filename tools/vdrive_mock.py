@@ -51,7 +51,7 @@ def make_image(workdir, bad):
         subprocess.run(["petcat", "-w2", "-o", str(out), "--", str(text)], check=True, capture_output=True)
         c("-attach", str(img), "-write", str(out), src.stem)
     from make_util import build as build_util
-    c("-attach", str(img), "-write", str(build_util(workdir / "util")), "vdcopy")
+    c("-attach", str(img), "-write", str(build_util(workdir / "util", mock=True)), "vdcopy")
     return img.read_bytes(), big
 
 
@@ -292,7 +292,7 @@ def main(kernal, scenario="basic"):
             check("scan: probing an empty number takes %s jiffies (< 4 = 66 ms)" % ticks, ticks and ticks[-1] < 4)
             # --- util/vdcopy: copy from the real 1541 (8) to the SD drive (9), then the other directions ---
             def vdcopy(sel, replace, expect, src="", dst=""):
-                m.keys('RUN\r'); service(1.5)
+                m.keys('RUN\r'); service(1.5); m.keys('F'); service(0.5)                # the menu: F = files
                 m.keys(src + '\r'); service(0.5); m.keys(dst + '\r'); service(0.5)     # default units: 8 -> 9 (PEEK(56854) says the SD is 9)
                 for _ in range(40):                       # the directory is read from the true-drive 1541
                     service(1.0, limit=3)
@@ -305,7 +305,7 @@ def main(kernal, scenario="basic"):
                 scr = m.screen()
                 check("vdcopy %r replace=%s: %s" % (sel, replace, expect), any(expect in " ".join(r.split()) for r in scr))
                 if not ok: print("\n".join(scr))
-                m.keys('\r'); service(1.0)                                  # RETURN at the prompt quits
+                m.keys('\r'); service(1.0); m.keys('Q'); service(1.0)      # RETURN at the prompt: the menu; Q quits
             run('LOAD"VDCOPY",9\r', "READY.")
             vdcopy("A", False, "2 COPIED, 1 SKIPPED, 0 FAILED")           # TEST exists on the SD
             img = workdir / "after.d64"; img.write_bytes(disk.dump())
@@ -344,6 +344,42 @@ def main(kernal, scenario="basic"):
             check("vdcopy: BIG went SD -> 1541 -> SD byte for byte", (workdir / "big.out").exists() and (workdir / "big.out").read_bytes() == big)
             vdcopy("1", False, "1 COPIED, 0 SKIPPED, 0 FAILED", "8", "11")
             check("vdcopy: 1541 -> USB, RPRG byte for byte", usb_file("rprg") == real["rprg"])
+
+            # --- util/vdcopy D: whole disks, sector by sector, through the true-drive 1541 at 8 ---
+            # Every byte to or from a vdrive unit stops VICE for this mock, so a whole disk would take ~10 minutes here: the test patches
+            # VDCOPY to copy tracks 17-19 (both sides of a speed-zone change, and track 18 with the BAM); tests/test_vdcopy.py copies all 683.
+            from make_util import label
+            m.write(label(workdir / "util", "vdcopy", "tfirst"), [17, 19])
+            span = slice(16 * 21 * 256, (17 * 21 + 2 * 19) * 256)
+            def until(text, secs):
+                for _ in range(secs):
+                    if any(text in r for r in m.screen()): return True
+                    service(1.0, limit=1)
+                return any(text in r for r in m.screen())
+            def vdisk(label_, steps):
+                t0 = time.time()
+                m.keys('RUN\r'); service(1.5)
+                for prompt, k in steps:
+                    if not until(prompt, 120): print("  no %r on the screen" % prompt); print("\n".join(m.screen())); break
+                    m.keys(k); service(0.5)
+                until("PRESS A KEY", 900)
+                scr = m.screen()
+                print("  vdcopy disk %s: %.0f s from RUN (59 sectors)" % (label_, time.time() - t0))
+                m.keys(' '); service(1.0); m.keys('Q'); service(1.0)
+                return scr
+            # the SD's mounted image (the mock disk) onto the real floppy, formatted first with its name and ID
+            want = disk.dump()
+            scr = vdisk("SD -> 1541", [(" Q ", 'D'), ("COPY FROM UNIT", '9\r'), ("COPY TO UNIT", '8\r'), ("(RETURN = THE MOUNTED ONE)", '\r'),
+                                       ("WILL BE OVERWRITTEN", 'F')])
+            check("vdcopy disk: SD image -> 1541 done without errors (row 1: %r)" % scr[1], "DONE, 0 READ ERRORS" in scr[1])
+            floppy = (workdir / "real8.d64").read_bytes()
+            check("vdcopy disk: tracks 17-19 of the 1541's disk are the SD image's", floppy[span] == want[span])
+            check("vdcopy disk: the 1541 formatted with the image's name and ID", floppy[(17 * 21) * 256 + 0x90: (17 * 21) * 256 + 0xA4] == want[(17 * 21) * 256 + 0x90: (17 * 21) * 256 + 0xA4])
+            # and back: the floppy into a new image on the USB unit
+            scr = vdisk("1541 -> new USB image", [(" Q ", 'D'), ("COPY FROM UNIT", '8\r'), ("COPY TO UNIT", '11\r'), ("(RETURN = WRITE OVER", 'FROMREAL\r')])
+            check("vdcopy disk: 1541 -> new USB image done without errors (row 1: %r)" % scr[1], "DONE, 0 READ ERRORS" in scr[1])
+            made = hs["disks"].get(sdroot / "fromreal.d64")
+            check("vdcopy disk: FROMREAL.D64 made, tracks 17-19 are the floppy's", made is not None and made.dump()[span] == floppy[span])
             return 0 if ok else 1
 
         # --- read side ---

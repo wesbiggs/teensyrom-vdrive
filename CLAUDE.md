@@ -29,6 +29,9 @@ Firmware integration and usage: `firmware/README.md`.
   (`vdrive_mock.py scan`: copy all, skip existing, replace, list/range selection, SD to USB, SD to 1541 and back, 1541 to USB; byte-exact PRG and SEQ), **on hardware (owner): the BASIC version worked vdrive to vdrive and vdrive to 1541; the machine-code rewrite is not on hardware yet**. Building it found a real-drive bug: the UNLSN hook at `$EDFE` overwrote the
   operand of the `BIT` that stock UNTLK falls through, so the real drive never got UNTALK (garbled bytes in `GET#` after the first `CLRCHN`). `hk_untlk` now spells the whole routine out. Any KERNAL image built before
   that fix must be rebuilt (`make build/kernal-tr.bin`). Lesson: a hook that overwrites bytes at an entry point inside another routine's operand needs every fall-through into those bytes checked.
+  **Whole-disk copy (`D` in its new start menu, docs/DESIGN.md 40): NOT on hardware.** A `.d64` onto a real floppy or a floppy into a new `.d64` (any two units): 683 sectors through `#` buffer channels with `U1` / `B-P` + `U2`, no firmware change;
+  a real destination may be formatted first with the source's name and ID. TR menu colours as in VDrive Config (third `!STATE` line), upper-case set kept. `tests/test_vdcopy.py` (py65 against `vdrive.c` on both units, `make test-vdcopy`)
+  and `vdrive_mock.py scan` (SD image onto the true-drive 1541 with format and back into a new USB image, byte-identical). Tables moved to `$2800` (the code passed `$1FFF`). First hardware run: time a disk, and a `23` sector on a real floppy.
 * **Alt-button disk switching (0.9.0.17, `docs/DESIGN.md` 22): works on hardware (owner, 2026-10-30: single and double tap);** host-tested in `tests/fw_host` and the 6502 routine under py65 (`make test-border`); not run in VICE.
   Taps on the TR+ Alt button (setting "None" only) cycle `/vdrive-config.txt` (SD: one tap, USB: two taps within 1 s); border flash through the new `BORDER` register `$DE18` and `irq_border` in the KERNAL IRQ routine. Rebuild `kernal-tr.bin` and re-copy it with the firmware.
 * **VDrive Config.prg (0.9.0.18; machine code since, `util/vdconfig.s`, docs/DESIGN.md 23): works on hardware (owner, 2026-10-30, the 0.9.0.35 build from the TR menu); not run in VICE;** host-tested in `tests/test_vdconfig.py` (the real PRG in py65, `tests/c64_sim.py`
@@ -131,7 +134,7 @@ d64/            portable C99 library, also compiled as C++ by the firmware (keep
   vdrive.c/.h     virtual IEC drive: channel pool, OPEN/LOAD/SAVE/command channel, CD:/path walking/mount hooks, U0> pins, bus-scan numbers
   vdrive_io.c/.h  mailbox register engine (ISR-side O(1) accessors + vio_poll), the fast LOAD/SAVE commands and the bus-scan protocol
   vd_cfg.h        build knobs: VD_COLD (FLASHMEM), VD_NSLOT, VD_DEV0/VD_DEV1 defaults
-util/            VDCOPY: vdcopy.s (all machine code, BASIC SYS stub at $0801, tables BSS at $2000; tools/make_util.py assembles it);
+util/            VDCOPY: vdcopy.s (all machine code, BASIC SYS stub at $0801, tables BSS at $2800; tools/make_util.py assembles it);
                 VDrive Config: vdconfig.s (all machine code, same stub/BSS scheme, BSS $2000-$4FFF; tools/make_util.py assembles it into build/util/"VDrive Config.prg")
 patches/        ca65 sources overlaid on the stock KERNAL by tools/build.py; segment name P_XXXX = load address
   vdrive.s        serial entry hooks, fast LOAD ($F4C8) / SAVE ($F605), bus scan, code placed in reclaimed tape space $F8E2-$FB8D (666 of 683 bytes used; `irq_border` for the border flash included, the build asserts the limit)
@@ -142,18 +145,20 @@ firmware/       TeensyROM integration: IOH_VDrive.c (Special IO), IOH_VDriveSwif
 tools/          build.py (patch overlay), make_tr_patch.sh (regenerate the TeensyROM patch), vdrive_mock.py (VICE mock),
                 d64py.py (ctypes wrappers incl. register-level VIO), xref.py (reference finder over a disassembly)
 tests/          test_d64*.py, test_vdrive.py, test_vio.py (unit), fw_host/ (glue vs host stubs), devcfg.c,
-                test_vdconfig.py + c64_sim.py (VDrive Config's PRG in py65, KERNAL calls answered in Python), test_irq_border.py, test_banner.py (py65),
+                test_vdconfig.py + c64_sim.py (VDrive Config's PRG in py65, KERNAL calls answered in Python), test_vdcopy.py (VDCOPY in py65 against vdrive.c),
+                test_irq_border.py, test_banner.py (py65),
                 menuprobe_vice.py (the menu's probe routine in VICE with true-drive 1541s)
 build/          generated, git-ignored (kernal images derived from the ROM, libd64.dylib, disassembly)
 ```
 
 ## Commands
 * `make test` — everything (rebuilds `build/libd64.dylib`, runs unit tests, device-number check, firmware host test, VDrive Config in py65, three VICE runs: `basic`,
-  `scan` (true-drive 1541s at 8 and 10) and the menu's bus probe; about 4 minutes).
+  `scan` (true-drive 1541s at 8 and 10, with two VDCOPY whole-disk runs over tracks 17-19, about 2 minutes of it) and the menu's bus probe; about 13 minutes in all on the owner's Mac, measured 2026-10-31).
 * `make test-border` — the `irq_border` 6502 routine in py65 (skipped without `pip install py65`; also part of `make test`).
 * `make test-banner` — the banner's `vd_banner` in py65 with a fake serial bus (skipped without py65; also part of `make test`).
-* `make util` — `build/util/vdcopy.prg`, the file copy utility between any two units (also on the test disk), and `build/util/VDrive Config.prg`.
+* `make util` — `build/util/vdcopy.prg`, the file and whole-disk copy utility between any two units (also on the test disk), and `build/util/VDrive Config.prg`.
 * `make test-vdconfig` — VDrive Config's PRG in py65 against a drive model (skipped without py65; also part of `make test`).
+* `make test-vdcopy` — VDCOPY's PRG in py65 against the real drive code on both units (skipped without py65; also part of `make test`).
 * `make test-menuprobe` — the TR menu's bus probe routine in VICE, 1541s at 8 and 10 (skipped without `acme`; also part of `make test`).
 * `make build/kernal-tr.bin STOCK=/path/to/kernal-901227-03.bin` — hardware image (mailbox `$DE10`, window `$DF80`).
   `STOCK` defaults to VICE's bundled ROM under Homebrew. `make build/kernal-banner.bin`, `build/kernal-stock.bin` are bring-up images.
@@ -167,7 +172,7 @@ The full `make test`, VICE runs included, works in a cloud session; do not skip 
   (`data/C64`, `data/DRIVES`, from the VICE source mirror on GitHub) in `~/.local/share/vice`, where `x64sc` finds them. Ubuntu's `vice` package is the
   DFSG build without ROMs, so `apt` alone is not enough. The ROMs stay outside the repository (no Commodore ROM bytes in the repo).
 * Then: `eval "$(tools/cloud_setup.sh --env)"; xvfb-run -a make test STOCK="$STOCK"`. `STOCK` = VICE's `kernal-901227-03.bin` is the base for every
-  KERNAL image (`kernal-vd.bin`, `kernal-tr.bin`), as the Homebrew default is on the owner's Mac. `xvfb-run` gives `x64sc` a display. About 7 minutes.
+  KERNAL image (`kernal-vd.bin`, `kernal-tr.bin`), as the Homebrew default is on the owner's Mac. `xvfb-run` gives `x64sc` a display. About 7 minutes when last timed, before the menu-probe and VDCOPY whole-disk runs were added; expect longer now.
 * The `--env` line also puts a `c++` → `clang++` link first on `PATH`: with GCC, `tests/fw_host` fails to compile on existing glue code
   (`-Wextra` enum/`-Wformat-truncation` under `-Werror`); the owner's compiler is clang.
 * Still say in the pull request what was not run: a VICE run is not a hardware run.

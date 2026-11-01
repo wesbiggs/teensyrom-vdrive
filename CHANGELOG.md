@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased (utility only; no firmware or KERNAL change)
+
+### Added
+- **`VDCOPY` copies whole disks** (`D` in its new start menu): a `.d64` image onto a real floppy, a floppy into a new `.d64`, or between
+  any two units, all 683 sectors through the drives' own block commands (`U1`, `B-P`, `U2`). Mounts a source image by path, makes the
+  destination image with `N:`, or formats a real destination first with the source's disk name and ID. A sector map shows the progress
+  and read errors (counted; the sector is written as read). For running disks whose loaders need their own drive code from a real 1541.
+  Host tests (py65 against the drive code) and VICE with a true-drive 1541; not on hardware (`docs/DESIGN.md` section 40).
+
+### Changed
+- `VDCOPY` takes the TeensyROM menu's colours (as VDrive Config does), starts with a menu (`F` files, `D` disk, `Q` quit; RETURN at the
+  file selection goes back to it) and keeps its tables at `$2800-$3FFF`.
+
 ## v0.9.0.42
 
 ### Fixed

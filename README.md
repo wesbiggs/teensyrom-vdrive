@@ -22,7 +22,7 @@ Please raise a GitHub issue if you find a non-working configuration.
 
 Newer features pass the host tests and VICE but have **not yet been run on a real C64**: direct sector access, `C:` copy, REL files, append,
 `V` validate, `L:` / `W-` lock and write protect, plain files from the card, `MD:` / `RD:`, the Alt button, VDrive Config, the machine-code
-VDCOPY, the default device 8, and `.d71` images. The test disk (`make testdisk`, see
+VDCOPY (and its whole-disk copy), the default device 8, and `.d71` images. The test disk (`make testdisk`, see
 [Building and testing](#building-and-testing)) has a BASIC test program for most of them.
 
 The original TR does not have the Kernal Replace functionality needed for this software, though it may be possible in the future to create a more limited TR-compatible version. 
@@ -227,24 +227,40 @@ With the TR menu showing (no program running) the same commands show and change 
 |---|---|
 | Writing plain files to the card (`SAVE` with nothing mounted) | Mount an image (or create one with `N:NAME.D64,ID`) |
 | File names longer than 16 characters | Hidden in host listings |
-| Running programs with their own fastloaders | No `M-R`/`M-W`/`M-E`, so programs that upload code to the drive (or probe its ROM to detect the drive type) cannot run |
+| Running programs with their own fastloaders | No `M-R`/`M-W`/`M-E`, so programs that upload code to the drive (or probe its ROM to detect the drive type) cannot run from the card. With a real 1541, `VDCOPY` `D` writes the `.d64` onto a floppy, and the program runs from there |
 | `U3`-`U8` user jumps, `B-E` | Need drive code |
 | Copy protection that checks for bad sectors | Read errors from the image's error-info bytes are emulated (`U1`, `LOAD`, `GET#`); protections that time the drive, read raw GCR, or check the drive's memory (`M-R`) still fail. Writing a bad sector does not repair it |
 
 ## Utilities
 
-### Copying files between drives: `VDCOPY`
+### Copying files and whole disks between drives: `VDCOPY`
 `make util` builds `build/util/vdcopy.prg` (pure machine code behind a `SYS` stub, loads at `$0801`; it is also on `vdtest.d64`).
-It copies between any two units, in either direction: real drive to SD/USB, SD/USB to a real drive, or SD to USB (an image mounted on each). Put it on the card, load it from the SD drive and `RUN` it (with the real drive and its disk on the bus, if you use one):
+It copies between any two units, in either direction: real drive to SD/USB, SD/USB to a real drive, or SD to USB. Put it on the card, load it from the SD drive and `RUN` it (with the real drive and its disk on the bus, if you use one):
 ```
 LOAD"VDCOPY",9 : RUN        (9 when a real drive is 8; the SD drive is 8 when there is none)
 ```
-It asks for the source unit (default 8) and the destination unit (default: the SD drive, `PEEK(56854)`; type both numbers for any other combination, e.g. 8 and 9 for SD to USB), checks that both answer, lists the
-source disk (PRG, SEQ and USR files, 20 lines at a time) and asks what to copy: `A` for all, or numbers such as `1,3,5-8`. Existing files on
+The screen takes the TeensyROM menu's colours (as VDrive Config does). A menu offers `F` (files), `D` (a whole disk) and `Q` (quit, back to BASIC with the old colours).
+Both ask for the source unit (default 8) and the destination unit (default: the SD drive, `PEEK(56854)`; type both numbers for any other combination, e.g. 8 and 9 for SD to USB) and check that both answer.
+
+**Files (`F`).** Lists the source disk (PRG, SEQ and USR files, 20 lines at a time) and asks what to copy: `A` for all, or numbers such as `1,3,5-8` (RETURN goes back to the menu). Existing files on
 the destination are skipped, or replaced if you answer `Y` to "replace existing". Copies go 2 KB at a time (read from the source, then written
 to the destination), the destination's error channel is checked after every chunk, so a full disk (72) or a failed write stops that file and
-removes the partial copy. RUN/STOP stops after the current chunk. A vdrive source or destination needs an image mounted (`CD:`). Hardware-verified: vdrive to vdrive and vdrive to a 1541 (that was the earlier BASIC version; the machine-code rewrite is checked in VICE for all directions, not yet on hardware). The byte copy itself goes through the KERNAL one byte at a time, so its speed is set by the drives; the machine-code version removes the BASIC overhead in reading the directory and per file. Uses `$0801-$0FFF`, tables at `$2000-$37FF` and the buffer `$C000-$C7FF`.
+removes the partial copy. RUN/STOP stops after the current chunk. A vdrive source or destination needs an image mounted (`CD:`). Hardware-verified: vdrive to vdrive and vdrive to a 1541 (that was the earlier BASIC version; the machine-code rewrite is checked in VICE for all directions, not yet on hardware). The byte copy itself goes through the KERNAL one byte at a time, so its speed is set by the drives.
 REL files are not shown; names with `* , : = ?` are skipped.
+
+**A whole disk (`D`): a `.d64` onto a real floppy, or a floppy into a `.d64`.** Copies all 683 sectors of a 35-track 1541 disk, one at a time, with the drives' own block commands
+(`U1` on the source, `B-P` + `U2` on the destination, through a `#` buffer channel on each), so it works between any two units and needs no firmware support beyond what the drive already does.
+Disks whose loaders or copy protection need their own drive code still need their sectors in the standard format to come out right (no GCR, no half tracks, no `.g64`).
+* A vdrive **source** asks for an image to mount first (`/GAMES/GAME.D64`, any path `CD:` takes; RETURN = the one already mounted).
+* A vdrive **destination** asks for a new image (`GAME` or `GAME.D64`, made with `N:` in the current folder or the path given; an existing file is not touched) or, on RETURN, writes over the mounted image after a `Y`.
+* A real **destination**: `F` formats the disk first with the source's disk name and ID (the sector headers then carry the right ID), `W` writes onto the disk as it is (it must be formatted), `Q` cancels.
+* The source's track 18 sector 0 must say "1541" (`A`, single-sided); anything else (a `.d71`, a `.d81`, an odd disk) asks before copying 35 tracks.
+
+While it runs, the screen is a map of the disk: one column per track (1-35), one row per sector (0-20); `+` is the sector being copied, a ball one that is done, a reversed digit a read error (the last digit
+of its number, e.g. `3` for `23,READ ERROR`). A read error is counted and the sector is written as the drive gave it (a 1541 keeps the data of a `23`), so a damaged floppy still comes over as far as it can be read; the image
+then has no error table, so a protection that checks for those errors fails. A write error, a failed transfer or RUN/STOP ends the copy and names the sector. At the end the destination gets `I` (it re-reads the new BAM).
+Through the KERNAL's serial routines a real 1541 moves about one sector a second each way, so a whole disk should take 10-15 minutes (an estimate, not measured on hardware yet; `docs/DESIGN.md` section 40 explains why VICE timings say nothing about it).
+Uses `$0801-$27FF`, tables at `$2800-$3FFF` and the buffer `$C000-$C7FF`.
 
 ### VDrive Config (the list editor)
 `VDrive Config` (in the TeensyROM menu's Utilities, run with your default VDrive Special IO; also built by `make util` into `build/util/`) edits the Alt-button lists (see 'Changing the disk with the alt button' above) on the C64 and shows / changes what is mounted:
