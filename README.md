@@ -20,10 +20,10 @@ It has two halves:
 The test suite runs primarily on VICE, with the TeensyROM+ mocked. Not all combinations of real-world devices have been tested. It works on my real C64 NTSC breadbin with a TR+, with or without a real 1541-][ drive. See the Status section of [CLAUDE.md](CLAUDE.md) for exactly what has and has not been checked on hardware. Testers are welcome!
 Please raise a GitHub issue if you find a non-working configuration.
 
-Newer features pass the host tests and VICE but have **not yet been run on a real C64**: direct sector access, `C:` copy, REL files, append,
-`V` validate, `L:` / `W-` lock and write protect, plain files from the card, `MD:` / `RD:`, the Alt button, VDrive Config, the machine-code
-VDCOPY (and its whole-disk copy), the default device 8, and `.d71` images. The test disk (`make testdisk`, see
-[Building and testing](#building-and-testing)) has a BASIC test program for most of them.
+The `VDSUITE` test program passes on a real C64 on both the SD and the USB unit: `.d64` / `.d71` / `.d81` images made with `N:`, direct sector access,
+`C:` copy, REL files, append, `V` validate, `L:` / `W-` lock and write protect, bad sectors, plain files from the card, `MD:` / `RD:`, CMD paths and `S:` on images.
+Still **not run on a real C64**: the machine-code VDCOPY, the default device 8, VDrive+REU, `STATUS` compared with a real drive, and RUN/STOP during a load.
+The test disk (`make testdisk`, see [Building and testing](#building-and-testing)) has a BASIC test program for most of them.
 
 The original TR does not have the Kernal Replace functionality needed for this software, though it may be possible in the future to create a more limited TR-compatible version. 
 The C128 in C64 mode is untested: since 0.9.0.37 the firmware includes upstream's DMA HIRAM sense for Kernal Replace on a C128
@@ -46,7 +46,7 @@ The C64's ability to read the 8 KB of RAM under KERNAL ROM ($E000-$FFFF) is used
    |---|---|
    | stock `kernal-901227-03.bin` (input) | `83c60d47047d7beab8e5b7bf6f67f80daa088b7a6a27de0d7e016f6484042721` |
    | `kernal-tr.bin` from this revision | `d7b5d6e79906e5858cd1f9ee213fea688b3d635d7d539298e79ea57e9628cfe0` |
-   | `kernal-tr.bin` last run on a real C64 (0.9.0.28, commit `bf3c74c`; same patches through `9270008`) | `e1db8e02b6cab9f6eb99a597a1c04f2b5a67fac914a36dc1e4259d7272f53af2` |
+   | `kernal-tr.bin` last run on a real C64 (0.9.0.42, commit `ef18020`) | `d7b5d6e79906e5858cd1f9ee213fea688b3d635d7d539298e79ea57e9628cfe0` |
 
    A different stock hash means a different ROM dump; the patches may not fit it. The "this revision" row is checked by `make test`.
    The two `kernal-tr.bin` rows differ when this revision has KERNAL changes not yet run on hardware (see [CLAUDE.md](CLAUDE.md), Status).

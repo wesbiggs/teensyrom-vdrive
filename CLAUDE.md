@@ -44,12 +44,15 @@ Firmware integration and usage: `firmware/README.md`.
   `MainMenu.asm` by `make_tr_patch.sh`, which also rebuilds `TeensyROMC64.h` with the TR's `tools/build-c64.mjs` (needs `acme` 0.97 and `node`). No new menu registers: the PreStart handshake is reused (`rwRegScratch`, `VDrive_ProbeStep()` first in `KERNALPreStart()`); `fBusSnoop` is
   held back while the probe runs. Also `VIO_MENU` (mailbox command 16): back to the TR menu.
 * **Bus scan time on the first access:** no noticeable delay on hardware (owner, 2026-10-30).
-* **Not yet checked on hardware:**
-  `.d71` at all, `STATUS` compared with a real drive, IRQ/STOP-key interplay during loads, a C128 in C64 mode (0.9.0.37).
+* **`VDSUITE` on hardware (owner, 2026-11-01, real C64, 0.9.0.42): all checks pass on the SD and the USB unit** (sections `1`-`9`: `N:` of D64/D71/D81, the 43 image checks on each
+  of the three formats, bad sectors, card files, CMD paths, the `S:`/`RD:` clean-up). Its `10` "checks by hand" are not done yet.
+* **Not yet checked on hardware** (VDSUITE's hand checks): `STATUS` compared with a real drive, IRQ/STOP-key interplay during loads, `LOAD` with no device number,
+  VDrive+REU (REU-checker 512 KB with an image mounted), the VDCOPY machine-code rewrite (SD to 1541 and back), `S:` on a read-only image file (26);
+  also a C128 in C64 mode (0.9.0.37).
 * **BASIC test programs** (`tests/basic/`, built into `build/testdisk/vdtest.d64` by `make testdisk`) run inside VICE in `make test` and on the C64; they
   found two real bugs that unit tests missed: `CIOUT` must return `A` = the byte sent (CHROUT tail-jumps into it; BASIC's PRINT broke after a
   number), and `U0>` must also be accepted with PRINT#'s trailing CR.
-  `VDSUITE` (tests/basic/vdsuite.bas, the "Not yet checked" items in one menu program; 186 checks with the clean-up (`8`, `S:`/`RD:`), all pass in the `basic` VICE run, **not on hardware yet**) also needs `vdbad.d64` and
+  `VDSUITE` (tests/basic/vdsuite.bas, the "Not yet checked" items in one menu program; 186 checks with the clean-up (`8`, `S:`/`RD:`), all pass in the `basic` VICE run and on hardware (SD and USB, see above)) also needs `vdbad.d64` and
   `vdplain.prg` from `make testdisk` (`tools/suite_files.py`, shared with the mock) in the card root. It found a drive bug, fixed in 0.9.0.36: a successful command did not reset an error nobody
   read (a 1541 says `00, OK` after it), so a stale `62` from an earlier `LOAD` came back after a good `CD:/`. Now every OPEN and command starts at `00` (`VD_UNLSN` in `vdrive.c`; CLOSE keeps its own error).
 * **Lessons from bring-up (keep):** (1) a flat NTSC C128 in C64 mode did not reliably serve the replacement KERNAL (the Skoe HIRAM sense cannot work there; upstream's DMA sense, in since 0.9.0.37, is meant to fix it, untested with VDrive): use a real C64, and
@@ -87,24 +90,24 @@ Firmware integration and usage: `firmware/README.md`.
   That includes the bus snoop (`KernalCheck`), which runs ahead of every IO1/IO2 answer: 0.9.0.37-0.9.0.41 corrupted directory listings on a C64 (owner, bisected: 0.9.0.36 clean,
   0.9.0.37 not) because upstream PR 78's one extra test there made GCC save six registers on every cycle (`push {r3-r7, lr}`; compare `objdump -d` of `Teensy.ino.elf`
   from a `--keep-work` build). Upstream `136baa83` hooks a C64 or C128 check once per launch (`KernalCheckArm`); fixed in 0.9.0.42. Check that disassembly after any change near it.
-* 0.9.0.16: direct sector access (`OPEN n,d,n,"#"`, `U1`/`U2`/`UA`/`UB`, `B-R`/`B-W` as aliases, `B-P`, `B-A`, `B-F`; docs/DESIGN.md 21). Unit tests (`tests/test_vdrive.py`) and `BLKTEST` in VICE pass; **not on hardware yet**. No `M-R`/`M-W`/`M-E`.
-* 0.9.0.19: `C:new=old[,old2...]` copy / join on the mounted image (`d64_copy`, docs/DESIGN.md 24). Unit tests and `DOS2TEST` in VICE pass; **not on hardware yet**.
-* 0.9.0.20: REL files (`,L,`+length, `P`, one record per `PRINT#`, side sectors; D81 super side sectors; `C` and `S` handle them; docs/DESIGN.md 25, `tests/test_rel.py`). Unit tests and `RELTEST` in VICE pass; **not on hardware yet**.
-* 0.9.0.21: append (`,A`; `d64_append`, a disk full restores the file; docs/DESIGN.md 26). Unit tests and `DOS2TEST` in VICE; not on hardware.
-* 0.9.0.22: `V`alidate rebuilds the BAM (`d64_validate`, splats deleted, REL side sectors kept; byte-identical to `c1541 -validate`; docs/DESIGN.md 27). Unit tests and `DOS2TEST` in VICE; not on hardware.
-* 0.9.0.23: `L:name` (toggle lock) and `W-1`/`W-0` (write protect, `d64_t.ro`), CMD syntax (docs/DESIGN.md 28). Unit tests and `DOS2TEST` in VICE; not on hardware.
-* 0.9.0.24: new images, `N:NAME.D64,ID` (or `.D71`/`.D81`) with nothing mounted (host callback `create`, glue `VD_Create`, `d64_format_blank`; docs/DESIGN.md 29). Unit and glue host tests; **works on hardware (owner)**. The time a D81 takes on a slow USB stick against the KERNAL's ~1.6 s mailbox wait is not measured.
-* 0.9.0.25: plain files on the card with nothing mounted (`LOAD"GAME.PRG"`, `"GAME"`, patterns, folder paths; host callbacks `plain_open`/`plain_read`/`plain_close`, channel mode 9; docs/DESIGN.md 30). Reading only. Unit and glue host tests.
-* 0.9.0.26: `MD:`/`RD:` folders on the card with nothing mounted (host `mkdir`/`rmdir`; docs/DESIGN.md 31). Unit and glue host tests.
+* 0.9.0.16: direct sector access (`OPEN n,d,n,"#"`, `U1`/`U2`/`UA`/`UB`, `B-R`/`B-W` as aliases, `B-P`, `B-A`, `B-F`; docs/DESIGN.md 21). Unit tests (`tests/test_vdrive.py`) and `BLKTEST` in VICE pass; on hardware through VDSUITE (2026-11-01). No `M-R`/`M-W`/`M-E`.
+* 0.9.0.19: `C:new=old[,old2...]` copy / join on the mounted image (`d64_copy`, docs/DESIGN.md 24). Unit tests and `DOS2TEST` in VICE pass; on hardware through VDSUITE.
+* 0.9.0.20: REL files (`,L,`+length, `P`, one record per `PRINT#`, side sectors; D81 super side sectors; `C` and `S` handle them; docs/DESIGN.md 25, `tests/test_rel.py`). Unit tests and `RELTEST` in VICE pass; on hardware through VDSUITE.
+* 0.9.0.21: append (`,A`; `d64_append`, a disk full restores the file; docs/DESIGN.md 26). Unit tests and `DOS2TEST` in VICE; on hardware through VDSUITE.
+* 0.9.0.22: `V`alidate rebuilds the BAM (`d64_validate`, splats deleted, REL side sectors kept; byte-identical to `c1541 -validate`; docs/DESIGN.md 27). Unit tests and `DOS2TEST` in VICE; on hardware through VDSUITE.
+* 0.9.0.23: `L:name` (toggle lock) and `W-1`/`W-0` (write protect, `d64_t.ro`), CMD syntax (docs/DESIGN.md 28). Unit tests and `DOS2TEST` in VICE; on hardware through VDSUITE.
+* 0.9.0.24: new images, `N:NAME.D64,ID` (or `.D71`/`.D81`) with nothing mounted (host callback `create`, glue `VD_Create`, `d64_format_blank`; docs/DESIGN.md 29). Unit and glue host tests; **works on hardware (owner)**. A D81 `N:` on a slow (10+ year old) USB stick takes about 0.8 s on hardware (owner, 2026-11-01), half the KERNAL's ~1.6 s mailbox wait.
+* 0.9.0.25: plain files on the card with nothing mounted (`LOAD"GAME.PRG"`, `"GAME"`, patterns, folder paths; host callbacks `plain_open`/`plain_read`/`plain_close`, channel mode 9; docs/DESIGN.md 30). Reading only. Unit and glue host tests; on hardware through VDSUITE `6`.
+* 0.9.0.26: `MD:`/`RD:` folders on the card with nothing mounted (host `mkdir`/`rmdir`; docs/DESIGN.md 31). Unit and glue host tests; on hardware through VDSUITE `6`.
 * 0.9.0.28: Special IO "VDrive+Swift+REU" (`firmware/IOH_VDriveSwiftREU.c`, docs/DESIGN.md 32): drive + SwiftLink + a 128 KB REU (RAM1 image + leftover RAM2). The IO2 window shrank to
   128 bytes at `$DF80` for every VDrive handler (REU registers at `$DF00-$DF7F`); names of 128+ characters fall back to the byte-level open. The REU's `$FF00` trigger would
   replace `KernalCheck` on `fBusSnoop`: `IO2Hndlr_VDriveSwiftREU` hands it back (`VDREU_Snoop`). Host tests, VICE, firmware build; **works on a real C64 (owner, 2026-10-23)**. **KERNAL images built before
   this change no longer match the firmware: rebuild and re-copy `kernal-tr.bin`.**
 * 0.9.0.31: Special IO "VDrive+REU" (`firmware/IOH_VDriveREU.c`, docs/DESIGN.md 34): drive + the full 512 KB REU, no SwiftLink. Holds the IO2 split and `VDREU_Snoop` that
   VDrive+Swift+REU now shares (`IO2Hndlr_VDriveREU`). With any VDrive default, REU menu programs get it. Host tests, firmware build; **not on hardware yet**.
-* 0.9.0.33: CMD HD / sd2iec path syntax (`[n]//dir/:name`, `[n]/dir/:name`) in names, `$`, `CD`, `MD`/`RD`, `N` (`cmd_path` in `vdrive.c`, docs/DESIGN.md 36). A path before a colon is CMD (single `/` = here), after the colon or without one ours (leading `/` = root); `CD/X` changed to relative. Unit tests; not in VICE or on hardware.
+* 0.9.0.33: CMD HD / sd2iec path syntax (`[n]//dir/:name`, `[n]/dir/:name`) in names, `$`, `CD`, `MD`/`RD`, `N` (`cmd_path` in `vdrive.c`, docs/DESIGN.md 36). A path before a colon is CMD (single `/` = here), after the colon or without one ours (leading `/` = root); `CD/X` changed to relative. Unit tests; VICE and hardware through VDSUITE `7`.
 * Default device 8 for `LOAD`/`SAVE`/`VERIFY` without a number, as on the SX-64 (`P_E1DA` in `patches/vdrive.s`, docs/DESIGN.md 33). KERNAL only; VICE `basic` run; **not on hardware yet**. Rebuild `kernal-tr.bin`.
-* 0.9.0.32: bad sectors from the image's error table (the trailing error-info bytes): reads of a sector marked bad fail with its DOS code (`d64_t.errtab`, `D64_E_BADSEC`, `d64_t.bad`, `read_err()` in `vdrive.c`; the firmware keeps a RAM2 copy only when the table marks something bad; docs/DESIGN.md 35). Write errors (25/26/28) not emulated; a write does not repair a bad sector. Unit and glue host tests; **not in VICE or on hardware yet**.
+* 0.9.0.32: bad sectors from the image's error table (the trailing error-info bytes): reads of a sector marked bad fail with its DOS code (`d64_t.errtab`, `D64_E_BADSEC`, `d64_t.bad`, `read_err()` in `vdrive.c`; the firmware keeps a RAM2 copy only when the table marks something bad; docs/DESIGN.md 35). Write errors (25/26/28) not emulated; a write does not repair a bad sector. Unit and glue host tests; VICE and hardware through VDSUITE `5` (reads only).
 * 0.9.0.34: SwiftLink Tx fix to upstream (`firmware/swiftlink-tx-fix.patch`, applied by `make_tr_patch.sh` after the Kernal Replace fixes). NativeEthernet's `client.write()` busy-waits for send-buffer space;
   with the stack polled from `loop()` (0.9.0.14) a full buffer hung `loop()` for good (no retransmits; SkinnyAI's 8 KB POST stalled after a lost segment, `~/tr.pcap`). Tx bytes now go
   into a 256-byte buffer, sent after a 2 ms pause / 20 ms / full, never more than `availableForWrite()`; while it is full Tx stays not empty. **Works on hardware (owner, 2026-10-29)**: the stalled 8 KB uploads complete.
@@ -116,7 +119,7 @@ Firmware integration and usage: `firmware/README.md`.
   `VD_ProbeFinish` also resets the DMA sense state (`KDS_State`) when it re-hooks `KernalCheck`. Firmware builds (`TeensyROM+_0.9.0.37_full.hex`); the DMA sense is confirmed on a C128 by the TR maintainer, **VDrive not run on a C128**.
 * 0.9.0.39: `S:NAME.D64` (`.D71`/`.D81`, a comma list, a path or CMD path) with nothing mounted deletes image files on the card (host callback `scratch`, glue `VD_Scratch`, `cmd_scratch_images` in `vdrive.c`;
   docs/DESIGN.md 39). Exact names only (33 for a pattern), images only (64); a file with the FAT read-only attribute stays (26: SdFat will not open it for writing). `L:` on a card image
-  is **not possible**: Teensyduino 1.61's SdFat 2.1.2 has no call that sets the attribute (set it on a PC). Unit, glue host and VICE (VDSUITE `8`) tests; not on hardware.
+  is **not possible**: Teensyduino 1.61's SdFat 2.1.2 has no call that sets the attribute (set it on a PC). Unit, glue host and VICE (VDSUITE `8`) tests; on hardware through VDSUITE `8` (the read-only case is a hand check, not done).
 * 0.9.0.41: the Ethernet poll from `loop()` is now upstream [TeensyROM PR 85](https://github.com/SensoriumEmbedded/TeensyROM/pull/85), carried byte for byte as `firmware/kernal-fnet-poll.patch`
   (applied first by `make_tr_patch.sh`; drop it when #85 merges). `kernalreplace-fixes.patch` keeps only `KernalFast` and the `LATE_ISR_TRACE` trace, on top of it. Differences from 0.9.0.40:
   the poll code is a `FLASHMEM` function (`FnetLoopPollService`), guarded by `Fab04_KernalReplace`; plain SwiftLink on the stock KERNAL no longer switches to the loop poll (never measured);
@@ -212,10 +215,10 @@ The full `make test`, VICE runs included, works in a cloud session; do not skip 
 * PETSCII quirk when building fixtures with `c1541`: give it lower-case names to get unshifted (default-mode upper-case) PETSCII.
 
 ## Next steps
-1. **Finish bring-up**: the "Not yet checked on hardware" list under Status (`.d71`, `STATUS`, IRQ/STOP-key during loads). The core path has passed, so the items below can
+1. **Finish bring-up**: VDSUITE's "checks by hand" (`10`; the "Not yet checked on hardware" list under Status). The core path has passed, so the items below can
    start once the owner agrees; mind that the patch changes under any build in progress.
-2. **Create new images**: done in 0.9.0.24 (`N:FILE.D64,ID` with nothing mounted; docs/DESIGN.md 29), works on hardware; still to check: the time a D81 takes
-   on a USB stick against the KERNAL's ~1.6 s mailbox wait.
+2. **Create new images**: done in 0.9.0.24 (`N:FILE.D64,ID` with nothing mounted; docs/DESIGN.md 29), works on hardware, a D81 on a slow USB stick included
+   (about 0.8 s against the KERNAL's ~1.6 s mailbox wait).
 3. **BASIC utility** (~40 lines, kept as `.bas` text and converted with `petcat` in the Makefile): list the current directory, pick by number (mount an
    image, open a folder, `..`), "new image", "unmount", and show the device numbers (`PEEK(56854)`). Much of what it would do is now one `LOAD"$path"`.
 4. **TeensyROM menu integration** (last, only if the BASIC utility feels clumsy): a `Shift-D` hotkey like the existing `Shift-K`
