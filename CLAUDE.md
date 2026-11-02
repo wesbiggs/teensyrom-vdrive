@@ -46,16 +46,19 @@ Firmware integration and usage: `firmware/README.md`.
 * **Bus scan time on the first access:** no noticeable delay on hardware (owner, 2026-10-30).
 * **`VDSUITE` on hardware (owner, 2026-11-01, real C64, 0.9.0.42): all checks pass on the SD and the USB unit** (sections `1`-`9`: `N:` of D64/D71/D81, the 43 image checks on each
   of the three formats, bad sectors, card files, CMD paths, the `S:`/`RD:` clean-up). Its `10` "checks by hand" are not done yet.
+  **Also on an NTSC C128 in C64 mode (owner, 2026-11-01, 0.9.0.42): `9` "run all" passes**; the hand checks are not done there either. A second run of section `6`
+  without the clean-up `8` in between failed `rd, folder not empty (63)` with 62: a suite bug (the left-over `T2/E.D64` made `N:` give 63 and mount nothing, so the
+  following `CD:_` went up a folder), fixed by an `S:E.D64` before the `N:`; `make test`'s `basic` run now runs `6` twice.
 * **Not yet checked on hardware** (VDSUITE's hand checks): `STATUS` compared with a real drive, IRQ/STOP-key interplay during loads, `LOAD` with no device number,
   VDrive+REU (REU-checker 512 KB with an image mounted), the VDCOPY machine-code rewrite (SD to 1541 and back), `S:` on a read-only image file (26);
-  also a C128 in C64 mode (0.9.0.37).
+  the same hand checks on a C128 in C64 mode (its "run all" passes, see above).
 * **BASIC test programs** (`tests/basic/`, built into `build/testdisk/vdtest.d64` by `make testdisk`) run inside VICE in `make test` and on the C64; they
   found two real bugs that unit tests missed: `CIOUT` must return `A` = the byte sent (CHROUT tail-jumps into it; BASIC's PRINT broke after a
   number), and `U0>` must also be accepted with PRINT#'s trailing CR.
   `VDSUITE` (tests/basic/vdsuite.bas, the "Not yet checked" items in one menu program; 186 checks with the clean-up (`8`, `S:`/`RD:`), all pass in the `basic` VICE run and on hardware (SD and USB, see above)) also needs `vdbad.d64` and
   `vdplain.prg` from `make testdisk` (`tools/suite_files.py`, shared with the mock) in the card root. It found a drive bug, fixed in 0.9.0.36: a successful command did not reset an error nobody
   read (a 1541 says `00, OK` after it), so a stale `62` from an earlier `LOAD` came back after a good `CD:/`. Now every OPEN and command starts at `00` (`VD_UNLSN` in `vdrive.c`; CLOSE keeps its own error).
-* **Lessons from bring-up (keep):** (1) a flat NTSC C128 in C64 mode did not reliably serve the replacement KERNAL (the Skoe HIRAM sense cannot work there; upstream's DMA sense, in since 0.9.0.37, is meant to fix it, untested with VDrive): use a real C64, and
+* **Lessons from bring-up (keep):** (1) a flat NTSC C128 in C64 mode did not reliably serve the replacement KERNAL (the Skoe HIRAM sense cannot work there; upstream's DMA sense, in since 0.9.0.37, fixes it: VDSUITE's "run all" passes on an NTSC C128 with 0.9.0.42): before that, use a real C64, and
   verify "is it really served" with the banner (`kernal-tr.bin` from 0.9.0.36 prints `VDRIVE SD n USB n` on the second line, `kernal-banner.bin` `TRVDRIVE` on the first; a stock image can't show either). (2) All SD/USB probing
   must happen in `VDrive_PreStart()` while the C64 waits, not at handler start. (3) Bus-handler data in fast RAM1, token STAT handshake,
   abort on a failed block (see Gotchas). (4) `FILE_WRITE` creates missing files on SD/USB: always probe with `FILE_READ` first.
@@ -116,7 +119,7 @@ Firmware integration and usage: `firmware/README.md`.
   py65 (`tests/test_banner.py`), `tests/fw_host`, VICE (`basic`: `SD 8 NOUSB`; `scan`: `SD 9 USB11`); **not on hardware yet**. Rebuild `kernal-tr.bin`.
 * 0.9.0.37: rebased on upstream with [TeensyROM PR 78](https://github.com/SensoriumEmbedded/TeensyROM/pull/78) merged (Kernal Replace senses HIRAM by DMA on a C128: the Skoe sense's A14 never reaches
   the PLA there). The PR carries the same early `HIRAM_State_RAM` return as our fix, so that hunk left `kernalreplace-fixes.patch` (which keeps `KernalFast`, the Ethernet poll and the trace);
-  `VD_ProbeFinish` also resets the DMA sense state (`KDS_State`) when it re-hooks `KernalCheck`. Firmware builds (`TeensyROM+_0.9.0.37_full.hex`); the DMA sense is confirmed on a C128 by the TR maintainer, **VDrive not run on a C128**.
+  `VD_ProbeFinish` also resets the DMA sense state (`KDS_State`) when it re-hooks `KernalCheck`. Firmware builds (`TeensyROM+_0.9.0.37_full.hex`); the DMA sense is confirmed on a C128 by the TR maintainer; VDrive on an NTSC C128 in C64 mode from 0.9.0.42 (VDSUITE "run all").
 * 0.9.0.39: `S:NAME.D64` (`.D71`/`.D81`, a comma list, a path or CMD path) with nothing mounted deletes image files on the card (host callback `scratch`, glue `VD_Scratch`, `cmd_scratch_images` in `vdrive.c`;
   docs/DESIGN.md 39). Exact names only (33 for a pattern), images only (64); a file with the FAT read-only attribute stays (26: SdFat will not open it for writing). `L:` on a card image
   is **not possible**: Teensyduino 1.61's SdFat 2.1.2 has no call that sets the attribute (set it on a PC). Unit, glue host and VICE (VDSUITE `8`) tests; on hardware through VDSUITE `8` (the read-only case is a hand check, not done).
@@ -127,7 +130,7 @@ Firmware integration and usage: `firmware/README.md`.
   `Fab04_GlobalKernalReplace`), since VDrive+SwiftLink runs AT commands with the poll on. Firmware builds (TR+ main image RAM1 free for locals 66172, padding 25592); fw_host passes; not on hardware.
 * 0.9.0.42: rebased on upstream `136baa83` (Kernal Replace hooks `KernalCheck` on a C64, `KernalCheckDMA` on a C128, chosen once per launch by `KernalCheckArm()`), which fixes the
   corrupted directory listings of 0.9.0.37-0.9.0.41 (see Bus timing margin). `kernal-fnet-poll.patch` (#85 rebased: its PreStart hunk sits after `fBusSnoop = KernalCheckArm();`) and
-  `kernalreplace-fixes.patch` regenerated on it; `VD_ProbeFinish` re-hooks through `KernalCheckArm()` instead of restoring the saved pointer with `HIRAM_State` Unknown. **Works on hardware (owner, 2026-11-01): directory loads clean again.** Not run on a C128.
+  `kernalreplace-fixes.patch` regenerated on it; `VD_ProbeFinish` re-hooks through `KernalCheckArm()` instead of restoring the saved pointer with `HIRAM_State` Unknown. **Works on hardware (owner, 2026-11-01): directory loads clean again.** VDSUITE "run all" also passes on an NTSC C128 in C64 mode (owner, 2026-11-01).
 * 0.9.0.43: **the firmware patches the C64's own KERNAL** (docs/DESIGN.md 40). The VDrive Special IOs no longer use the `<Shift-K>` file (it stays the plain
   Kernal Replace's): `VD_KernalImage` (`IOH_VDrive.c`, through the new `KernalImageSource` hook in `IOH_KernalReplace.c`, set by `KERNALPreStart()`) serves
   `sd:/VDrive/kernal.bin` as it is when present, else reads `$E000-$FFFF` by DMA (`PerformDMA`, 8 x 1 KB) and, if its CRC-32 is on `VD_KnownKernals`
@@ -139,7 +142,7 @@ Firmware integration and usage: `firmware/README.md`.
   `/VDrive/kernal.bin` first), VICE (`basic` ends with `SYS64738` and a reset without the IDs; `make test-variants` runs the five ROMs); firmware builds
   (TR+ main image RAM1 free for locals 66172, padding 25592: unchanged). **Not on hardware**: the DMA read of the real chip, the launch reset
   under the menu handler, `SYS64738` on a C64 / C128. `KernalCheck` disassembly checked (no push on entry).
-* Known open risks: C128 untested with VDrive (the DMA sense above should fix lesson 1; not run); tape (device 1) intentionally broken (its code space was reclaimed: $F8E2-$FB8D, $FB97-$FCD0).
+* Known open risks: the C128 has passed VDSUITE "run all" (NTSC, C64 mode) but not its hand checks, and a PAL C128 is untested; tape (device 1) intentionally broken (its code space was reclaimed: $F8E2-$FB8D, $FB97-$FCD0).
 
 ## Layout
 ```
@@ -168,12 +171,10 @@ build/          generated, git-ignored (kernal images derived from the ROM, libd
 
 ## Commands
 * `make test` — everything (rebuilds `build/libd64.dylib`, runs unit tests, device-number check, firmware host test, VDrive Config in py65, three VICE runs: `basic`,
-
   `scan` (true-drive 1541s at 8 and 10, with two VDCOPY whole-disk runs over tracks 17-19, about 2 minutes of it) and the menu's bus probe; about 13 minutes in all on the owner's Mac, measured 2026-10-31).
 * `make test-reset` — the cold-start hook `rst_hook` (SYS64738 back to the menu) in py65 (skipped without py65; also part of `make test`).
 * `make test-variants` — the patch on every ROM in `VD_KnownKernals`, in VICE (mock `variant` scenario); the ROMs are looked up next to `STOCK`
   (VICE's `C64/` and `C128/` data folders), missing ones skipped. Part of `make test`. `make test-fw` passes `STOCK` so the glue's in-memory patch is compared with `kernal-tr.bin`.
->>>>>>> 7d6a389 (Build the KERNAL on the TR and return to the menu on SYS64738 (0.9.0.43))
 * `make test-border` — the `irq_border` 6502 routine in py65 (skipped without `pip install py65`; also part of `make test`).
 * `make test-banner` — the banner's `vd_banner` in py65 with a fake serial bus (skipped without py65; also part of `make test`).
 * `make util` — `build/util/vdcopy.prg`, the file and whole-disk copy utility between any two units (also on the test disk), and `build/util/VDrive Config.prg`.

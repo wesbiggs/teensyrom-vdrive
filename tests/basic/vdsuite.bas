@@ -9,7 +9,7 @@
 100 print chr$(147);"vdrive test suite, device";d
 110 for k=1 to 8:print k;sn$(k):next
 120 print" 9 run all":print" 10 checks by hand":print" 0 quit"
-130 input"choice";m:if m=0 then close15:end
+130 input"choice";m:if m=0 then close15:sys 64738
 140 if m=10 then 9000
 150 if m<1 or m>9 then 100
 160 ra=(m=9):sn=m:if ra then sn=1:p=0:f=0
@@ -161,7 +161,7 @@
 6280 c$="md:":gosub 850:t$="no name (34)":x=(en=34):gosub 700
 6290 c$="rd:vs64.d64":gosub 850:t$="rd on a file (62)":x=(en=62):gosub 700
 6300 c$="cd:vs64.d64":gosub 850:c$="md:t1":gosub 850:t$="md with an image mounted (31)":x=(en=31):gosub 700
-6310 c$="cd:_":gosub 850:c$="md:t2":gosub 850:c$="cd:t2":gosub 850:c$="n:e.d64,ee":gosub 850
+6310 c$="cd:_":gosub 850:c$="md:t2":gosub 850:c$="cd:t2":gosub 850:c$="s:e.d64":gosub 850:c$="n:e.d64,ee":gosub 850
 6320 c$="cd:_":gosub 850:c$="cd:..":gosub 850:c$="rd:t2":gosub 850:t$="rd, folder not empty (63)":x=(en=63):gosub 700
 6330 c$="cd:/":gosub 850:for i=0 to 1023:poke 49152+i,0:next:n$="vdplain.prg":gosub 950
 6500 e=0:for j=0 to 599:if peek(49152+j)<>(j*7+3)-int((j*7+3)/256)*256 then e=e+1

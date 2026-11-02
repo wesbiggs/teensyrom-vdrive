@@ -567,10 +567,22 @@ def main(kernal, scenario="basic"):
 
         # --- VDSUITE: every section ("9" = run all) on the mock card (images made with N:, MD/RD, plain files, VDBAD.D64, CMD paths,
         #     the clean-up with S:/RD:) ---
+        def quit_suite():
+            """RETURN to VDSUITE's menu, 0 = quit: SYS 64738 asks for the TR menu; then the Teensy's reset (no ID: the stock cold start)"""
+            n0 = len(log)
+            m.keys('\r'); service(1.0); m.keys('0\r'); service(3.0)
+            check("vdsuite: 0 asks for the TR menu (calls %r)" % [e[0] for e in log[n0:]], 16 in [e[0] for e in log[n0:]] and menu["asked"] == 1)
+            m.write(MBX + 9, [0x10, 0x03]); m.jump(0xFCE2); service(1.5, limit=15)
+            check("vdsuite: then the reset, banner and READY.", banner in m.screen() and any("READY." in r for r in m.screen()))
+            m.write(MBX + 9, [0xD6, 0x64]); menu["asked"] = 0
+            run('OPEN15,8,15,"CD:/MOCK.D64":CLOSE15\r')                       # the suite ends at the card root
+            run('PRINT CHR$(147)\r')                                            # no banner left for the later SYS64738 check
+
+        ok = prog("vdsuite", ["", "1", "", "6", "", "6"], ["CARD FILES: 20 PASSED, 0 FAILED"], wait=10.0) and ok   # 6 twice: T2/E.D64 left by the first
+        quit_suite()
         ok = prog("vdsuite", ["", "9"], ["TOTAL 186 PASSED, 0 FAILED"], wait=10.0) and ok
-        m.keys('\r'); service(1.0); m.keys('0\r'); service(1.0)              # back to the menu, quit
+        quit_suite()
         check("vdsuite: its clean-up left no VDSCRATCH folder", not (sdroot / "vdscratch").exists() and (sdroot / "vdplain.prg").exists())
-        run('OPEN15,8,15,"CD:/MOCK.D64":CLOSE15\r')
         run('NEW\r')
 
         # --- SYS64738 while the handler answers: the cold start asks for the TR menu (VIO_MENU) and waits for the Teensy's reset ---
