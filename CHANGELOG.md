@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.9.0.45
+
+### Changed
+- **SwiftLink sends a byte at once when nothing is in flight** (Nagle's rule ahead of the 2 ms / 20 ms timers), so programs that wait for
+  an echo or reply (CCGMS text send, XMODEM ACKs) no longer pay 2 ms per exchange. The Tx buffer now takes its 256 bytes of RAM2 only
+  while SwiftLink runs and is emptied when the connection changes. Matches the revised upstream PR #80; builds, not on hardware.
+
 ## v0.9.0.44
 
 ### Changed

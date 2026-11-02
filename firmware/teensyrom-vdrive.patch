@@ -116,7 +116,7 @@ index 46e27c6..72c265a 100644
       rtFileCrt  , IOH_None         , (char*)"Super Expander 64"                , (uint8_t*)super_expander_64_crt      , sizeof(super_expander_64_crt) ,
       rtFileCrt  , IOH_None         , (char*)"Epyx Fast Load Cart"              , (uint8_t*)Epyx_Fast_Load_crt         , sizeof(Epyx_Fast_Load_crt) ,
 diff --git a/Source/Teensy/MinimalBoot/Common/Common_Defs.h b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
-index a0a6e5f..e8d99f2 100644
+index a0a6e5f..9cc0b9b 100644
 --- a/Source/Teensy/MinimalBoot/Common/Common_Defs.h
 +++ b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
 @@ -14,6 +14,7 @@
@@ -132,7 +132,7 @@ index a0a6e5f..e8d99f2 100644
  
  
 -#define TRVersion              "0.9"    //*VERSION*
-+#define TRVersion              "0.9.0.44"    //*VERSION*  (stock 0.9 + VDrive rev 44)
++#define TRVersion              "0.9.0.45"    //*VERSION*  (stock 0.9 + VDrive rev 45)
  #ifdef Fab04_Features
     char strVersionNumber[] = "TeensyROM+ v" TRVersion; 
  #else
@@ -299,27 +299,36 @@ index 3ba276c..c24a835 100644
  }
  
 diff --git a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_Swiftlink.c b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_Swiftlink.c
-index adca184..6f80b52 100644
+index adca184..99b397f 100644
 --- a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_Swiftlink.c
 +++ b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_Swiftlink.c
-@@ -179,6 +179,16 @@ volatile uint8_t SwiftRegStatus, SwiftRegCommand, SwiftRegControl, TurboRegEnhan
+@@ -179,6 +179,17 @@ volatile uint8_t SwiftRegStatus, SwiftRegCommand, SwiftRegControl, TurboRegEnhan
  uint8_t PlusCount;
  uint32_t C64CycBetweenRx, LastTxMillis = millis();
  
 +//Tx bytes from the C64 are collected here and sent with one client.write() per burst (one TCP segment per byte before), and only as
 +//  much at a time as the stack has room for: client.write() busy-waits for send buffer space, which stalls the main loop until the
 +//  stack frees some (and for good when the stack is polled from the main loop). While this buffer is full the C64 sees Tx not empty.
++//  Sent right away when nothing is in flight (Nagle's rule), otherwise collected until one of the limits below.
 +#define SwiftTxOutSize       256
 +#define SwiftTxOutIdleMicros 2000   //send once the C64 has sent nothing for this long,
 +#define SwiftTxOutMaxMicros  20000  //  or this long after the oldest byte waiting
-+DMAMEM uint8_t SwiftTxOut[SwiftTxOutSize];
++uint8_t* SwiftTxOut = NULL; //allocated in InitHndlr_SwiftLink()
 +uint16_t SwiftTxOutLen = 0;
 +uint32_t SwiftTxOutFirstMicros, SwiftTxOutLastMicros;
 +
  
  // Browser mode: Buffer saved in ASCII from host, converted before sending out
  //               Uses Send...Immediate  commands for direct output
-@@ -403,6 +413,7 @@ void InitHndlr_SwiftLink()
+@@ -277,6 +288,7 @@ void FreeSwiftlinkBuffs()
+    for(uint8_t cnt=0; cnt<NumPrevURLQueues; cnt++) {free(PrevURLQueue[cnt]); PrevURLQueue[cnt]=NULL;}
+    for(uint8_t cnt=0; cnt<RxQueueNumBlocks; cnt++) {free(RxQueue[cnt]); RxQueue[cnt]=NULL;}
+    free(TxMsg); TxMsg = NULL;   
++   free(SwiftTxOut); SwiftTxOut = NULL;
+ }
+ 
+ FLASHMEM bool ForceEthernetInit(void (*MsgOut)(const char *))
+@@ -403,6 +415,7 @@ void InitHndlr_SwiftLink()
     TxMsgOffset =0;
     PrintingHyperlink = false;   
     PlusCount=0;
@@ -327,7 +336,16 @@ index adca184..6f80b52 100644
     
     FreeDriveDirMenu(); //clear out drive menu to make space in RAM2
     // RAM2 usage as of 11/7/23:
-@@ -522,6 +533,21 @@ void IO1Hndlr_SwiftLink(uint8_t Address, bool R_Wn)
+@@ -419,6 +432,8 @@ void InitHndlr_SwiftLink()
+    }
+    TxMsg = (char*)malloc(TxMsgMaxSize);
+    if(TxMsg == NULL) Serial.println("OOM TxQ");
++   SwiftTxOut = (uint8_t*)malloc(SwiftTxOutSize);
++   if(SwiftTxOut == NULL) Serial.println("OOM SwiftTxOut");
+    
+    for(uint8_t cnt=0; cnt<NumPageLinkBuffs; cnt++)
+    {
+@@ -522,12 +537,28 @@ void IO1Hndlr_SwiftLink(uint8_t Address, bool R_Wn)
     }
  }
  
@@ -349,16 +367,25 @@ index adca184..6f80b52 100644
  void PollingHndlr_SwiftLink()
  {
     //detect connection change
-@@ -576,14 +602,20 @@ void PollingHndlr_SwiftLink()
+    if (ConnectedToHost != client.connected())
+    {
+       ConnectedToHost = client.connected();
++      SwiftTxOutLen = 0; //Tx bytes for the old connection must not reach a new one
+       if (BrowserMode)
+       {
+          if (!ConnectedToHost) AddRawStrToRxQueue("<eoftag>");  //add special tag to catch when complete
+@@ -576,14 +607,22 @@ void PollingHndlr_SwiftLink()
        while (client.available()) AddRawCharToRxQueue(client.read());
     #endif
     
 -   //if Tx data available, get it from C64
 -   if ((SwiftRegStatus & SwiftStatusTxEmpty) == 0) 
-+   //send collected Tx data to host when full, when the C64 pauses, or when the oldest byte has waited long enough
++   //send collected Tx data to host when full, when the C64 pauses, when the oldest byte has waited long enough,
++   //  or when nothing sent earlier is still unacknowledged (FNET_SOCKET_DEFAULT_SIZE: the socket size, never changed with Ethernet.setSocketSize())
 +   if (SwiftTxOutLen && (SwiftTxOutLen == SwiftTxOutSize ||
 +                         micros() - SwiftTxOutLastMicros >= SwiftTxOutIdleMicros ||
-+                         micros() - SwiftTxOutFirstMicros >= SwiftTxOutMaxMicros)) SendSwiftTxOut();
++                         micros() - SwiftTxOutFirstMicros >= SwiftTxOutMaxMicros ||
++                         client.availableForWrite() >= FNET_SOCKET_DEFAULT_SIZE)) SendSwiftTxOut();
 +
 +   //if Tx data available, get it from C64 (while SwiftTxOut is full, Tx stays not empty: the C64 waits until the stack has taken some)
 +   if ((SwiftRegStatus & SwiftStatusTxEmpty) == 0 && SwiftTxOutLen < SwiftTxOutSize)
