@@ -142,6 +142,9 @@ Firmware integration and usage: `firmware/README.md`.
   `/VDrive/kernal.bin` first), VICE (`basic` ends with `SYS64738` and a reset without the IDs; `make test-variants` runs the five ROMs); firmware builds
   (TR+ main image RAM1 free for locals 66172, padding 25592: unchanged). **Not on hardware**: the DMA read of the real chip, the launch reset
   under the menu handler, `SYS64738` on a C64 / C128. `KernalCheck` disassembly checked (no push on entry).
+* 0.9.0.44: SHIFT+RUN/STOP types `LOAD"*",8,1` CR `RUN` CR (stock: `LOAD` CR `RUN` CR, the tape). `P_E5EE` jumps to `shift_run` (after `rst_hook` in `$F875-$F8CF`), which echoes `LOAD"*`
+  through the editor's `$E716` and puts the other 9 keys in the 10-key buffer (no overrun into `$0281+`, unlike the SX-64's 15). docs/DESIGN.md 42. VICE (`basic` and the five ROMs in `variant`);
+  **not on hardware yet**. KERNAL patch, so the firmware's table changed (REV 44); rebuild `kernal-tr.bin` for `/VDrive/kernal.bin`.
 * Known open risks: the C128 has passed VDSUITE "run all" (NTSC, C64 mode) but not its hand checks, and a PAL C128 is untested; tape (device 1) intentionally broken (its code space was reclaimed: $F8E2-$FB8D, $FB97-$FCD0).
 
 ## Layout

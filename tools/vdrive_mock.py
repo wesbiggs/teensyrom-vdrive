@@ -272,6 +272,16 @@ def main(kernal, scenario="basic"):
             nonlocal ok
             print(("PASS" if cond else "FAIL"), label)
             ok = ok and cond
+        def shift_run():
+            """SHIFT+RUN/STOP ($83 in the keyboard buffer): LOAD"*",8,1 then RUN; "*" = TEST, the disk's first file (10 PRINT"HI")"""
+            run('POKE43,1:POKE44,8:NEW:PRINTCHR$(147);\r')          # BASIC at $0801 again (the BIG2 save moved it)
+            col = m.read(0x0286, 1)
+            m.write(0x0277, [0x83]); m.write(0xC6, [1]); service(1.5)        # straight into the buffer (the monitor's key feed maps characters)
+            scr = [r.rstrip() for r in m.screen()]
+            i = next((k for k, r in enumerate(scr) if r == 'LOAD"*",8,1'), None)
+            check("SHIFT+RUN: LOAD\"*\",8,1 typed, the first file loaded and RUN (screen %r)" % [r for r in scr if r][-8:],
+                  i is not None and "SEARCHING FOR *" in scr[i:] and "RUN" in scr[i:] and "HI" in scr[i:])
+            check("SHIFT+RUN: text colour ($0286) untouched", m.read(0x0286, 1) == col)
 
         banner = " 64K RAM  38911 FREE  VDRIVE " + ("SD 9 USB11" if scan else "SD 8 NOUSB")
         check("banner: %r (the KERNAL probed the bus itself at power-on)" % banner, banner in m.screen())
@@ -392,6 +402,7 @@ def main(kernal, scenario="basic"):
             run('NEW\r'); run('10 PRINT"VARIANT"\r'); run('SAVE"VARIANT",8\r', "SAVING VARIANT")
             run('NEW\r'); run('LOAD"VARIANT",8\r', "READY."); run('RUN\r', "VARIANT")
             run('OPEN15,8,15,"S:VARIANT":CLOSE15\r')
+            shift_run()
             n0 = len(log)
             run('SYS64738\r', "SYS64738")
             check("SYS64738: VIO_MENU sent (calls %r)" % [e[0] for e in log[n0:]], [e[0] for e in log[n0:]] == [16] and menu["asked"] == 1)
@@ -564,6 +575,7 @@ def main(kernal, scenario="basic"):
         run('LOAD"$/",8\r', "SEARCHING FOR $/"); run('LIST\r', '"SD:/')               # a folder path: the host directory
         run('OPEN15,8,15,"CD:/MOCK.D64":CLOSE15\r')                                       # leave the card as the later tests expect
         run('NEW\r')
+        shift_run()
 
         # --- VDSUITE: every section ("9" = run all) on the mock card (images made with N:, MD/RD, plain files, VDBAD.D64, CMD paths,
         #     the clean-up with S:/RD:) ---

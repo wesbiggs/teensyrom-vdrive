@@ -12,7 +12,7 @@ except ImportError:
     print("SKIP py65 not installed (pip install py65): rst_hook not simulated"); sys.exit(0)
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-stock = bytearray(8192); stock[0xA31:0xA34] = bytes([0x20, 0xEA, 0xFF]); stock[0x1D9:0x1DB] = bytes([0xA2, 0x01])
+stock = bytearray(8192); stock[0xA31:0xA34] = bytes([0x20, 0xEA, 0xFF]); stock[0x1D9:0x1DB] = bytes([0xA2, 0x01]); stock[0x5EE:0x5F3] = bytes([0xA2, 0x09, 0x78, 0x86, 0xC6])
 stock[0x429:0x447] = bytes.fromhex("a973a0e4201eaba53738e52baaa538e52c20cdbda960a0e4201eab4c44a6")   # INITMS from $E429 (the banner patch)
 stock[0x1CE2:0x1CE7] = bytes.fromhex("a2ff789ad8")                                                     # the cold start: LDX #$FF / SEI / TXS / CLD
 with tempfile.TemporaryDirectory() as t:

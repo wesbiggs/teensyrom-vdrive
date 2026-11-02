@@ -14,7 +14,7 @@ except ImportError:
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 stock = bytearray(8192)
-stock[0xA31:0xA34] = bytes([0x20, 0xEA, 0xFF]); stock[0x1D9:0x1DB] = bytes([0xA2, 0x01])
+stock[0xA31:0xA34] = bytes([0x20, 0xEA, 0xFF]); stock[0x1D9:0x1DB] = bytes([0xA2, 0x01]); stock[0x5EE:0x5F3] = bytes([0xA2, 0x09, 0x78, 0x86, 0xC6])
 stock[0x429:0x447] = bytes.fromhex("a973a0e4201eaba53738e52baaa538e52c20cdbda960a0e4201eab4c44a6")   # INITMS from $E429 (code only)
 with tempfile.TemporaryDirectory() as t:
     t = pathlib.Path(t); (t / "stock.bin").write_bytes(stock)

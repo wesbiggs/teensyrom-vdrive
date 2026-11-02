@@ -36,6 +36,8 @@ if table is None and "EA32" in segs:   # the border flash retargets the IRQ rout
     assert stock[0xEA31 - 0xE000:0xEA34 - 0xE000] == bytes([0x20, 0xEA, 0xFF]), "no JSR $FFEA at $EA31: not a 901227-03 KERNAL?"
 if table is None and "E1DA" in segs:   # the default LOAD/SAVE device is the operand of `LDX #$01` at $E1D9
     assert stock[0xE1D9 - 0xE000:0xE1DB - 0xE000] == bytes([0xA2, 0x01]), "no LDX #$01 at $E1D9: not a 901227-03 KERNAL?"
+if table is None and "E5EE" in segs:   # SHIFT+RUN: the editor's `LDX #n / SEI / STX $C6` that fills the keyboard buffer (n = 9; 15 on the SX-64)
+    assert stock[0xE5EE - 0xE000] == 0xA2 and stock[0xE5F0 - 0xE000:0xE5F3 - 0xE000] == bytes([0x78, 0x86, 0xC6]), "no SHIFT+RUN buffer fill at $E5EE: not a 901227-03 KERNAL?"
 if table is None and "E444" in segs:   # the banner (patches/vdbanner.s) rewrites the strings INITMS prints and its closing `JMP $A644`
     assert stock[0xE429 - 0xE000:0xE447 - 0xE000] == bytes.fromhex("a973a0e4201eaba537 38e52baaa538e52c20cdbd a960a0e4201eab4c44a6".replace(" ", "")), \
         "INITMS at $E429 is not the 901227-03 one (strings at $E473 / $E460, JMP $A644)"

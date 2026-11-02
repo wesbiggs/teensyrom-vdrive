@@ -77,6 +77,11 @@ C_MENU   = 16
 .segment "P_E1DA"
         .byte 8
 
+; ---- SHIFT+RUN/STOP: LOAD"*",8,1 and RUN (stock: LOAD and RUN, i.e. from the tape) ----
+; The screen editor's `LDX #$09 / SEI / STX $C6` at $E5EE fills the keyboard buffer from a table; shift_run (after rst_hook) does it instead.
+.segment "P_E5EE"
+        jmp shift_run
+
 ; ---- hooks over the stock entry points (3 bytes each) ----------------------
 .segment "P_ED09"
         jmp hk_talk
@@ -507,5 +512,29 @@ rst_hook:
         jsr vcall
         bcc *                   ; answered: the Teensy resets the C64 into its menu
 @stock: jmp $FCE5               ; the stock cold start from its `TXS`
+
+; SHIFT+RUN/STOP, from the screen editor's key loop at $E5EE: `LOAD"*",8,1` CR `RUN` CR is 16 keys and the keyboard buffer holds 10
+; (the SX-64 puts 15 in and runs over $0281-$0285; one more would reach the text colour at $0286). So the first 6 are echoed here through
+; the editor's own output ($E716, as $E5CA does for every typed key; X, Y kept) and the other 9 go in the buffer as stock does.
+; Same as typing them: the line is read from the screen at the first CR, RUN waits in the buffer until the load ends.
+SR_ECHO = 6                     ; keys echoed; the rest (SR_KEYS) go in the buffer
+shift_run:
+        ldx #0
+@echo:  lda sr_keys,x
+        jsr $E716
+        inx
+        cpx #SR_ECHO
+        bne @echo
+        ldx #SR_KEYS
+        sei
+        stx $C6                 ; NDX: keys in the buffer
+@buf:   lda sr_keys+SR_ECHO-1,x
+        sta $0276,x
+        dex
+        bne @buf
+        jmp $E5CD               ; the editor's wait for a key, as stock
+sr_keys: .byte "LOAD", $22, "*", $22, ",8,1", $0D, "RUN", $0D
+SR_KEYS = * - sr_keys - SR_ECHO
+.assert SR_KEYS <= 10, error, "SHIFT+RUN puts more keys in the buffer than it holds ($0277-$0280)"
 rst_hook_end:
-.assert rst_hook_end <= $F8D0, lderror, "the reset hook overflows into the tape STOP check ($F8D0, used by PRESS PLAY)"
+.assert rst_hook_end <= $F8D0, lderror, "the reset hook and SHIFT+RUN overflow into the tape STOP check ($F8D0, used by PRESS PLAY)"

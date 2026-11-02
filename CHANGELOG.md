@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.9.0.44
+
+### Changed
+- **SHIFT+RUN/STOP loads from disk**: it types `LOAD"*",8,1` and `RUN` (stock: `LOAD` and `RUN`, from the tape, whose code the VDrive
+  KERNAL reclaimed), so it starts the first file on the disk in device 8, loaded to the address in its file. The line shows on the screen
+  as if typed. VICE on the five KERNAL ROMs the firmware patches; not on hardware (`docs/DESIGN.md` section 42).
+
+Firmware 0.9.0.44 (the KERNAL patch it lays over the C64's ROM) **or** a rebuilt `kernal-tr.bin` for `/VDrive/kernal.bin`.
+
+
 ## v0.9.0.43
 
 ### Added
