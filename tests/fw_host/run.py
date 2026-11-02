@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Compile firmware/IOH_VDrive.c against host stubs and run it; then check the images it wrote with c1541."""
+"""Compile firmware/IOH_VDrive.c against host stubs and run it; then check the images it wrote with c1541.
+
+usage: run.py [STOCK.bin]   with a stock KERNAL the patched image the glue builds from it (VD_KernalImage) is compared with
+                            tools/build.py's; without one (or with a ROM the glue does not know) only the other KERNAL checks run"""
 import pathlib, shutil, subprocess, sys, tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
@@ -13,6 +16,12 @@ try:
     shutil.copy(ROOT / "firmware/IOH_VDriveSwiftREU.c", tmp / "IO_Handlers/swiftreu.c")
     for f in (ROOT / "d64").iterdir():
         if f.suffix in (".c", ".h"): shutil.copy(f, tmp / "vdrive" / f.name)
+    subprocess.run([sys.executable, "-I", str(ROOT / "tools/build.py"), "--table", str(tmp / "vdrive/vd_kpatch.h")], check=True)
+    stock = pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else None
+    kstock, kpatched = tmp / "kstock.bin", tmp / "kpatched.bin"
+    if stock and stock.exists():
+        shutil.copy(stock, kstock)
+        subprocess.run([sys.executable, "-I", str(ROOT / "tools/build.py"), str(stock), str(kpatched)], check=True, capture_output=True)
     shutil.copy(ROOT / "tests/fw_host/stub.h", tmp / "stub.h")
     main = (ROOT / "tests/fw_host/main.cpp").read_text().replace('#include "glue.c"', '#include "IO_Handlers/glue.c"')
     # the glue expects vdrive_io.h's VIO_/VD_ symbols; vdrive.h/d64.h arrive through the .c includes' headers
@@ -53,7 +62,7 @@ try:
     (sd / "AVERYLONGFILENAME.PRG").write_bytes(b"x")
     expect = tmp / "hello.bin"; expect.write_bytes(hello)
 
-    r = subprocess.run([str(exe), str(sd), str(usb), str(expect)], capture_output=True, text=True)
+    r = subprocess.run([str(exe), str(sd), str(usb), str(expect), str(kstock), str(kpatched)], capture_output=True, text=True)
     print(r.stdout, end="")
     ok = r.returncode == 0
 

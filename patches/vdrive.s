@@ -13,8 +13,9 @@
 ;   MBX+5 LEN   RW name / block length for the fast LOAD / SAVE commands
 ;   MBX+6 DEV0  R  device number of the SD drive now, MBX+7 DEV1 the USB drive (0 = none): PEEK(56854), PEEK(56855)
 ;   MBX+8 BORDER R request for the IRQ routine's border flash (disk-switch feedback, see irq_border at the end)
+;   MBX+9 ID0, MBX+10 ID1  R  $D6 $64 while the VDrive handler answers (the reset hook, see rst_hook at the end)
 ;
-; Reclaims tape bit-timing code $F8E2-$FB8D (device 1 tape I/O stops working).
+; Reclaims tape bit-timing code $F8E2-$FB8D and the cassette IRQ set-up $F875-$F8CF (device 1 tape I/O stops working).
 
 .ifndef MBX
 MBX = $DE10
@@ -30,6 +31,9 @@ MBX_STAT = MBX+3
 MBX_ST   = MBX+4
 MBX_LEN  = MBX+5
 MBX_BORDER = MBX+8
+MBX_ID   = MBX+9
+VD_ID0   = $D6              ; VIO_ID0_VAL / VIO_ID1_VAL in d64/vdrive_io.h
+VD_ID1   = $64
 STAT_OK      = $5A      ; answer tokens: exact values, so a misread can't pass for "done"
 STAT_NOTMINE = $A5
 STAT_SCAN    = $3C      ; "scan the serial bus first, then send this command again" (only ever answered to a LISTEN, TALK, fast LOAD / SAVE open)
@@ -51,6 +55,7 @@ C_FSAVE_BLK   = 12
 C_FSAVE_CLOSE = 13
 C_SCAN   = 14
 C_FREE   = 15
+C_MENU   = 16
 
 ; ---- fast LOAD / SAVE hooks: replace the `JSR $F3D5` (open serial file) --------
 .segment "P_F4C8"
@@ -61,6 +66,11 @@ C_FREE   = 15
 ; ---- border flash: the IRQ routine ($EA31) calls UDTIM through `JSR $FFEA`; point that call at irq_border instead ----
 .segment "P_EA32"
         .word irq_border
+
+; ---- cold start ($FCE2: the RESET vector, also SYS64738): back to the TR menu while the VDrive handler runs ----
+; Replaces `LDX #$FF / SEI`; rst_hook does them and goes on at the stock `TXS`.
+.segment "P_FCE2"
+        jmp rst_hook
 
 ; ---- default device for LOAD/SAVE/VERIFY without a number: 8, as on the SX-64 (stock: 1, the tape, whose code we reclaimed) ----
 ; BASIC's parameter routine at $E1D4 does `LDX #$01` at $E1D9 before SETLFS; this is its operand.
@@ -472,3 +482,30 @@ irq_border:
 @done:  jmp $F69B
 irq_border_end:
 .assert irq_border_end <= $FB8E, lderror, "reclaimed tape space overflows into the stock KERNAL"
+
+; ---- reset hook: SYS64738 (or any jump to the RESET vector) returns to the TR menu ----
+; The cold start also runs when the TR menu launches a program, while the menu's own IO1 handler still answers (the mailbox is not
+; live yet), and on a machine with no VDrive at all. So nothing is written to the mailbox until both ID registers read right: the
+; menu's $DE19/$DE1A are a SID's init address, never $D6xx; an unanswered read floats to $DE. Then VIO_MENU: the Teensy answers,
+; writes back what is unsaved and resets the C64 into its menu, so after the answer the CPU only waits. No answer (~1 s, vcall's
+; time-out): the stock cold start. Lives in the cassette IRQ set-up ($F875-$F8CF), reached only by a tape transfer with PLAY pressed,
+; which already ran into the reclaimed tape code above; now it restarts the machine instead.
+.segment "P_F875"
+rst_hook:
+        ldx #$FF
+        sei
+        txs                     ; vcall needs a stack
+        lda MBX_ID              ; both bytes, the first read twice: a bit-mixed late answer must not pass
+        cmp #VD_ID0
+        bne @stock
+        cmp MBX_ID
+        bne @stock
+        lda MBX_ID+1
+        cmp #VD_ID1
+        bne @stock
+        lda #C_MENU
+        jsr vcall
+        bcc *                   ; answered: the Teensy resets the C64 into its menu
+@stock: jmp $FCE5               ; the stock cold start from its `TXS`
+rst_hook_end:
+.assert rst_hook_end <= $F8D0, lderror, "the reset hook overflows into the tape STOP check ($F8D0, used by PRESS PLAY)"

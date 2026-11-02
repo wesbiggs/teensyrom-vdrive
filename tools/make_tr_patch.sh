@@ -104,8 +104,27 @@ edit(f"{C}/IO_Handlers/StatusFunctions.c",
      "#ifdef Fab04_VDrive\n      NextIOHndlr = VDriveSwift_Remap(NextIOHndlr);   //SwiftLink programs keep the virtual drive\n#endif\n")
 edit(f"{C}/IO_Handlers/StatusFunctions.c",
      "   if (NextIOHndlr == IOH_KernalReplace)\n   {\n      InitHndlr_KERNALReplace_PreStart(); //separate function so it doesn't get called twice\n",
-     "   if (NextIOHndlr == IOH_KernalReplace\n#ifdef Fab04_VDrive\n       || VD_IsHandler(NextIOHndlr)\n#endif\n      )\n   {\n      InitHndlr_KERNALReplace_PreStart(); //separate function so it doesn't get called twice\n"
+     "   if (NextIOHndlr == IOH_KernalReplace\n#ifdef Fab04_VDrive\n       || VD_IsHandler(NextIOHndlr)\n#endif\n      )\n   {\n"
+     "#ifdef Fab04_VDrive\n      KernalImageSource = VD_IsHandler(NextIOHndlr) ? &VD_KernalImage : NULL; //VDrive: its own image (IOH_VDrive.c), not the <Shift-K> file\n#endif\n"
+     "      InitHndlr_KERNALReplace_PreStart(); //separate function so it doesn't get called twice\n"
      "#ifdef Fab04_VDrive\n      if (VD_IsHandler(NextIOHndlr)) VDrive_PreStart(); //SD/USB probing now, while the C64 still waits\n#endif\n")
+# The VDrive Special IOs serve their own KERNAL (/VDrive/kernal.bin, else the C64's own ROM patched in memory; docs/DESIGN.md 40):
+# PreStart takes the image from KernalImageSource when one is set, the <Shift-K> file otherwise. The file branch stays where it
+# is, only braced, so the hunks are two small insertions.
+edit(f"{C}/IO_Handlers/IOH_KernalReplace.c",
+     "FLASHMEM void InitHndlr_KERNALReplace_PreStart() //not called automatically via init; called earlier, manually, from KERNALPreStart()\n",
+     "#ifdef Fab04_VDrive\n"
+     "bool (*KernalImageSource)(uint8_t *Bin) = NULL; //fills Bin (8192 bytes) instead of the <Shift-K> file, false: nothing to serve (VDrive, set by KERNALPreStart())\n"
+     "#endif\n\n"
+     "FLASHMEM void InitHndlr_KERNALReplace_PreStart() //not called automatically via init; called earlier, manually, from KERNALPreStart()\n")
+edit(f"{C}/IO_Handlers/IOH_KernalReplace.c",
+     "   //load kernal image into RAM:\n",
+     "#ifdef Fab04_VDrive\n"
+     "   if (KernalImageSource != NULL)\n   {\n      if (!KernalImageSource(KernalBin))\n      {\n         FreeKernalBin();\n         return;\n      }\n   }\n   else\n#endif\n"
+     "   {\n   //load kernal image into RAM:\n")
+edit(f"{C}/IO_Handlers/IOH_KernalReplace.c",
+     "   Serial.printf(\"Read %lu Bytes\\nKernal replace Enabled\\n\", CharNum);\n   LoadFile.close();\n",
+     "   Serial.printf(\"Read %lu Bytes\\nKernal replace Enabled\\n\", CharNum);\n   LoadFile.close();\n   }\n")
 # The launch-time bus probe (docs/DESIGN.md 37). KERNALPreStart() first lets VDrive_ProbeStep() answer the menu's probe steps;
 # the menu clears rwRegScratch before PreStart (a TeensyROM without VDrive never sets it, so its menu skips the probe) and runs
 # VDriveProbe after it, with the C64's own KERNAL still in place.
@@ -175,6 +194,8 @@ rm -rf "$B"
 mkdir -p "$C/vdrive"
 cp "$HERE"/d64/d64.c "$HERE"/d64/d64.h "$HERE"/d64/vdrive.c "$HERE"/d64/vdrive.h \
    "$HERE"/d64/vdrive_io.c "$HERE"/d64/vdrive_io.h "$HERE"/d64/vd_cfg.h "$C/vdrive/"
+# the KERNAL patches as a table for VD_KernalPatchApply (our bytes only; the firmware lays them over the C64's own ROM)
+python3 -I "$HERE/tools/build.py" --table "$C/vdrive/vd_kpatch.h"
 git add -A -N
 git diff --no-color > "$HERE/firmware/teensyrom-vdrive.patch"
 echo "wrote firmware/teensyrom-vdrive.patch ($(grep -c '^+++ ' "$HERE/firmware/teensyrom-vdrive.patch") files)"

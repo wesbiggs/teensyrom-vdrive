@@ -28,6 +28,16 @@ uint8_t KernalFast[8192];                             // the image IOH_KernalRep
 static const int kBannerTag = 0x1BB0;                 // where the tag sits in this fake image (anywhere: the glue searches for it)
 static int banner(int unit) { return KernalFast[kBannerTag + 8 + unit]; }
 
+static uint8_t g_c64_kernal[8192];                    // what a DMA read of $E000-$FFFF returns
+static int g_dma_reads = 0; static bool g_dma_fail = false;
+bool PerformDMA(DMA_Trans_RnW RnW, uint16_t StartAddr, uint8_t *Buffer, uint32_t Length, DMA_Addr_Mode FixC64Addr)
+{
+    if (g_dma_fail || RnW != DMA_READ || FixC64Addr != DMA_ADDR_INCREMENT || StartAddr < 0xE000 || StartAddr + Length > 0x10000) return false;
+    memcpy(Buffer, g_c64_kernal + (StartAddr - 0xE000), Length); g_dma_reads++;
+    return true;
+}
+bool CloseDMA() { return true; }
+
 #include "glue.c"          // = firmware/IOH_VDrive.c (with ../vdrive/*.c resolved by the build script)
 
 // stand-ins for IOH_Swiftlink.c: record which entry points the combined handler reaches
@@ -200,8 +210,8 @@ int main(int argc, char **argv)
 
     // the mailbox lives at $DE10; the ACIA range below it is not ours
     g_bus_out = 0x77; IO1Hndlr_VDrive(0x00, true); IO1Hndlr_VDrive(0x03, true); IO1Hndlr_VDrive(0x07, true); IO1Hndlr_VDrive(0x08, true);
-    IO1Hndlr_VDrive(VD_MboxBase + 9, true);
-    check("mailbox is not mapped at $DE00-$DE07 or past $DE18", g_bus_out == 0x77);
+    IO1Hndlr_VDrive(VD_MboxBase + 11, true);
+    check("mailbox is not mapped at $DE00-$DE07 or past $DE1A", g_bus_out == 0x77);
     g_bus_in = 0x42; IO1Hndlr_VDrive(0x00, false);
     check("a write to $DE00 does not touch the mailbox", vioHot.arg != 0x42 && !vioHot.pending);
 
@@ -868,6 +878,64 @@ int main(int argc, char **argv)
             cmd15("CD:/"); status15();
         }
 
+    }
+
+    // ---- the ID registers the KERNAL's reset hook reads ----
+    check("ID registers read $D6 $64 (the reset hook's VIO_MENU gate)", r1(VIO_ID0) == 0xD6 && r1(VIO_ID1) == 0x64);
+    w1(VIO_ID0, 0); check("ID registers ignore writes", r1(VIO_ID0) == 0xD6);
+    g_bus_out = 0x77; IO1Hndlr_VDrive(VD_MboxBase + VIO_NREGS, true);
+    check("the register after ID1 is not driven", g_bus_out == 0x77);
+
+    // ---- the KERNAL image (VD_KernalImage): /VDrive/kernal.bin, else the C64's own ROM patched in memory ----
+    {
+        check("CRC-32 of \"123456789\" is the standard check value", VD_Crc32((const uint8_t *)"123456789", 9) == 0xCBF43926);
+        std::string stock, patched;
+        if (argc > 5) {
+            std::ifstream a(argv[4], std::ios::binary), b(argv[5], std::ios::binary);
+            stock.assign(std::istreambuf_iterator<char>(a), {}); patched.assign(std::istreambuf_iterator<char>(b), {});
+        }
+        static uint8_t img[8192];
+        auto put = [&](FS &fs, const char *name, const std::string &data) { std::ofstream(fs.root / name, std::ios::binary) << data; };
+        fs_::remove_all(SD.root / "VDrive");
+        bool known = false;
+        if (stock.size() == 8192 && patched.size() == 8192) {
+            uint32_t crc = VD_Crc32((const uint8_t *)stock.data(), 8192);
+            for (const stcVDKnownKernal &k : VD_KnownKernals) known |= k.crc == crc;
+        }
+        if (known) {
+            memcpy(g_c64_kernal, stock.data(), 8192); g_dma_reads = 0; memset(img, 0xEE, sizeof img);
+            bool ok = VD_KernalImage(img);
+            check("no /VDrive/kernal.bin: the C64's KERNAL read by DMA, patched == tools/build.py's kernal-tr.bin",
+                  ok && g_dma_reads == 8 && memcmp(img, patched.data(), 8192) == 0);
+            g_c64_kernal[0x123] ^= 1;                                       // one byte off: a ROM the patch does not know
+            check("a ROM not on the list (one byte changed) serves nothing", !VD_KernalImage(img));
+            g_c64_kernal[0x123] ^= 1;
+            memcpy(g_c64_kernal, patched.data(), 8192);                     // the replacement still served (must not happen): not on the list either
+            check("an already patched image is not patched again", !VD_KernalImage(img));
+            memcpy(g_c64_kernal, stock.data(), 8192);
+        } else {
+            puts("SKIP the patched-ROM comparison: no known stock KERNAL given (run.py STOCK.bin)");
+        }
+        memset(g_c64_kernal, 0xAA, sizeof g_c64_kernal);
+        check("unknown ROM: nothing served", !VD_KernalImage(img));
+        g_dma_fail = true;
+        check("DMA read fails: nothing served", !VD_KernalImage(img));
+        fs_::create_directories(SD.root / "VDrive");
+        std::string mine(8192, '\0'); for (int i = 0; i < 8192; i++) mine[i] = (char)(i * 7);
+        put(SD, "VDrive/kernal.bin", mine);
+        g_dma_reads = 0; memset(img, 0, sizeof img);
+        check("/VDrive/kernal.bin is served as it is, no DMA read", VD_KernalImage(img) && memcmp(img, mine.data(), 8192) == 0 && g_dma_reads == 0);
+        put(SD, "VDrive/kernal.bin", mine.substr(0, 8000));
+        check("a kernal.bin of the wrong size is not used (and the failed DMA read then serves nothing)", !VD_KernalImage(img));
+        g_dma_fail = false;
+        if (known) {
+            memcpy(g_c64_kernal, stock.data(), 8192);
+            check("... with DMA working, the C64's own ROM patched instead", VD_KernalImage(img) && memcmp(img, patched.data(), 8192) == 0);
+        }
+        fs_::remove_all(SD.root / "VDrive");
+        uint8_t z[8192]; memset(z, 0, sizeof z);
+        check("the patch table lays its runs inside $E000-$FFFF (the reset hook's JMP at $FCE2)",
+              VD_KernalPatchApply(z) && z[0x1CE2] == 0x4C && z[0x1CE3] == 0x75 && z[0x1CE4] == 0xF8);
     }
 
     printf("%s\n", fails ? "FAILED" : "ALL OK");

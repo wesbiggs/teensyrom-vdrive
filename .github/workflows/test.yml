@@ -29,7 +29,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.local/share/vice
-          key: vice-roms-v1
+          key: vice-roms-v2   # v2: + the C128 C64-mode KERNALs (make test-variants)
 
       - name: Install toolchain and ROMs
         run: |

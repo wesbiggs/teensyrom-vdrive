@@ -96,6 +96,7 @@ class Mon:
     def write(self, a, data):
         self.req(0x02, struct.pack("<BHHBH", 0, a, a + len(data) - 1, 0, 0) + bytes(data))
     def go(self): self.req(0xAA)
+    def jump(self, pc): self.req(0x32, struct.pack("<BHBBH", 0, 1, 3, 3, pc))   # registers set: PC (id 3)
     def keys(self, text): self.req(0x72, bytes([len(text)]) + text.encode("latin1"))
     def screen(self):
         raw = self.read(0x0400, 1000)
@@ -222,6 +223,7 @@ def main(kernal, scenario="basic"):
         log = []
         last_devs = [None]
         fault = {"at": 0, "n": 0}               # fault injection: answer NOT_MINE to the Nth FLOAD_BLK of a run
+        menu = {"asked": 0}
 
         def service(timeout, limit=None):
             """handle mailbox stops until quiet for `timeout` s (or `limit` s in total, for programs that never go quiet)"""
@@ -233,13 +235,14 @@ def main(kernal, scenario="basic"):
                 if typ == 0x62:  # stopped
                     regs = m.read(MBX, 6)
                     c, a, ln = regs[0], regs[1], regs[5]
-                    if 1 <= c <= 15:
+                    if 1 <= c <= 16:
                         if c in (9, 11, 12):                    # commands that consume the window
                             io.win_write(bytes(m.read(WIN, WIN_SIZE)))
                         nm, d, st = io.call(c, a, ln, allow_scan=True)
                         if c == 10 and fault["at"]:
                             fault["n"] += 1
                             if fault["n"] == fault["at"]: nm = True
+                        if c == 16: menu["asked"] += LIB.vio_take_menu(io.v)   # VIO_MENU: the Teensy would now reset into the TR menu
                         log.append((c, a, d, st, nm))
                         if c in (9, 10):                        # commands that produce window data
                             m.write(WIN, io.win_read(WIN_SIZE))
@@ -251,6 +254,7 @@ def main(kernal, scenario="basic"):
                     m.go()
 
         m.write(MBX, [0] * 5)
+        m.write(MBX + 9, [0xD6, 0x64])          # the ID registers (VIO_ID0 / VIO_ID1): the KERNAL's reset hook asks for the TR menu
         cp = m.req(0x12, struct.pack("<HHBBBB", CMD, CMD, 1, 1, 2, 0))  # store checkpoint on CMD
         cp_num = struct.unpack_from("<I", cp[2], 0)[0]
         time.sleep(0.5); service(1.0)       # boot
@@ -380,6 +384,21 @@ def main(kernal, scenario="basic"):
             check("vdcopy disk: 1541 -> new USB image done without errors (row 1: %r)" % scr[1], "DONE, 0 READ ERRORS" in scr[1])
             made = hs["disks"].get(sdroot / "fromreal.d64")
             check("vdcopy disk: FROMREAL.D64 made, tracks 17-19 are the floppy's", made is not None and made.dump()[span] == floppy[span])
+            return 0 if ok else 1
+
+        if scenario == "variant":
+            # the patch on another base ROM (make test-variants): the drive, a SAVE / LOAD round trip, and the reset hook
+            run('LOAD"$",8\r', "SEARCHING FOR $"); run('LIST\r', '0 "MOCKDISK')
+            run('NEW\r'); run('10 PRINT"VARIANT"\r'); run('SAVE"VARIANT",8\r', "SAVING VARIANT")
+            run('NEW\r'); run('LOAD"VARIANT",8\r', "READY."); run('RUN\r', "VARIANT")
+            run('OPEN15,8,15,"S:VARIANT":CLOSE15\r')
+            n0 = len(log)
+            run('SYS64738\r', "SYS64738")
+            check("SYS64738: VIO_MENU sent (calls %r)" % [e[0] for e in log[n0:]], [e[0] for e in log[n0:]] == [16] and menu["asked"] == 1)
+            m.write(MBX + 9, [0x10, 0x03])          # no ID (the menu's handler during a launch): the stock cold start
+            m.jump(0xFCE2); service(1.5, limit=15)   # what a reset does; no `go` while VICE runs (it leaves the monitor stopping after every command)
+            check("reset without the ID: the stock cold start, banner and READY.", banner in m.screen() and any("READY." in r for r in m.screen()))
+            run('LOAD"$",8\r', "SEARCHING FOR $"); run('LIST\r', '0 "MOCKDISK')      # the drive still answers after it
             return 0 if ok else 1
 
         # --- read side ---
@@ -552,6 +571,19 @@ def main(kernal, scenario="basic"):
         m.keys('\r'); service(1.0); m.keys('0\r'); service(1.0)              # back to the menu, quit
         check("vdsuite: its clean-up left no VDSCRATCH folder", not (sdroot / "vdscratch").exists() and (sdroot / "vdplain.prg").exists())
         run('OPEN15,8,15,"CD:/MOCK.D64":CLOSE15\r')
+        run('NEW\r')
+
+        # --- SYS64738 while the handler answers: the cold start asks for the TR menu (VIO_MENU) and waits for the Teensy's reset ---
+        n0 = len(log)
+        run('SYS64738\r', "SYS64738")
+        check("SYS64738: VIO_MENU sent, nothing else (calls %r)" % [e[0] for e in log[n0:]], [e[0] for e in log[n0:]] == [16] and menu["asked"] == 1)
+        check("SYS64738: the KERNAL waits for the reset (no banner, no READY.)", not any("38911" in r for r in m.screen()))
+        # without the ID (the TR menu's handler during a launch, or no VDrive) the cold start is the stock one
+        m.write(MBX + 9, [0x10, 0x03])          # what the menu's $DE19/$DE1A hold after a tune with init $1003
+        m.jump(0xFCE2); service(1.5, limit=15)   # through the RESET vector's target, as a reset (not the monitor's reset command, nor a `go` while VICE runs: both leave it stopping after every command)
+        check("reset without the ID: banner and READY. (calls %r)" % [e[0] for e in log[n0 + 1:]],
+              banner in m.screen() and any("READY." in r for r in m.screen()) and menu["asked"] == 1)
+        run('LOAD"$",8\r', "SEARCHING FOR $"); run('LIST\r', '0 "MOCKDISK')      # the drive still answers after it
         run('NEW\r')
 
         # --- handler absent (BUSY never clears): KERNAL must time out and use the real IEC code ---

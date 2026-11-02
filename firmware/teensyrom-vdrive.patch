@@ -116,7 +116,7 @@ index 46e27c6..72c265a 100644
       rtFileCrt  , IOH_None         , (char*)"Super Expander 64"                , (uint8_t*)super_expander_64_crt      , sizeof(super_expander_64_crt) ,
       rtFileCrt  , IOH_None         , (char*)"Epyx Fast Load Cart"              , (uint8_t*)Epyx_Fast_Load_crt         , sizeof(Epyx_Fast_Load_crt) ,
 diff --git a/Source/Teensy/MinimalBoot/Common/Common_Defs.h b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
-index a0a6e5f..29120b2 100644
+index a0a6e5f..e047e36 100644
 --- a/Source/Teensy/MinimalBoot/Common/Common_Defs.h
 +++ b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
 @@ -14,6 +14,7 @@
@@ -132,7 +132,7 @@ index a0a6e5f..29120b2 100644
  
  
 -#define TRVersion              "0.9"    //*VERSION*
-+#define TRVersion              "0.9.0.42"    //*VERSION*  (stock 0.9 + VDrive rev 42)
++#define TRVersion              "0.9.0.43"    //*VERSION*  (stock 0.9 + VDrive rev 43)
  #ifdef Fab04_Features
     char strVersionNumber[] = "TeensyROM+ v" TRVersion; 
  #else
@@ -208,7 +208,7 @@ index ae1d60b..097c10e 100644
        &IOHndlr_KernalReplace,      //IOH_KernalReplace,
     #endif  
 diff --git a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_KernalReplace.c b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_KernalReplace.c
-index 3ba276c..449bef5 100644
+index 3ba276c..c24a835 100644
 --- a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_KernalReplace.c
 +++ b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_KernalReplace.c
 @@ -48,6 +48,15 @@ stcIOHandlers IOHndlr_KernalReplace =
@@ -244,26 +244,50 @@ index 3ba276c..449bef5 100644
        SetAddrPortDirIn;//set address ports to input
        SetAddrBufsIn;   //set address buffers to input
        SetExROMDeassert;
-@@ -334,6 +342,8 @@ FLASHMEM void FreeKernalBin()
+@@ -334,6 +342,12 @@ FLASHMEM void FreeKernalBin()
  #endif
  }
  
 +void FnetLoopPollStart(); //Teensy.ino
 +
++#ifdef Fab04_VDrive
++bool (*KernalImageSource)(uint8_t *Bin) = NULL; //fills Bin (8192 bytes) instead of the <Shift-K> file, false: nothing to serve (VDrive, set by KERNALPreStart())
++#endif
++
  FLASHMEM void InitHndlr_KERNALReplace_PreStart() //not called automatically via init; called earlier, manually, from KERNALPreStart()
  {
  #ifdef Fab04_GlobalKernalReplace
-@@ -387,6 +397,9 @@ FLASHMEM void InitHndlr_KERNALReplace_PreStart() //not called automatically via
+@@ -350,6 +364,18 @@ FLASHMEM void InitHndlr_KERNALReplace_PreStart() //not called automatically via
+       return;
+    }
+ 
++#ifdef Fab04_VDrive
++   if (KernalImageSource != NULL)
++   {
++      if (!KernalImageSource(KernalBin))
++      {
++         FreeKernalBin();
++         return;
++      }
++   }
++   else
++#endif
++   {
+    //load kernal image into RAM:
+    char Filename[MaxPathLength];
+    EEPreadStr(eepAdKERNALBinName, Filename);
+@@ -387,6 +413,10 @@ FLASHMEM void InitHndlr_KERNALReplace_PreStart() //not called automatically via
     //Serial.printf("Read %lu Bytes in %lumS\n", CharNum, millis()-StartmS);
     Serial.printf("Read %lu Bytes\nKernal replace Enabled\n", CharNum);
     LoadFile.close();
++   }
 +#ifndef KERNAL_NO_DTCM
 +   memcpy(KernalFast, KernalBin, 8192); //fast copy for the bus ISR
 +#endif
     KSenseApplyMode();
     KDS_State = KDS_Idle;
     KDS_Read01Valid = false;
-@@ -399,6 +412,10 @@ FLASHMEM void InitHndlr_KERNALReplace_PreStart() //not called automatically via
+@@ -399,6 +429,10 @@ FLASHMEM void InitHndlr_KERNALReplace_PreStart() //not called automatically via
     fKernRepl = KernalCheckArm();
  #else
     fBusSnoop = KernalCheckArm();
@@ -352,18 +376,19 @@ index adca184..6f80b52 100644
           {
 diff --git a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c
 new file mode 100644
-index 0000000..cf4260b
+index 0000000..feddc08
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c
-@@ -0,0 +1,1113 @@
+@@ -0,0 +1,1191 @@
 +// "VDrive" Special IO for TeensyROM+: replacement KERNAL + virtual IEC drive.
 +//   unit 0 = SD card, unit 1 = USB drive. Device numbers are automatic by default: the first free numbers from 8 up
 +//   (the KERNAL probes the real serial bus on the first disk access of a run, see vdrive_io.h), so 8 (SD) and 9 (USB) when
 +//   no other drive is attached. A number can be fixed from BASIC with  OPEN15,8,15,"U0>"+CHR$(10):CLOSE15  (this drive becomes
 +//   device 10, kept in EEPROM; CHR$(0) makes it automatic again). Each unit serves a mounted .d64 / .d71 / .d81 (or lists the host
 +//   directory so one can be picked with  OPEN15,8,15,"CD:GAME.D64"  /  "CD:_" to unmount, or  LOAD"$/GAMES/GAME.D64",8).
-+// Includes the KERNAL bus hook from IOH_KernalReplace.c (select the patched 8K image with
-+// <Shift-K> as usual) and adds the IO1/IO2 mailbox the patched KERNAL talks to.
++// Uses the KERNAL bus hook from IOH_KernalReplace.c with its own image (VD_KernalImage below: /VDrive/kernal.bin on the SD card, else
++// the C64's own KERNAL patched in memory; the <Shift-K> file stays the plain Kernal Replace's) and adds the IO1/IO2 mailbox the
++// patched KERNAL talks to.
 +//
 +// This file is included from IOHandlers.h like the other handlers (unity build, compiled as C++).
 +
@@ -376,8 +401,10 @@ index 0000000..cf4260b
 +#include "../vdrive/d64.c"
 +#include "../vdrive/vdrive.c"
 +#include "../vdrive/vdrive_io.c"
++#include "../vdrive/vd_kpatch.h"   // VD_KernalPatch[]: patches/*.s as runs (tools/build.py --table)
 +
 +void VDrive_PreStart();   // called from KERNALPreStart(), see StatusFunctions.c
++bool VD_KernalImage(uint8_t *img);   // KernalImageSource for InitHndlr_KERNALReplace_PreStart() (IOH_KernalReplace.c), set by KERNALPreStart()
 +bool VDrive_ProbeStep();  // likewise, first: the menu's bus probe (below)
 +uint8_t VDriveSwift_Remap(uint8_t ioh);   // IOH_VDriveSwift.c; used by KERNALPreStart() and IOHandlerSelectInit()
 +void InitHndlr_VDrive();
@@ -404,7 +431,7 @@ index 0000000..cf4260b
 +   #define VD_IsHandler(h) ((h) == IOH_VDrive || (h) == IOH_VDriveSwift)
 +#endif
 +
-+#define VD_MboxBase    0x10  // mailbox at $DE10-$DE15: $DE00-$DE07 stays free for the SwiftLink ACIA (see IOH_VDriveSwift.c)
++#define VD_MboxBase    0x10  // mailbox at $DE10-$DE1A: $DE00-$DE07 stays free for the SwiftLink ACIA (see IOH_VDriveSwift.c)
 +#define VD_CwdLen      96
 +#define VD_FlushIdleMs 250   // write the image back this long after the last sector write
 +
@@ -1012,6 +1039,80 @@ index 0000000..cf4260b
 +      }
 +}
 +
++// ---- the KERNAL image (docs/DESIGN.md 40) ---------------------------------------------------------------------------------
++// The VDrive Special IOs serve their own image, not the <Shift-K> file (that one stays the plain Kernal Replace's, so another ROM
++// there does not take the drives away): /VDrive/kernal.bin on the SD card when it is there (8192 bytes, served as it is: a
++// kernal-tr.bin built on a PC from any base ROM), else the C64's own KERNAL, read by DMA while the menu waits in PreStart and
++// patched here with VD_KernalPatch. Only ROMs the patch was tested on are patched (VD_KnownKernals, by CRC-32): our code calls into
++// the stock routines, so a ROM that differs there (JiffyDOS, ...) would crash. Anything else, or a failed read, serves nothing:
++// the C64 runs its own KERNAL and the drives stay silent (the serial console says why).
++#define VD_KernalFile "/VDrive/kernal.bin"
++struct stcVDKnownKernal { uint32_t crc; const char *name; };
++static const stcVDKnownKernal VD_KnownKernals[] = {   // each checked in VICE with tools/vdrive_mock.py ... variants
++   { 0xdbe3e7c7, "901227-03" },                       // C64 (also the C128's C64 mode on some boards)
++   { 0xa5c687b3, "901227-02" },                       // early C64
++   { 0x2c5965d4, "251104-04 (SX-64)" },
++   { 0xdd2976d2, "325179-01 (C128 C64 mode)" },
++   { 0xf10c2c25, "325182-01 (C128DCR C64 mode)" },
++};
++
++FLASHMEM uint32_t VD_Crc32(const uint8_t *p, size_t n)   // the zip / zlib CRC-32
++{
++   uint32_t c = 0xffffffff;
++   while (n--) { c ^= *p++; for (int k = 0; k < 8; k++) c = (c >> 1) ^ (0xedb88320 & (0 - (c & 1))); }
++   return ~c;
++}
++
++// Lays VD_KernalPatch over an 8 KB image at $E000; false (image untouched) if a run would leave it, which would be a build error.
++FLASHMEM bool VD_KernalPatchApply(uint8_t *img)
++{
++   for (int pass = 0; pass < 2; pass++)              // check every run first, then write
++      for (const uint8_t *r = VD_KernalPatch; ; )
++      {
++         uint16_t addr = (r[0] << 8) | r[1], len = (r[2] << 8) | r[3];
++         if (!len) break;
++         if (addr < 0xE000 || addr + len > 0x10000) return false;
++         if (pass) memcpy(img + (addr - 0xE000), r + 4, len);
++         r += 4 + len;
++      }
++   return true;
++}
++
++// The image the C64 holds at $E000-$FFFF: in the menu HIRAM is set and nothing answers ROMH reads there, so a DMA read sees the chip.
++FLASHMEM static bool VD_KernalRead(uint8_t *img)
++{
++   for (uint32_t off = 0; off < 8192; off += 1024)   // in pieces, well inside DMATransferCeilingmS each
++      if (!PerformDMA(DMA_READ, 0xE000 + off, img + off, 1024, DMA_ADDR_INCREMENT) || !CloseDMA()) return false;
++   return true;
++}
++
++FLASHMEM bool VD_KernalImage(uint8_t *img)
++{
++   if (SDFullInit())
++   {
++      File f = SD.open(VD_KernalFile, FILE_READ);
++      if (f)
++      {
++         bool ok = !f.isDirectory() && f.size() == 8192 && f.read(img, 8192) == 8192;
++         f.close();
++         Serial.printf("VDrive: KERNAL %s%s\n", VD_KernalFile, ok ? "" : ": not 8192 bytes, not used");
++         if (ok) return true;
++      }
++   }
++   if (!VD_KernalRead(img)) { Serial.println("VDrive: could not read the C64's KERNAL (DMA), drives off"); return false; }
++   uint32_t crc = VD_Crc32(img, 8192);
++   for (const stcVDKnownKernal &k : VD_KnownKernals)
++      if (k.crc == crc)
++      {
++         if (!VD_KernalPatchApply(img)) { Serial.println("VDrive: bad KERNAL patch table, drives off"); return false; }
++         Serial.printf("VDrive: the C64's KERNAL %s, patched (%d bytes)\n", k.name, VD_KernalPatchBytes);
++         return true;
++      }
++   Serial.printf("VDrive: the C64's KERNAL (CRC-32 %08lx) is not one the patch knows, drives off: put a patched image in " VD_KernalFile "\n",
++                 (unsigned long)crc);
++   return false;
++}
++
 +// Handler start (the C64 is already running): only re-stage the KERNAL bus hook. No storage access here.
 +void VD_AltButtonInit();          // alt-button disk switching, below
 +void VD_AltPoll();
@@ -1439,7 +1540,8 @@ index 0000000..cf4260b
 +
 +static_assert(offsetof(vio_hot_t, cmd) == VIO_CMD && offsetof(vio_hot_t, arg) == VIO_ARG && offsetof(vio_hot_t, data) == VIO_DATA &&
 +              offsetof(vio_hot_t, stat) == VIO_STAT && offsetof(vio_hot_t, st) == VIO_ST && offsetof(vio_hot_t, len) == VIO_LEN &&
-+              offsetof(vio_hot_t, dev0) == VIO_DEV0 && offsetof(vio_hot_t, dev1) == VIO_DEV1 && offsetof(vio_hot_t, border) == VIO_BORDER, "register bytes must stay in register order");
++              offsetof(vio_hot_t, dev0) == VIO_DEV0 && offsetof(vio_hot_t, dev1) == VIO_DEV1 && offsetof(vio_hot_t, border) == VIO_BORDER &&
++              offsetof(vio_hot_t, id0) == VIO_ID0 && offsetof(vio_hot_t, id1) == VIO_ID1, "register bytes must stay in register order");
 +
 +FASTRUN void IO1Hndlr_VDrive(uint8_t Address, bool R_Wn)
 +{
@@ -1663,7 +1765,7 @@ index 0000000..5086faa
 +   PollingHndlr_VDrive();
 +}
 diff --git a/Source/Teensy/MinimalBoot/Common/IO_Handlers/StatusFunctions.c b/Source/Teensy/MinimalBoot/Common/IO_Handlers/StatusFunctions.c
-index 59ce0b0..9185bc4 100644
+index 59ce0b0..a97bfbd 100644
 --- a/Source/Teensy/MinimalBoot/Common/IO_Handlers/StatusFunctions.c
 +++ b/Source/Teensy/MinimalBoot/Common/IO_Handlers/StatusFunctions.c
 @@ -551,6 +551,9 @@ FLASHMEM void HotKeySetLaunch()
@@ -1676,7 +1778,7 @@ index 59ce0b0..9185bc4 100644
  #ifdef Fab04_KernalReplace
  
  #ifdef Fab04_GlobalKernalReplace
-@@ -567,11 +570,21 @@ FLASHMEM void KERNALPreStart()
+@@ -567,11 +570,24 @@ FLASHMEM void KERNALPreStart()
     {
        //Serial.println("IO Handler set by Teensy Menu\n");
        NextIOHndlr = MenuSource[SelItemFullIdx].IOHndlrAssoc;
@@ -1692,6 +1794,9 @@ index 59ce0b0..9185bc4 100644
 +#endif
 +      )
     {
++#ifdef Fab04_VDrive
++      KernalImageSource = VD_IsHandler(NextIOHndlr) ? &VD_KernalImage : NULL; //VDrive: its own image (IOH_VDrive.c), not the <Shift-K> file
++#endif
        InitHndlr_KERNALReplace_PreStart(); //separate function so it doesn't get called twice
 +#ifdef Fab04_VDrive
 +      if (VD_IsHandler(NextIOHndlr)) VDrive_PreStart(); //SD/USB probing now, while the C64 still waits
@@ -3195,6 +3300,88 @@ index 0000000..20f3ecc
 +#define VD_NSLOT 6
 +#endif
 +#endif
+diff --git a/Source/Teensy/MinimalBoot/Common/vdrive/vd_kpatch.h b/Source/Teensy/MinimalBoot/Common/vdrive/vd_kpatch.h
+new file mode 100644
+index 0000000..92ae203
+--- /dev/null
++++ b/Source/Teensy/MinimalBoot/Common/vdrive/vd_kpatch.h
+@@ -0,0 +1,76 @@
++// The VDrive KERNAL patches (teensyrom-vdrive patches/*.s), generated by tools/build.py --table: runs of address hi, lo,
++// length hi, lo and the bytes, a zero length at the end. Our code only: the firmware lays it over the C64's own KERNAL.
++#pragma once
++#define VD_KernalPatchBytes 1038   // bytes laid over the KERNAL
++static const uint8_t VD_KernalPatch[] PROGMEM = {
++   0xe1, 0xda, 0x00, 0x01, 0x08, 0xe4, 0x2d, 0x00, 0x03, 0x20, 0x97, 0xfb, 0xe4, 0x3d, 0x00, 0x03,
++   0x4c, 0xb4, 0xfb, 0xe4, 0x9a, 0x00, 0x01, 0x00, 0xea, 0x32, 0x00, 0x02, 0x59, 0xfb, 0xed, 0x09,
++   0x00, 0x03, 0x4c, 0x90, 0xf9, 0xed, 0x0c, 0x00, 0x03, 0x4c, 0xa1, 0xf9, 0xed, 0xb9, 0x00, 0x03,
++   0x4c, 0xb6, 0xf9, 0xed, 0xc7, 0x00, 0x03, 0x4c, 0xcb, 0xf9, 0xed, 0xdd, 0x00, 0x03, 0x4c, 0xe0,
++   0xf9, 0xed, 0xef, 0x00, 0x03, 0x4c, 0xfa, 0xf9, 0xed, 0xfe, 0x00, 0x03, 0x4c, 0x16, 0xfa, 0xee,
++   0x13, 0x00, 0x03, 0x4c, 0x26, 0xfa, 0xf4, 0xc8, 0x00, 0x03, 0x4c, 0x64, 0xfa, 0xf6, 0x05, 0x00,
++   0x03, 0x4c, 0xd9, 0xfa, 0xf8, 0x75, 0x00, 0x21, 0xa2, 0xff, 0x78, 0x9a, 0xad, 0x19, 0xde, 0xc9,
++   0xd6, 0xd0, 0x13, 0xcd, 0x19, 0xde, 0xd0, 0x0e, 0xad, 0x1a, 0xde, 0xc9, 0x64, 0xd0, 0x07, 0xa9,
++   0x10, 0x20, 0xe2, 0xf8, 0x90, 0xfe, 0x4c, 0xe5, 0xfc, 0xf8, 0xe2, 0x02, 0x9a, 0x48, 0x8d, 0x10,
++   0xde, 0xa9, 0x00, 0x85, 0xa5, 0x85, 0xa6, 0xad, 0x13, 0xde, 0xc9, 0x5a, 0xf0, 0x12, 0xc9, 0xa5,
++   0xf0, 0x27, 0xc9, 0x3c, 0xf0, 0x28, 0xe6, 0xa5, 0xd0, 0xed, 0xe6, 0xa6, 0xd0, 0xe9, 0xf0, 0x19,
++   0xad, 0x14, 0xde, 0xcd, 0x14, 0xde, 0xd0, 0xf8, 0x05, 0x90, 0x85, 0x90, 0x68, 0xad, 0x12, 0xde,
++   0xcd, 0x12, 0xde, 0xd0, 0xf8, 0xc9, 0x00, 0x18, 0x60, 0x68, 0xa5, 0xa7, 0x38, 0x60, 0x8a, 0x48,
++   0x98, 0x48, 0xad, 0x11, 0xde, 0x48, 0xa5, 0xa7, 0x48, 0xa5, 0x90, 0x48, 0x20, 0x47, 0xf9, 0x68,
++   0x85, 0x90, 0x68, 0x85, 0xa7, 0x68, 0x8d, 0x11, 0xde, 0x68, 0xa8, 0x68, 0xaa, 0x68, 0x48, 0x4c,
++   0xe3, 0xf8, 0xa9, 0x00, 0x85, 0x90, 0x8d, 0x11, 0xde, 0x85, 0xa7, 0xa9, 0x0e, 0x20, 0xe2, 0xf8,
++   0xb0, 0x20, 0xf0, 0x1e, 0xa9, 0x08, 0x48, 0x20, 0xb1, 0xff, 0xa5, 0x90, 0x30, 0x15, 0xa9, 0x6f,
++   0x20, 0x93, 0xff, 0xa5, 0x90, 0x30, 0x0c, 0x20, 0xae, 0xff, 0x68, 0x18, 0x69, 0x01, 0xc9, 0x1f,
++   0x90, 0xe4, 0x60, 0xa9, 0x00, 0x85, 0x90, 0xba, 0xbd, 0x01, 0x01, 0x8d, 0x11, 0xde, 0x85, 0xa7,
++   0xa9, 0x0f, 0x20, 0xe2, 0xf8, 0xb0, 0x02, 0xd0, 0xe1, 0x68, 0x60, 0x8d, 0x11, 0xde, 0x85, 0xa7,
++   0xa9, 0x02, 0x20, 0xe2, 0xf8, 0xb0, 0x01, 0x60, 0x09, 0x40, 0xd0, 0x0f, 0x8d, 0x11, 0xde, 0x85,
++   0xa7, 0xa9, 0x01, 0x20, 0xe2, 0xf8, 0xb0, 0x01, 0x60, 0x09, 0x20, 0x20, 0xa4, 0xf0, 0x4c, 0x11,
++   0xed, 0x8d, 0x11, 0xde, 0x85, 0xa7, 0xa9, 0x03, 0x20, 0xe2, 0xf8, 0xb0, 0x01, 0x60, 0x85, 0x95,
++   0x20, 0x36, 0xed, 0x4c, 0xbe, 0xed, 0x8d, 0x11, 0xde, 0x85, 0xa7, 0xa9, 0x04, 0x20, 0xe2, 0xf8,
++   0xb0, 0x01, 0x60, 0x85, 0x95, 0x20, 0x36, 0xed, 0x4c, 0xcc, 0xed, 0x8d, 0x11, 0xde, 0x85, 0xa7,
++   0xa9, 0x05, 0x20, 0xe2, 0xf8, 0xb0, 0x04, 0xa5, 0xa7, 0x18, 0x60, 0x24, 0x94, 0x30, 0x03, 0x4c,
++   0xe1, 0xed, 0x4c, 0xe6, 0xed, 0xa9, 0x08, 0x20, 0xe2, 0xf8, 0xb0, 0x01, 0x60, 0x78, 0x20, 0x8e,
++   0xee, 0xad, 0x00, 0xdd, 0x09, 0x08, 0x8d, 0x00, 0xdd, 0xa9, 0x5f, 0x20, 0x11, 0xed, 0x4c, 0x03,
++   0xee, 0xa9, 0x07, 0x20, 0xe2, 0xf8, 0xb0, 0x01, 0x60, 0xa9, 0x3f, 0x20, 0x11, 0xed, 0x4c, 0x03,
++   0xee, 0xa9, 0x06, 0x20, 0xe2, 0xf8, 0xb0, 0x01, 0x60, 0x78, 0xa9, 0x00, 0x4c, 0x16, 0xee, 0x48,
++   0xa4, 0xb7, 0x30, 0x1d, 0xa0, 0x00, 0xb1, 0xbb, 0x99, 0x80, 0xdf, 0xd9, 0x80, 0xdf, 0xd0, 0xf6,
++   0xc8, 0xc4, 0xb7, 0xd0, 0xf1, 0x8c, 0x15, 0xde, 0xa5, 0xba, 0x8d, 0x11, 0xde, 0x68, 0x4c, 0xe2,
++   0xf8, 0x68, 0x38, 0x60, 0x4c, 0x07, 0xf7, 0xa6, 0xa4, 0x20, 0xd5, 0xf3, 0x4c, 0xcb, 0xf4, 0xa5,
++   0x93, 0xd0, 0xf6, 0x86, 0xa4, 0xa9, 0x09, 0x20, 0x34, 0xfa, 0xb0, 0xeb, 0xa8, 0xa6, 0xa4, 0x98,
++   0xf0, 0x0a, 0xc9, 0x05, 0xf0, 0x03, 0x4c, 0x04, 0xf7, 0x4c, 0x07, 0xf7, 0xad, 0x80, 0xdf, 0xcd,
++   0x80, 0xdf, 0xd0, 0xf8, 0x85, 0xae, 0xad, 0x81, 0xdf, 0xcd, 0x81, 0xdf, 0xd0, 0xf8, 0x85, 0xaf,
++   0x8a, 0xd0, 0x08, 0xa5, 0xc3, 0x85, 0xae, 0xa5, 0xc4, 0x85, 0xaf, 0x20, 0xd2, 0xf5, 0xa9, 0x0a,
++   0x20, 0xe2, 0xf8, 0xb0, 0xaf, 0x85, 0xa3, 0xf0, 0x1c, 0xa0, 0x00, 0xb9, 0x80, 0xdf, 0xd9, 0x80,
++   0xdf, 0xd0, 0xf8, 0x91, 0xae, 0xc8, 0xc4, 0xa3, 0xd0, 0xf1, 0xa5, 0xae, 0x18, 0x65, 0xa3, 0x85,
++   0xae, 0x90, 0x02, 0xe6, 0xaf, 0xa5, 0x90, 0x29, 0x40, 0xf0, 0xd3, 0x4c, 0xa9, 0xf5, 0x20, 0xd5,
++   0xf3, 0x4c, 0x08, 0xf6, 0xa9, 0x0b, 0x20, 0x34, 0xfa, 0xb0, 0xf3, 0x85, 0xa4, 0x20, 0x8f, 0xf6,
++   0xa5, 0xa4, 0xc9, 0x05, 0xd0, 0x03, 0x4c, 0x07, 0xf7, 0xa5, 0xa4, 0xd0, 0x62, 0xa5, 0xc1, 0x8d,
++   0x80, 0xdf, 0x85, 0xac, 0xa5, 0xc2, 0x8d, 0x81, 0xdf, 0x85, 0xad, 0xa9, 0x02, 0x8d, 0x15, 0xde,
++   0xa9, 0x0c, 0x20, 0xe2, 0xf8, 0xa5, 0xae, 0x38, 0xe5, 0xac, 0x85, 0xa3, 0xa5, 0xaf, 0xe5, 0xad,
++   0x90, 0x38, 0xd0, 0x08, 0xa5, 0xa3, 0xf0, 0x32, 0xc9, 0x81, 0x90, 0x04, 0xa9, 0x80, 0x85, 0xa3,
++   0xa0, 0x00, 0xb1, 0xac, 0x99, 0x80, 0xdf, 0xd9, 0x80, 0xdf, 0xd0, 0xf6, 0xc8, 0xc4, 0xa3, 0xd0,
++   0xf1, 0xa5, 0xa3, 0x8d, 0x15, 0xde, 0xa9, 0x0c, 0x20, 0xe2, 0xf8, 0xb0, 0x14, 0xa5, 0xac, 0x18,
++   0x65, 0xa3, 0x85, 0xac, 0x90, 0xbf, 0xe6, 0xad, 0xb0, 0xbb, 0xa9, 0x0d, 0x20, 0xe2, 0xf8, 0x18,
++   0x60, 0x4c, 0x07, 0xf7, 0xad, 0x18, 0xde, 0xcd, 0x18, 0xde, 0xd0, 0x18, 0x49, 0xc0, 0xc9, 0x10,
++   0x90, 0x0f, 0xf0, 0x0b, 0xc9, 0x70, 0xd0, 0x0c, 0xad, 0x20, 0xd0, 0x85, 0x9c, 0xd0, 0x05, 0xa5,
++   0x9c, 0x8d, 0x20, 0xd0, 0x4c, 0x9b, 0xf6, 0xfb, 0x97, 0x01, 0x28, 0x20, 0x1e, 0xab, 0x20, 0xad,
++   0xfb, 0xd0, 0x07, 0xa9, 0x80, 0xa0, 0xfc, 0x4c, 0x1e, 0xab, 0xa9, 0x92, 0xa0, 0xfc, 0x4c, 0x1e,
++   0xab, 0xad, 0xbd, 0xfc, 0x0d, 0xbe, 0xfc, 0x60, 0x20, 0xad, 0xfb, 0xd0, 0x0a, 0xa9, 0x60, 0xa0,
++   0xe4, 0x20, 0x1e, 0xab, 0x4c, 0x44, 0xa6, 0xa9, 0x07, 0x85, 0xfb, 0xa2, 0x00, 0x86, 0xfe, 0xbd,
++   0xbd, 0xfc, 0xc9, 0xff, 0xd0, 0x1d, 0xe6, 0xfb, 0xa5, 0xfb, 0xc9, 0x1f, 0xb0, 0x13, 0xcd, 0xbd,
++   0xfc, 0xf0, 0xf3, 0xcd, 0xbe, 0xfc, 0xf0, 0xee, 0x20, 0x44, 0xfc, 0xb0, 0xe9, 0xa5, 0xfb, 0xd0,
++   0x02, 0xa9, 0x00, 0xa6, 0xfe, 0x95, 0xfc, 0xe8, 0xe0, 0x02, 0x90, 0xd1, 0xa9, 0x9d, 0xa0, 0xfc,
++   0x20, 0x1e, 0xab, 0xa2, 0x00, 0x86, 0xfe, 0xb5, 0xfc, 0xc9, 0x08, 0x90, 0x0f, 0xc9, 0x1f, 0xb0,
++   0x0b, 0x48, 0x20, 0x3a, 0xfc, 0x68, 0x20, 0x65, 0xfc, 0x4c, 0x25, 0xfc, 0xa9, 0x4e, 0x20, 0xd2,
++   0xff, 0xa9, 0x4f, 0x20, 0xd2, 0xff, 0x20, 0x3a, 0xfc, 0xa6, 0xfe, 0xd0, 0x09, 0xa9, 0x20, 0x20,
++   0xd2, 0xff, 0xa2, 0x01, 0xd0, 0xcf, 0xa9, 0x0d, 0x20, 0xd2, 0xff, 0x4c, 0x44, 0xa6, 0xa6, 0xfe,
++   0xbd, 0xb3, 0xfc, 0xa0, 0xfc, 0x4c, 0x1e, 0xab, 0xa9, 0x00, 0x85, 0x90, 0xa5, 0xfb, 0x20, 0xae,
++   0xf9, 0xa5, 0x90, 0x30, 0x0e, 0xa9, 0x6f, 0x20, 0xc3, 0xf9, 0xa5, 0x90, 0x30, 0x05, 0x20, 0x1e,
++   0xfa, 0x38, 0x60, 0xa9, 0x00, 0x85, 0x90, 0x18, 0x60, 0xa2, 0x30, 0x38, 0xe9, 0x0a, 0x90, 0x03,
++   0xe8, 0xb0, 0xf9, 0x69, 0x3a, 0x48, 0x8a, 0xc9, 0x30, 0xd0, 0x02, 0xa9, 0x20, 0x20, 0xd2, 0xff,
++   0x68, 0x4c, 0xd2, 0xff, 0x20, 0x36, 0x34, 0x4b, 0x20, 0x52, 0x41, 0x4d, 0x20, 0x53, 0x59, 0x53,
++   0x54, 0x45, 0x4d, 0x20, 0x20, 0x00, 0x20, 0x36, 0x34, 0x4b, 0x20, 0x52, 0x41, 0x4d, 0x20, 0x20,
++   0x00, 0x20, 0x46, 0x52, 0x45, 0x45, 0x20, 0x20, 0x56, 0x44, 0x52, 0x49, 0x56, 0x45, 0x20, 0x00,
++   0x53, 0x44, 0x00, 0x55, 0x53, 0x42, 0x00, 0xac, 0xaf, 0x56, 0x44, 0x55, 0x4e, 0x49, 0x54, 0x53,
++   0x3a, 0x00, 0x00, 0xfc, 0xe2, 0x00, 0x03, 0x4c, 0x75, 0xf8, 0x00, 0x00, 0x00, 0x00
++};
 diff --git a/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.c b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.c
 new file mode 100644
 index 0000000..aa54ea4
@@ -4498,10 +4685,10 @@ index 0000000..1fd6c52
 +#endif
 diff --git a/Source/Teensy/MinimalBoot/Common/vdrive/vdrive_io.c b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive_io.c
 new file mode 100644
-index 0000000..696169d
+index 0000000..6770082
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive_io.c
-@@ -0,0 +1,207 @@
+@@ -0,0 +1,211 @@
 +#include "vdrive_io.h"
 +#include "vd_cfg.h"
 +#include <string.h>
@@ -4513,6 +4700,8 @@ index 0000000..696169d
 +    v->h = hot;
 +    hot->stat = VIO_OK;                   /* idle, nothing pending */
 +    hot->border = VIO_BRD_IDLE;
++    hot->id0 = VIO_ID0_VAL;
++    hot->id1 = VIO_ID1_VAL;
 +    vdrive_init(&v->vd);
 +    vio_publish_devices(v);
 +}
@@ -4528,6 +4717,8 @@ index 0000000..696169d
 +    case VIO_DEV0: return h->dev0;
 +    case VIO_DEV1: return h->dev1;
 +    case VIO_BORDER: return h->border;
++    case VIO_ID0:  return h->id0;
++    case VIO_ID1:  return h->id1;
 +    default:       return 0;
 +    }
 +}
@@ -4711,15 +4902,16 @@ index 0000000..696169d
 +VD_COLD size_t vio_hot_sizeof(void) { return sizeof(vio_hot_t); }
 diff --git a/Source/Teensy/MinimalBoot/Common/vdrive/vdrive_io.h b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive_io.h
 new file mode 100644
-index 0000000..33f4d7a
+index 0000000..ab33d3f
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive_io.h
-@@ -0,0 +1,93 @@
+@@ -0,0 +1,100 @@
 +/* Mailbox register engine for the TR+ virtual drive.
 + *
 + *   IO1 ($DE10, offsets below are relative to it): +0 CMD (W: trigger)  +1 ARG (RW)  +2 DATA (R)  +3 STAT (R)  +4 ST (R)  +5 LEN (RW)
 + *                                                  +6 DEV0 (R)  +7 DEV1 (R): IEC device number of the SD / USB drive now (0 = none)
 + *                                                  +8 BORDER (R): request for the KERNAL's IRQ routine, see VIO_BRD_* (disk-switch feedback)
++ *                                                  +9 ID0, +10 ID1 (R): VIO_ID0_VAL / VIO_ID1_VAL while the handler answers (the KERNAL's reset hook, see VIO_MENU)
 + *   IO2 ($DF80): 128-byte window (RW): file name in, data blocks in/out. $DF00-$DF7F is not ours: the REU's registers live
 + *                there in the "VDrive+REU" and "VDrive+Swift+REU" handlers (IOH_VDriveREU.c); the others leave it unanswered.
 + *
@@ -4749,7 +4941,7 @@ index 0000000..33f4d7a
 +extern "C" {
 +#endif
 +
-+enum { VIO_CMD = 0, VIO_ARG = 1, VIO_DATA = 2, VIO_STAT = 3, VIO_ST = 4, VIO_LEN = 5, VIO_DEV0 = 6, VIO_DEV1 = 7, VIO_BORDER = 8, VIO_NREGS = 9 };
++enum { VIO_CMD = 0, VIO_ARG = 1, VIO_DATA = 2, VIO_STAT = 3, VIO_ST = 4, VIO_LEN = 5, VIO_DEV0 = 6, VIO_DEV1 = 7, VIO_BORDER = 8, VIO_ID0 = 9, VIO_ID1 = 10, VIO_NREGS = 11 };
 +#define VIO_BUSY    0x80
 +#define VIO_OK      0x5A
 +#define VIO_NOTMINE 0xA5
@@ -4758,6 +4950,11 @@ index 0000000..33f4d7a
 +#define VIO_BRD_SET     0xC0   /* | colour 0..15: set the border to it */
 +#define VIO_BRD_SAVE    0xB0   /* remember the current border colour */
 +#define VIO_BRD_RESTORE 0xD0   /* set the border back to the remembered colour */
++/* ID registers: the KERNAL's reset entry ($FCE2, also SYS64738) sends VIO_MENU only when it reads these. A launch from the TR menu
++ * resets the C64 too, while the menu's own IO1 handler still answers: its $DE19/$DE1A are a SID's init address (0 without a SID),
++ * and no tune starts in I/O space, so $D6xx never shows there. Unanswered, the bus floats to $DE. */
++#define VIO_ID0_VAL 0xD6
++#define VIO_ID1_VAL 0x64
 +#define VIO_WIN     128   /* window size: names, fast LOAD / SAVE blocks (a power of two, see vio_io2_read) */
 +#define VIO_WIN_OFS 0x80  /* the window starts at IO2 + this ($DF80) */
 +#define VIO_SCANREQ 0x3C   /* answer to the first LISTEN / TALK / fast LOAD / fast SAVE of a run: "scan the bus, then ask again" (see VIO_SCAN) */
@@ -4771,12 +4968,13 @@ index 0000000..33f4d7a
 +    VIO_FSAVE_CLOSE= 13,   /* DATA: 0 ok else DOS error code */
 +    VIO_SCAN       = 14,   /* start of the reset-time bus scan: releases the automatic units' numbers. DATA = units that need a number */
 +    VIO_FREE       = 15,   /* ARG = a device number nobody answered at; it goes to the next unit that needs one. DATA = units still waiting */
-+    VIO_MENU       = 16    /* back to the TR menu: answered OK, then the Teensy writes back what is unsaved and resets the C64 into its menu */
++    VIO_MENU       = 16    /* back to the TR menu: answered OK, then the Teensy writes back what is unsaved and resets the C64 into its menu
++                              (VDrive Config's Q; the KERNAL's cold start, SYS64738, once it has read VIO_ID0_VAL / VIO_ID1_VAL) */
 +};
 +
 +/* Registers + window: the only memory the bus ISR reads or writes (~140 bytes). Keep in DTCM. */
 +typedef struct {
-+    volatile uint8_t cmd, arg, data, stat, st, len, dev0, dev1, border, pending;   /* cmd..border are in register order (see the static_assert in IOH_VDrive.c) */
++    volatile uint8_t cmd, arg, data, stat, st, len, dev0, dev1, border, id0, id1, pending;   /* cmd..id1 are in register order (see the static_assert in IOH_VDrive.c) */
 +    uint8_t window[VIO_WIN];
 +} vio_hot_t;
 +

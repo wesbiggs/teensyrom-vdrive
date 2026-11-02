@@ -1,7 +1,7 @@
 # CLAUDE.md — TR+ virtual-drive KERNAL
 
 ## What this is
-A replacement C64 KERNAL (901227-03 + patches) that the **TeensyROM+ (TR+)** serves live, plus the Teensy-side firmware that makes
+A replacement C64 KERNAL (the machine's own ROM, read by DMA and patched in memory by the firmware; or `sd:/VDrive/kernal.bin`) that the **TeensyROM+ (TR+)** serves live, plus the Teensy-side firmware that makes
 the SD card and the USB drive behave as IEC drives backed by `.d64` / `.d71` / `.d81` images. KERNAL serial calls for those devices go to
 a mailbox (IO1 `$DE10` registers + a 128-byte IO2 window at `$DF80`) instead of the bit-banged bus; any other device number still uses the
 real IEC code, so physical drives keep working. LOAD/SAVE have block-transfer fast paths. Device numbers are automatic (SD first, USB
@@ -14,7 +14,7 @@ Firmware integration and usage: `firmware/README.md`.
 ## Status (read this first)
 * **Works on hardware (real C64, TR+ with this patch).** `make test` also passes on the host: C unit tests via ctypes against `c1541`, the 6502 patches in VICE through a
   monitor-driven mailbox mock, and the firmware glue compiled as C++ against host stubs. Toolchain for the firmware: `arduino-cli`, `teensy:avr@1.61.0`,
-  `CRC32@2.0.1`; do NOT use Teensyduino 1.62.0 (SD read stalls). Build/fit (0.9.0.40 vs stock `fa509421`, TR+ main image; 0.9.0.42 on `136baa83`: the same RAM1): RAM1 variables +13.7 KB (free for locals 66 KB), RAM1 code +1.6 KB (padding 25.4 KB left), flash code +43 KB, RAM2 +7 KB.
+  `CRC32@2.0.1`; do NOT use Teensyduino 1.62.0 (SD read stalls). Build/fit (0.9.0.40 vs stock `fa509421`, TR+ main image; 0.9.0.42 and 0.9.0.43 on `136baa83`: the same RAM1): RAM1 variables +13.7 KB (free for locals 66 KB), RAM1 code +1.6 KB (padding 25.4 KB left), flash code +43 KB, RAM2 +7 KB.
   `node tools/build-firmware.mjs --target tr-plus` (in a TeensyROM tree with the patch applied) writes `build/firmware/TeensyROM+_<version>_full.hex`; `--force` to overwrite.
   On the owner's Mac `ARDUINO_DIRECTORIES_USER=~/code/3p/Arduino` (set in the shell profile; CRC32 lives in its `libraries/`), not the default `~/Documents/Arduino`:
   Documents is iCloud Drive and an evicted `CRC32.h` made builds fail with "Operation timed out". A shell started before the profile change lacks the variable: pass it on the command.
@@ -128,6 +128,17 @@ Firmware integration and usage: `firmware/README.md`.
 * 0.9.0.42: rebased on upstream `136baa83` (Kernal Replace hooks `KernalCheck` on a C64, `KernalCheckDMA` on a C128, chosen once per launch by `KernalCheckArm()`), which fixes the
   corrupted directory listings of 0.9.0.37-0.9.0.41 (see Bus timing margin). `kernal-fnet-poll.patch` (#85 rebased: its PreStart hunk sits after `fBusSnoop = KernalCheckArm();`) and
   `kernalreplace-fixes.patch` regenerated on it; `VD_ProbeFinish` re-hooks through `KernalCheckArm()` instead of restoring the saved pointer with `HIRAM_State` Unknown. **Works on hardware (owner, 2026-11-01): directory loads clean again.** Not run on a C128.
+* 0.9.0.43: **the firmware patches the C64's own KERNAL** (docs/DESIGN.md 40). The VDrive Special IOs no longer use the `<Shift-K>` file (it stays the plain
+  Kernal Replace's): `VD_KernalImage` (`IOH_VDrive.c`, through the new `KernalImageSource` hook in `IOH_KernalReplace.c`, set by `KERNALPreStart()`) serves
+  `sd:/VDrive/kernal.bin` as it is when present, else reads `$E000-$FFFF` by DMA (`PerformDMA`, 8 x 1 KB) and, if its CRC-32 is on `VD_KnownKernals`
+  (901227-03, -02, SX-64 251104-04, C128 C64-mode 325179-01 / 325182-01), lays `VD_KernalPatch` over it (`vd_kpatch.h` from `tools/build.py --table`:
+  our bytes only, shipped in the patch). Anything else: nothing served, drives off, serial message. Also **`SYS64738` back to the TR menu**:
+  `P_FCE2` jumps to `rst_hook` (33 bytes at `$F875-$F8CF`, the cassette IRQ set-up), which sends `VIO_MENU` only after the new read-only
+  ID registers `$DE19/$DE1A` read `$D6 $64` (the menu's handler has SID init bytes there during a launch reset). No off switch (owner's call).
+  py65 (`make test-reset`), `test_vio`, `fw_host` (the DMA read patched == `kernal-tr.bin` from the same ROM, unknown / patched / changed ROMs refused,
+  `/VDrive/kernal.bin` first), VICE (`basic` ends with `SYS64738` and a reset without the IDs; `make test-variants` runs the five ROMs); firmware builds
+  (TR+ main image RAM1 free for locals 66172, padding 25592: unchanged). **Not on hardware**: the DMA read of the real chip, the launch reset
+  under the menu handler, `SYS64738` on a C64 / C128. `KernalCheck` disassembly checked (no push on entry).
 * Known open risks: C128 untested with VDrive (the DMA sense above should fix lesson 1; not run); tape (device 1) intentionally broken (its code space was reclaimed: $F8E2-$FB8D, $FB97-$FCD0).
 
 ## Layout
@@ -140,23 +151,29 @@ d64/            portable C99 library, also compiled as C++ by the firmware (keep
 util/            VDCOPY: vdcopy.s (all machine code, BASIC SYS stub at $0801, tables BSS at $2800; tools/make_util.py assembles it);
                 VDrive Config: vdconfig.s (all machine code, same stub/BSS scheme, BSS $2000-$4FFF; tools/make_util.py assembles it into build/util/"VDrive Config.prg")
 patches/        ca65 sources overlaid on the stock KERNAL by tools/build.py; segment name P_XXXX = load address
-  vdrive.s        serial entry hooks, fast LOAD ($F4C8) / SAVE ($F605), bus scan, code placed in reclaimed tape space $F8E2-$FB8D (666 of 683 bytes used; `irq_border` for the border flash included, the build asserts the limit)
+  vdrive.s        serial entry hooks, fast LOAD ($F4C8) / SAVE ($F605), bus scan, code placed in reclaimed tape space $F8E2-$FB8D (666 of 683 bytes used; `irq_border` for the border flash included, the build asserts the limit);
+                  the cold-start hook `rst_hook` (`JMP` at $FCE2, code at $F875-$F8CF, 33 of 91 bytes: SYS64738 back to the TR menu)
   vdbanner.s      the drive numbers in the power-on banner (INITMS: `JSR` at $E42D, `JMP` at $E43D, banner string cut at $E49A; code in reclaimed tape routines $FB97-$FCD0, 296 of 314 bytes)
 bringup/banner.s  proof patch (`TRVDRIVE 64 BASIC V2`), only in `make build/kernal-banner.bin`
 firmware/       TeensyROM integration: IOH_VDrive.c (Special IO), IOH_VDriveSwift.c / IOH_VDriveREU.c / IOH_VDriveSwiftREU.c (combined Special IOs) and
                 teensyrom-vdrive.patch (git apply onto TeensyROM); vdrive_probe.asm (the TR menu's launch-time bus probe, ACME, inserted into MainMenu.asm)
-tools/          build.py (patch overlay), make_tr_patch.sh (regenerate the TeensyROM patch), vdrive_mock.py (VICE mock),
+tools/          build.py (patch overlay; `--table` writes the patches as `vd_kpatch.h` for the firmware), make_tr_patch.sh (regenerate the TeensyROM patch), vdrive_mock.py (VICE mock),
                 d64py.py (ctypes wrappers incl. register-level VIO), xref.py (reference finder over a disassembly)
 tests/          test_d64*.py, test_vdrive.py, test_vio.py (unit), fw_host/ (glue vs host stubs), devcfg.c,
                 test_vdconfig.py + c64_sim.py (VDrive Config's PRG in py65, KERNAL calls answered in Python), test_vdcopy.py (VDCOPY in py65 against vdrive.c),
-                test_irq_border.py, test_banner.py (py65),
-                menuprobe_vice.py (the menu's probe routine in VICE with true-drive 1541s)
+                test_irq_border.py, test_banner.py, test_reset_hook.py (py65),
+                menuprobe_vice.py (the menu's probe routine in VICE with true-drive 1541s), variants_vice.py (the patch on each whitelisted ROM in VICE)
 build/          generated, git-ignored (kernal images derived from the ROM, libd64.dylib, disassembly)
 ```
 
 ## Commands
 * `make test` — everything (rebuilds `build/libd64.dylib`, runs unit tests, device-number check, firmware host test, VDrive Config in py65, three VICE runs: `basic`,
+
   `scan` (true-drive 1541s at 8 and 10, with two VDCOPY whole-disk runs over tracks 17-19, about 2 minutes of it) and the menu's bus probe; about 13 minutes in all on the owner's Mac, measured 2026-10-31).
+* `make test-reset` — the cold-start hook `rst_hook` (SYS64738 back to the menu) in py65 (skipped without py65; also part of `make test`).
+* `make test-variants` — the patch on every ROM in `VD_KnownKernals`, in VICE (mock `variant` scenario); the ROMs are looked up next to `STOCK`
+  (VICE's `C64/` and `C128/` data folders), missing ones skipped. Part of `make test`. `make test-fw` passes `STOCK` so the glue's in-memory patch is compared with `kernal-tr.bin`.
+>>>>>>> 7d6a389 (Build the KERNAL on the TR and return to the menu on SYS64738 (0.9.0.43))
 * `make test-border` — the `irq_border` 6502 routine in py65 (skipped without `pip install py65`; also part of `make test`).
 * `make test-banner` — the banner's `vd_banner` in py65 with a fake serial bus (skipped without py65; also part of `make test`).
 * `make util` — `build/util/vdcopy.prg`, the file and whole-disk copy utility between any two units (also on the test disk), and `build/util/VDrive Config.prg`.
@@ -193,7 +210,10 @@ The full `make test`, VICE runs included, works in a cloud session; do not skip 
   in `SetUpMainMenuROM()`. Test a regenerated patch with `git apply --check` on `git archive origin/main` and on `git merge-tree --write-tree origin/main pr/N` trees. The Special IO list order is VDrive, VDrive+Swift,
   VDrive+Swift+REU, VDrive+REU, Kernal Replace, Debug (0.9.0.31): a stored default Special IO (`eepAdNextIOHndlr`, an index) of Kernal Replace from an older build now selects a VDrive entry.
 * **Published KERNAL hash:** the README's Installing section lists the SHA-256 of `kernal-tr.bin` built from the 901227-03 ROM; `make test-hash` (part of `make test`) fails when a patch or `tools/build.py` changes the image and the "from this revision" row was not updated. Update the "last run on a real C64" row only when the owner reports a hardware run of that image.
-* **No Commodore ROM bytes in the repo.** Only patches. `build/` is ignored for that reason; keep it that way.
+* **No Commodore ROM bytes in the repo.** Only patches. `build/` is ignored for that reason; keep it that way. The firmware's `vd_kpatch.h` holds our segments only
+  (`tools/build.py --table` never reads a ROM); the firmware's ROM whitelist is CRC-32s. Adding a ROM to `VD_KnownKernals` means adding it to `tests/variants_vice.py` too (it checks both lists agree).
+* **Two background VICE runs collide**: every mock run uses VICE's binary monitor on port 6502, and a second mock connects to the first one's VICE.
+  Run `vdrive_mock.py` / `variants_vice.py` / `menuprobe_vice.py` one after another.
 * **The ctypes tests load `build/libd64.dylib`.** After editing `d64/*.c` run `make build/libd64.dylib` (or `make test`) first, or you
   test a stale library.
 * The firmware compiles `.c` files inside the `.ino` as **C++**: no implicit `void*` conversions, etc. `make` runs a `-x c++`

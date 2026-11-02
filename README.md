@@ -6,7 +6,7 @@ can operate alongside real or simulated IEC devices (SD2IEC, Pi1541, etc., shoul
 
 It has two halves:
 
-* **A patched KERNAL** (901227-03 plus a few hundred bytes of 6502, served live by the TR+). The serial routines
+* **A patched KERNAL** (the C64's own KERNAL ROM, read and patched in memory by the TR+ at each launch, plus about a kilobyte of 6502, served live). The serial routines
   (`LISTEN TALK SECOND TKSA CIOUT ACPTR UNLSN UNTLK`) ask a mailbox in I/O space (`$DE10`, with a 128-byte window at `$DF80`) whether the
   device is virtual. If so, the Teensy answers; otherwise the stock IEC code runs, so real drives keep working. LOAD and SAVE have
   block-transfer fast paths.
@@ -36,35 +36,43 @@ Tape (device 1) no longer works in any VDrive setup because its KERNAL code spac
 The C64's ability to read the 8 KB of RAM under KERNAL ROM ($E000-$FFFF) is used in many games and advanced programs. When the TR+ is in the Kernal Replace mode (as required by this software), late ISRs can cause bad reads at the byte level, leading to potential memory corruption. VDrive avoids this by running the Ethernet stack from the main loop instead of a timer interrupt once a program starts (under any VDrive or Kernal Replace Special IO). Rare glitches remain while the network is busy (seen early in a CCGMS BBS receive). Other TR+ functionality (NFC readers, etc.) may similarly affect reads, but has not been fully tested.
 
 ## Installing
-1. Build the patched KERNAL from your own copy of a 901227-03 dump (the ROM itself is not in this repo, but it can be obtained for personal use from a full installation of [VICE](https://vice-emu.sourceforge.io/) or directly from [this link](https://sourceforge.net/p/vice-emu/code/HEAD/tree/trunk/vice/data/C64/kernal-901227-03.bin?format=raw)):
-   ```
-   make build/kernal-tr.bin STOCK=/path/to/kernal-901227-03.bin     # 8192 bytes, mailbox at $DE10, window at $DF80
-   ```
-   Copy it to the SD card or USB drive. To check that you built the same image as this repo (SHA-256, `shasum -a 256` or `sha256sum`):
-
-   | File | SHA-256 |
-   |---|---|
-   | stock `kernal-901227-03.bin` (input) | `83c60d47047d7beab8e5b7bf6f67f80daa088b7a6a27de0d7e016f6484042721` |
-   | `kernal-tr.bin` from this revision | `d7b5d6e79906e5858cd1f9ee213fea688b3d635d7d539298e79ea57e9628cfe0` |
-   | `kernal-tr.bin` last run on a real C64 (0.9.0.42, commit `ef18020`) | `d7b5d6e79906e5858cd1f9ee213fea688b3d635d7d539298e79ea57e9628cfe0` |
-
-   A different stock hash means a different ROM dump; the patches may not fit it. The "this revision" row is checked by `make test`.
-   The two `kernal-tr.bin` rows differ when this revision has KERNAL changes not yet run on hardware (see [CLAUDE.md](CLAUDE.md), Status).
-2. Patch the firmware source (TeensyROM checkout, FW ≥ 0.9 layout) and build the TR+ target:
+1. Patch the firmware source (TeensyROM checkout, FW ≥ 0.9 layout) and build the TR+ target:
    ```
    cd /path/to/TeensyROM && git apply /path/to/teensyrom-vdrive/firmware/teensyrom-vdrive.patch
    ```
    The patch adds `Fab04_VDrive` (enabled next to `Fab04_KernalReplace` in `Common_Defs.h`), a new Special IO
-   `IOH_VDrive` ("VDrive KERNAL"), `IOH_VDriveSwift` ("VDrive+SwiftLink") and `IOH_VDriveSwiftREU` ("VDrive+Swift+REU"), `IOH_VDriveREU` ("VDrive+REU"), the library under `MinimalBoot/Common/vdrive/`, and one condition in
-   `KERNALPreStart()` so the KERNAL image is loaded when this Special IO is selected.
+   `IOH_VDrive` ("VDrive KERNAL"), `IOH_VDriveSwift` ("VDrive+SwiftLink") and `IOH_VDriveSwiftREU` ("VDrive+Swift+REU"), `IOH_VDriveREU` ("VDrive+REU"), the library under `MinimalBoot/Common/vdrive/`, and a few lines in
+   `KERNALPreStart()` and the Kernal Replace start so these Special IOs serve their own KERNAL image.
 
    Build with `arduino-cli` and the Teensy core `teensy:avr@1.61.0` (library `CRC32@2.0.1`). **Do not use Teensyduino 1.62.0**: SD reads
    stall with it. The easiest way to flash is to copy the resulting `.hex` to the SD card and select it in the TR menu (flashing over USB needs
    the Teensy's program button, since the TR has no soft reboot). The build is stamped `<stock>.<rev>`, e.g. `0.9.0.33`: that number shows in
    the C64 menu title and in the hex file name (`TeensyROM+_0.9.0.33_full.hex`), so you can tell a VDrive build from a stock `0.9` one.
-3. On the C64: in the TR file browser select the image and press `<Shift-K>`; in Settings choose Special IO
-   **VDrive KERNAL** (`a`/`A`); then start BASIC (`F2`) or launch a PRG.
+2. On the C64: in Settings choose Special IO **VDrive KERNAL** (`a`/`A`); then start BASIC (`F2`) or launch a PRG.
 
+   No KERNAL file is needed. At each launch the firmware reads the C64's own KERNAL ROM (by DMA, while the menu waits) and patches it in
+   memory, if it is one the patch has been tested on: 901227-03 or -02 (C64), 251104-04 (SX-64), or the C64-mode KERNAL of a C128
+   (325179-01, 325182-01). The `<Shift-K>` KERNAL setting now belongs to the plain "Kernal Replace" Special IO only; VDrive ignores it.
+   With another ROM (JiffyDOS, other languages...) the drives stay off; then build an image on a PC (next step) and put it on the SD card
+   as **`/VDrive/kernal.bin`**, which is used as it is whenever it exists.
+3. Only for `/VDrive/kernal.bin`: build the patched KERNAL from your own ROM dump (the ROM itself is not in this repo; a 901227-03 can be obtained for personal use from a full installation of [VICE](https://vice-emu.sourceforge.io/) or directly from [this link](https://sourceforge.net/p/vice-emu/code/HEAD/tree/trunk/vice/data/C64/kernal-901227-03.bin?format=raw)):
+   ```
+   make build/kernal-tr.bin STOCK=/path/to/kernal.bin     # 8192 bytes, mailbox at $DE10, window at $DF80
+   ```
+   `tools/build.py` refuses a ROM whose code differs where the patch needs it. From a 901227-03 this is byte for byte the image the
+   firmware builds in memory. To check that you built the same image as this repo (SHA-256, `shasum -a 256` or `sha256sum`):
+
+   | File | SHA-256 |
+   |---|---|
+   | stock `kernal-901227-03.bin` (input) | `83c60d47047d7beab8e5b7bf6f67f80daa088b7a6a27de0d7e016f6484042721` |
+   | `kernal-tr.bin` from this revision | `58b7002cbcaf5efad35077e485fa4ad507b8e857400bb0f4bc9b77aba3048600` |
+   | `kernal-tr.bin` last run on a real C64 (0.9.0.42, commit `ef18020`) | `d7b5d6e79906e5858cd1f9ee213fea688b3d635d7d539298e79ea57e9628cfe0` |
+
+   A different stock hash means a different ROM dump; the patches may not fit it. The "this revision" row is checked by `make test`.
+   The two `kernal-tr.bin` rows differ when this revision has KERNAL changes not yet run on hardware (see [CLAUDE.md](CLAUDE.md), Status).
+
+While a VDrive Special IO runs, `SYS64738` (or any program that ends by jumping to the RESET vector) returns to the TR menu, writing
+back anything not yet saved, instead of restarting BASIC. To get a fresh BASIC, start it from the menu.
 
 The "VDrive+SwiftLink" Special IO runs the virtual drive and the SwiftLink / Turbo232 modem together. When the default Special IO is VDrive or VDrive+SwiftLink, menu programs paired with plain SwiftLink (CCGMS, Retromate, Simple SwiftLink Term) start with it, so launching one does not drop the drive. `.crt` SwiftLink/Turbo232 images are left alone and run with the C64's own KERNAL. It costs SwiftLink's normal start-up RAM (about 355 KB of RAM2 buffers, drive menu freed), so it is a separate Special IO.
 

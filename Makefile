@@ -2,7 +2,7 @@
 STOCK ?= /opt/homebrew/Cellar/vice/3.10/share/vice/C64/kernal-901227-03.bin
 
 # util/ is also a directory: without .PHONY `make util` is always "up to date"
-.PHONY: test test-d64 test-devcfg test-fw test-vdconfig test-vdcopy test-border test-banner test-menuprobe test-hash shot testdisk util
+.PHONY: test test-d64 test-devcfg test-fw test-vdconfig test-vdcopy test-border test-reset test-banner test-menuprobe test-variants test-hash shot testdisk util
 
 # Hardware image: mailbox at IO1 ($DE10, above the SwiftLink ACIA at $DE00-$DE07)
 build/kernal-tr.bin: $(wildcard patches/*.s) tools/build.py
@@ -33,7 +33,7 @@ test-devcfg:
 	cc -std=c99 -Wall -Wextra -Werror -DVD_DEV0=10 -DVD_DEV1=11 -o build/devcfg tests/devcfg.c d64/d64.c d64/vdrive.c && ./build/devcfg
 
 test-fw:
-	python3 -I tests/fw_host/run.py
+	python3 -I tests/fw_host/run.py $(STOCK)   # with the stock ROM: the firmware's in-memory patch == kernal-tr.bin
 
 test-vdconfig:   # VDrive Config.prg (util/vdconfig.s) in py65 with its KERNAL calls answered by a drive model (skipped without py65)
 	python3 -I tests/test_vdconfig.py
@@ -44,13 +44,19 @@ test-vdcopy: build/libd64.dylib   # VDCOPY (util/vdcopy.s) in py65 against the r
 test-border:   # the border-flash routine in a 6502 simulator (skipped without py65)
 	python3 -I tests/test_irq_border.py
 
+test-reset:   # the cold-start hook (SYS64738 back to the TR menu) in a 6502 simulator (skipped without py65)
+	python3 -I tests/test_reset_hook.py
+
 test-banner:   # the power-on banner's drive numbers in a 6502 simulator with a fake serial bus (skipped without py65)
 	python3 -I tests/test_banner.py
 
 test-menuprobe: build/libd64.dylib   # the TR menu's launch-time bus probe (firmware/vdrive_probe.asm) in VICE, 1541s at 8 and 10 (skipped without acme)
 	python3 -I tests/menuprobe_vice.py
 
-test: build/kernal-vd.bin build/libd64.dylib test-d64 test-devcfg test-fw test-border test-banner test-vdconfig test-vdcopy test-hash test-menuprobe
+test-variants: build/libd64.dylib   # the patch on each ROM the firmware patches in memory (VD_KnownKernals), in VICE; ROMs found next to STOCK
+	python3 -I tests/variants_vice.py $(STOCK)
+
+test: build/kernal-vd.bin build/libd64.dylib test-d64 test-devcfg test-fw test-border test-reset test-banner test-vdconfig test-vdcopy test-hash test-menuprobe test-variants
 	python3 -I tools/vdrive_mock.py build/kernal-vd.bin
 	python3 -I tools/vdrive_mock.py build/kernal-vd.bin scan
 

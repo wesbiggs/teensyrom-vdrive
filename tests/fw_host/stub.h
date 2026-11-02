@@ -15,6 +15,7 @@
 #define FLASHMEM
 #define FASTRUN
 #define DMAMEM
+#define PROGMEM
 #define FILE_READ  0
 #define FILE_WRITE 1
 #define Printf_dbg(...) do {} while (0)
@@ -131,6 +132,12 @@ extern void (*fSpecialBtnChange)(bool Up_nDn);
 enum { rWRegCurrMenuWAIT = 3, rwRegScratch = 9, rwRegColorRefStart = 42, NumColorRefs = 7, rmtUSBDrive = 0, rmtSD = 1, rmtTeensy = 2 };
 extern volatile uint8_t *IO1;
 extern char DriveDirPath[];
+
+// DMAControl.c: reads of the C64's memory (main.cpp serves g_c64_kernal at $E000)
+enum DMA_Trans_RnW { DMA_READ = true, DMA_WRITE = false };
+enum DMA_Addr_Mode { DMA_ADDR_FIXED = true, DMA_ADDR_INCREMENT = false };
+bool PerformDMA(DMA_Trans_RnW RnW, uint16_t StartAddr, uint8_t *Buffer, uint32_t Length, DMA_Addr_Mode FixC64Addr);
+bool CloseDMA();
 
 inline bool IsDotfile(const char *n) { return n[0] == '.'; }
 bool SDFullInit();

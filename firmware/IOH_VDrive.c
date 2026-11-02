@@ -4,8 +4,9 @@
 //   no other drive is attached. A number can be fixed from BASIC with  OPEN15,8,15,"U0>"+CHR$(10):CLOSE15  (this drive becomes
 //   device 10, kept in EEPROM; CHR$(0) makes it automatic again). Each unit serves a mounted .d64 / .d71 / .d81 (or lists the host
 //   directory so one can be picked with  OPEN15,8,15,"CD:GAME.D64"  /  "CD:_" to unmount, or  LOAD"$/GAMES/GAME.D64",8).
-// Includes the KERNAL bus hook from IOH_KernalReplace.c (select the patched 8K image with
-// <Shift-K> as usual) and adds the IO1/IO2 mailbox the patched KERNAL talks to.
+// Uses the KERNAL bus hook from IOH_KernalReplace.c with its own image (VD_KernalImage below: /VDrive/kernal.bin on the SD card, else
+// the C64's own KERNAL patched in memory; the <Shift-K> file stays the plain Kernal Replace's) and adds the IO1/IO2 mailbox the
+// patched KERNAL talks to.
 //
 // This file is included from IOHandlers.h like the other handlers (unity build, compiled as C++).
 
@@ -18,8 +19,10 @@
 #include "../vdrive/d64.c"
 #include "../vdrive/vdrive.c"
 #include "../vdrive/vdrive_io.c"
+#include "../vdrive/vd_kpatch.h"   // VD_KernalPatch[]: patches/*.s as runs (tools/build.py --table)
 
 void VDrive_PreStart();   // called from KERNALPreStart(), see StatusFunctions.c
+bool VD_KernalImage(uint8_t *img);   // KernalImageSource for InitHndlr_KERNALReplace_PreStart() (IOH_KernalReplace.c), set by KERNALPreStart()
 bool VDrive_ProbeStep();  // likewise, first: the menu's bus probe (below)
 uint8_t VDriveSwift_Remap(uint8_t ioh);   // IOH_VDriveSwift.c; used by KERNALPreStart() and IOHandlerSelectInit()
 void InitHndlr_VDrive();
@@ -46,7 +49,7 @@ stcIOHandlers IOHndlr_VDrive =
    #define VD_IsHandler(h) ((h) == IOH_VDrive || (h) == IOH_VDriveSwift)
 #endif
 
-#define VD_MboxBase    0x10  // mailbox at $DE10-$DE15: $DE00-$DE07 stays free for the SwiftLink ACIA (see IOH_VDriveSwift.c)
+#define VD_MboxBase    0x10  // mailbox at $DE10-$DE1A: $DE00-$DE07 stays free for the SwiftLink ACIA (see IOH_VDriveSwift.c)
 #define VD_CwdLen      96
 #define VD_FlushIdleMs 250   // write the image back this long after the last sector write
 
@@ -654,6 +657,80 @@ FLASHMEM void VD_BannerUnits(uint8_t *img, int size, bool settled)
       }
 }
 
+// ---- the KERNAL image (docs/DESIGN.md 40) ---------------------------------------------------------------------------------
+// The VDrive Special IOs serve their own image, not the <Shift-K> file (that one stays the plain Kernal Replace's, so another ROM
+// there does not take the drives away): /VDrive/kernal.bin on the SD card when it is there (8192 bytes, served as it is: a
+// kernal-tr.bin built on a PC from any base ROM), else the C64's own KERNAL, read by DMA while the menu waits in PreStart and
+// patched here with VD_KernalPatch. Only ROMs the patch was tested on are patched (VD_KnownKernals, by CRC-32): our code calls into
+// the stock routines, so a ROM that differs there (JiffyDOS, ...) would crash. Anything else, or a failed read, serves nothing:
+// the C64 runs its own KERNAL and the drives stay silent (the serial console says why).
+#define VD_KernalFile "/VDrive/kernal.bin"
+struct stcVDKnownKernal { uint32_t crc; const char *name; };
+static const stcVDKnownKernal VD_KnownKernals[] = {   // each checked in VICE with tools/vdrive_mock.py ... variants
+   { 0xdbe3e7c7, "901227-03" },                       // C64 (also the C128's C64 mode on some boards)
+   { 0xa5c687b3, "901227-02" },                       // early C64
+   { 0x2c5965d4, "251104-04 (SX-64)" },
+   { 0xdd2976d2, "325179-01 (C128 C64 mode)" },
+   { 0xf10c2c25, "325182-01 (C128DCR C64 mode)" },
+};
+
+FLASHMEM uint32_t VD_Crc32(const uint8_t *p, size_t n)   // the zip / zlib CRC-32
+{
+   uint32_t c = 0xffffffff;
+   while (n--) { c ^= *p++; for (int k = 0; k < 8; k++) c = (c >> 1) ^ (0xedb88320 & (0 - (c & 1))); }
+   return ~c;
+}
+
+// Lays VD_KernalPatch over an 8 KB image at $E000; false (image untouched) if a run would leave it, which would be a build error.
+FLASHMEM bool VD_KernalPatchApply(uint8_t *img)
+{
+   for (int pass = 0; pass < 2; pass++)              // check every run first, then write
+      for (const uint8_t *r = VD_KernalPatch; ; )
+      {
+         uint16_t addr = (r[0] << 8) | r[1], len = (r[2] << 8) | r[3];
+         if (!len) break;
+         if (addr < 0xE000 || addr + len > 0x10000) return false;
+         if (pass) memcpy(img + (addr - 0xE000), r + 4, len);
+         r += 4 + len;
+      }
+   return true;
+}
+
+// The image the C64 holds at $E000-$FFFF: in the menu HIRAM is set and nothing answers ROMH reads there, so a DMA read sees the chip.
+FLASHMEM static bool VD_KernalRead(uint8_t *img)
+{
+   for (uint32_t off = 0; off < 8192; off += 1024)   // in pieces, well inside DMATransferCeilingmS each
+      if (!PerformDMA(DMA_READ, 0xE000 + off, img + off, 1024, DMA_ADDR_INCREMENT) || !CloseDMA()) return false;
+   return true;
+}
+
+FLASHMEM bool VD_KernalImage(uint8_t *img)
+{
+   if (SDFullInit())
+   {
+      File f = SD.open(VD_KernalFile, FILE_READ);
+      if (f)
+      {
+         bool ok = !f.isDirectory() && f.size() == 8192 && f.read(img, 8192) == 8192;
+         f.close();
+         Serial.printf("VDrive: KERNAL %s%s\n", VD_KernalFile, ok ? "" : ": not 8192 bytes, not used");
+         if (ok) return true;
+      }
+   }
+   if (!VD_KernalRead(img)) { Serial.println("VDrive: could not read the C64's KERNAL (DMA), drives off"); return false; }
+   uint32_t crc = VD_Crc32(img, 8192);
+   for (const stcVDKnownKernal &k : VD_KnownKernals)
+      if (k.crc == crc)
+      {
+         if (!VD_KernalPatchApply(img)) { Serial.println("VDrive: bad KERNAL patch table, drives off"); return false; }
+         Serial.printf("VDrive: the C64's KERNAL %s, patched (%d bytes)\n", k.name, VD_KernalPatchBytes);
+         return true;
+      }
+   Serial.printf("VDrive: the C64's KERNAL (CRC-32 %08lx) is not one the patch knows, drives off: put a patched image in " VD_KernalFile "\n",
+                 (unsigned long)crc);
+   return false;
+}
+
 // Handler start (the C64 is already running): only re-stage the KERNAL bus hook. No storage access here.
 void VD_AltButtonInit();          // alt-button disk switching, below
 void VD_AltPoll();
@@ -1081,7 +1158,8 @@ FLASHMEM void VD_AltButtonInit()
 
 static_assert(offsetof(vio_hot_t, cmd) == VIO_CMD && offsetof(vio_hot_t, arg) == VIO_ARG && offsetof(vio_hot_t, data) == VIO_DATA &&
               offsetof(vio_hot_t, stat) == VIO_STAT && offsetof(vio_hot_t, st) == VIO_ST && offsetof(vio_hot_t, len) == VIO_LEN &&
-              offsetof(vio_hot_t, dev0) == VIO_DEV0 && offsetof(vio_hot_t, dev1) == VIO_DEV1 && offsetof(vio_hot_t, border) == VIO_BORDER, "register bytes must stay in register order");
+              offsetof(vio_hot_t, dev0) == VIO_DEV0 && offsetof(vio_hot_t, dev1) == VIO_DEV1 && offsetof(vio_hot_t, border) == VIO_BORDER &&
+              offsetof(vio_hot_t, id0) == VIO_ID0 && offsetof(vio_hot_t, id1) == VIO_ID1, "register bytes must stay in register order");
 
 FASTRUN void IO1Hndlr_VDrive(uint8_t Address, bool R_Wn)
 {

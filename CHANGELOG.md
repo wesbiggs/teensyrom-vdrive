@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased (utility only; no firmware or KERNAL change)
+## v0.9.0.43
 
 ### Added
 - **`VDCOPY` copies whole disks** (`D` in its new start menu): a `.d64` image onto a real floppy, a floppy into a new `.d64`, or between
@@ -12,6 +12,18 @@
 ### Changed
 - `VDCOPY` takes the TeensyROM menu's colours (as VDrive Config does), starts with a menu (`F` files, `D` disk, `Q` quit; RETURN at the
   file selection goes back to it) and keeps its tables at `$2800-$3FFF`.
+- **No KERNAL file to build or select any more.** The VDrive Special IOs no longer use the `<Shift-K>` KERNAL setting (it stays the plain
+  "Kernal Replace" Special IO's). At each launch the firmware reads the C64's own KERNAL ROM by DMA and patches it in memory, when it is one
+  the patch has been tested on: 901227-03, 901227-02, 251104-04 (SX-64), 325179-01 and 325182-01 (a C128's C64 mode). A
+  `/VDrive/kernal.bin` on the SD card (a `kernal-tr.bin` built on a PC, for any other ROM) is used instead whenever it exists. With an unknown
+  ROM and no such file the drives stay off (the serial console says why). `docs/DESIGN.md` section 40.
+- **`SYS64738` returns to the TR menu** while a VDrive Special IO runs (so does any program that jumps to the RESET vector), writing back what
+  is not saved yet. Two new read-only mailbox registers, `$DE19/$DE1A` (`$D6 $64`), let the KERNAL tell this from the reset of a launch.
+  Tape transfers with PLAY pressed now restart the machine instead of crashing (their code space holds the new routine).
+
+Host tests (py65, firmware glue against the 901227-03 ROM), VICE (`basic`, and the five ROMs with `make test-variants`); not on hardware.
+Firmware 0.9.0.43 **and a new KERNAL**: built in by the firmware, or rebuild `kernal-tr.bin` for `/VDrive/kernal.bin`.
+
 
 ## v0.9.0.42
 

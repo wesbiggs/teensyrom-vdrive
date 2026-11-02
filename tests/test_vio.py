@@ -57,7 +57,13 @@ class VioTests(unittest.TestCase):
         # the KERNAL's IRQ routine reads it for the disk-switch border flash: idle is $80, only the firmware changes it
         self.assertEqual(self.io.r(8), 0x80)
         self.io.w(8, 0xC2); self.assertEqual(self.io.r(8), 0x80)
-        self.assertEqual(self.io.r(9), 0)                                # past it: nothing
+
+    def test_id_registers_are_constant_and_read_only(self):
+        # the KERNAL's reset hook (P_F875 in patches/vdrive.s) asks for the TR menu only after reading these two
+        self.assertEqual((self.io.r(9), self.io.r(10)), (0xD6, 0x64))
+        self.io.w(9, 0); self.io.w(10, 0); self.assertEqual((self.io.r(9), self.io.r(10)), (0xD6, 0x64))
+        self.assertNotIn(0xDE, (0xD6, 0x64))                             # an unanswered read floats to $DE (high byte of $DE19)
+        self.assertEqual(self.io.r(11), 0)                               # past them: nothing
 
     def test_window_rw(self):
         for i in range(WIN_SIZE): self.io.win_w(i, i ^ 0xA5)
