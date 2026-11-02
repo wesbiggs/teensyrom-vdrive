@@ -38,7 +38,7 @@ Firmware 0.9.0.44 (the KERNAL patch it lays over the C64's ROM) **or** a rebuilt
   is not saved yet. Two new read-only mailbox registers, `$DE19/$DE1A` (`$D6 $64`), let the KERNAL tell this from the reset of a launch.
   Tape transfers with PLAY pressed now restart the machine instead of crashing (their code space holds the new routine).
 
-Host tests (py65, firmware glue against the 901227-03 ROM), VICE (`basic`, and the five ROMs with `make test-variants`); not on hardware.
+Host tests (py65, firmware glue against the 901227-03 ROM), VICE (`basic`, and the five ROMs with `make test-variants`); works on a real C64 (`SYS64738` on a C128 not checked).
 Firmware 0.9.0.43 **and a new KERNAL**: built in by the firmware, or rebuild `kernal-tr.bin` for `/VDrive/kernal.bin`.
 
 
