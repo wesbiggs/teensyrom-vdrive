@@ -144,9 +144,9 @@ Firmware integration and usage: `firmware/README.md`.
   under the menu handler, `SYS64738` on a C64 / C128. `KernalCheck` disassembly checked (no push on entry).
 * 0.9.0.44: SHIFT+RUN/STOP types `LOAD"*",8,1` CR `RUN` CR (stock: `LOAD` CR `RUN` CR, the tape). `P_E5EE` jumps to `shift_run` (after `rst_hook` in `$F875-$F8CF`), which echoes `LOAD"*`
   through the editor's `$E716` and puts the other 9 keys in the 10-key buffer (no overrun into `$0281+`, unlike the SX-64's 15). docs/DESIGN.md 42. VICE (`basic` and the five ROMs in `variant`);
-  **not on hardware yet**. KERNAL patch, so the firmware's table changed (REV 44); rebuild `kernal-tr.bin` for `/VDrive/kernal.bin`.
+  **works on a real C64 (owner, 2026-11-02)**. KERNAL patch, so the firmware's table changed (REV 44); rebuild `kernal-tr.bin` for `/VDrive/kernal.bin`.
 * 0.9.0.45: `swiftlink-tx-fix.patch` updated to PR #80 after Travis's review: `SwiftTxOut` malloc'd in `InitHndlr_SwiftLink()` / freed in `FreeSwiftlinkBuffs()` (no static RAM2),
-  cleared on a connection change, and sent at once when nothing is unacknowledged (`availableForWrite() >= FNET_SOCKET_DEFAULT_SIZE`, Nagle). Builds; **not on hardware yet**.
+  cleared on a connection change, and sent at once when nothing is unacknowledged (`availableForWrite() >= FNET_SOCKET_DEFAULT_SIZE`, Nagle). Builds; **works on a real C64 (owner, 2026-11-02)**.
 * Known open risks: the C128 has passed VDSUITE "run all" (NTSC, C64 mode) but not its hand checks, and a PAL C128 is untested; tape (device 1) intentionally broken (its code space was reclaimed: $F8E2-$FB8D, $FB97-$FCD0).
 
 ## Layout

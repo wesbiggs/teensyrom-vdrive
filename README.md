@@ -22,7 +22,7 @@ Please raise a GitHub issue if you find a non-working configuration.
 
 The `VDSUITE` test program passes on a real C64 on both the SD and the USB unit: `.d64` / `.d71` / `.d81` images made with `N:`, direct sector access,
 `C:` copy, REL files, append, `V` validate, `L:` / `W-` lock and write protect, bad sectors, plain files from the card, `MD:` / `RD:`, CMD paths and `S:` on images.
-Still **not run on a real C64**: the machine-code VDCOPY, the default device 8, SHIFT+RUN/STOP loading from disk, VDrive+REU, `STATUS` compared with a real drive, and RUN/STOP during a load.
+Still **not run on a real C64**: the machine-code VDCOPY, the default device 8, VDrive+REU, `STATUS` compared with a real drive, and RUN/STOP during a load.
 The test disk (`make testdisk`, see [Building and testing](#building-and-testing)) has a BASIC test program for most of them.
 
 The original TR does not have the Kernal Replace functionality needed for this software, though it may be possible in the future to create a more limited TR-compatible version. 
@@ -67,7 +67,7 @@ The C64's ability to read the 8 KB of RAM under KERNAL ROM ($E000-$FFFF) is used
    |---|---|
    | stock `kernal-901227-03.bin` (input) | `83c60d47047d7beab8e5b7bf6f67f80daa088b7a6a27de0d7e016f6484042721` |
    | `kernal-tr.bin` from this revision | `62704caed1a4f02c795fd5f73bf8e1a428d776cf70fd63c0c739c2aa7719f5cc` |
-   | `kernal-tr.bin` last run on a real C64 (0.9.0.42, commit `ef18020`) | `d7b5d6e79906e5858cd1f9ee213fea688b3d635d7d539298e79ea57e9628cfe0` |
+   | `kernal-tr.bin` last run on a real C64 (0.9.0.45, commit `02c6490`) | `62704caed1a4f02c795fd5f73bf8e1a428d776cf70fd63c0c739c2aa7719f5cc` |
 
    A different stock hash means a different ROM dump; the patches may not fit it. The "this revision" row is checked by `make test`.
    The two `kernal-tr.bin` rows differ when this revision has KERNAL changes not yet run on hardware (see [CLAUDE.md](CLAUDE.md), Status).

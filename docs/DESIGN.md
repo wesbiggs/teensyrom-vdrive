@@ -464,7 +464,7 @@ Host callback `scratch` (`62` no such file, `26` refused). The glue (`VD_Scratch
 
 **Tests.** `tests/test_reset_hook.py` (py65, `make test-reset`): the request with the IDs, no write with the menu's SID values, an empty bus, a disagreeing or wrong read, no answer and "not mine" (stock cold start, stack set). `tests/test_vio.py`: the ID registers, read-only. `tests/fw_host`: the IDs through the bus handler, the CRC-32, `/VDrive/kernal.bin` first (wrong size ignored), the DMA read patched == `kernal-tr.bin` (`make test-fw` passes `STOCK`), an unknown, a one-byte-changed and an already patched ROM refused, a failed read. VICE: `basic` ends with `SYS64738` (one `VIO_MENU`, no banner) and a reset without the IDs (stock start, the drive still answers); `variant` on each listed ROM. Not on hardware: the DMA read of the real chip, the launch reset under the menu handler, `SYS64738` on a C64 and a C128.
 
-## 42. SHIFT+RUN/STOP: `LOAD"*",8,1` and `RUN` (0.9.0.44; VICE on the five ROMs, not on hardware)
+## 42. SHIFT+RUN/STOP: `LOAD"*",8,1` and `RUN` (0.9.0.44; VICE on the five ROMs, works on a real C64)
 
 **Why.** Stock SHIFT+RUN/STOP puts `LOAD` CR `RUN` CR in the keyboard buffer: a tape load, and the tape code is gone (section 9). The SX-64 KERNAL types `LOAD":*",8` CR `RUN` CR. We want `,1` too, so a machine-code program lands at its own address (a BASIC program at `$0801` loads there either way).
 

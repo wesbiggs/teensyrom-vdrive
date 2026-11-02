@@ -5,14 +5,14 @@
 ### Changed
 - **SwiftLink sends a byte at once when nothing is in flight** (Nagle's rule ahead of the 2 ms / 20 ms timers), so programs that wait for
   an echo or reply (CCGMS text send, XMODEM ACKs) no longer pay 2 ms per exchange. The Tx buffer now takes its 256 bytes of RAM2 only
-  while SwiftLink runs and is emptied when the connection changes. Matches the revised upstream PR #80; builds, not on hardware.
+  while SwiftLink runs and is emptied when the connection changes. Matches the revised upstream PR #80; builds; works on a real C64.
 
 ## v0.9.0.44
 
 ### Changed
 - **SHIFT+RUN/STOP loads from disk**: it types `LOAD"*",8,1` and `RUN` (stock: `LOAD` and `RUN`, from the tape, whose code the VDrive
   KERNAL reclaimed), so it starts the first file on the disk in device 8, loaded to the address in its file. The line shows on the screen
-  as if typed. VICE on the five KERNAL ROMs the firmware patches; not on hardware (`docs/DESIGN.md` section 42).
+  as if typed. VICE on the five KERNAL ROMs the firmware patches; works on a real C64 (`docs/DESIGN.md` section 42).
 
 Firmware 0.9.0.44 (the KERNAL patch it lays over the C64's ROM) **or** a rebuilt `kernal-tr.bin` for `/VDrive/kernal.bin`.
 
