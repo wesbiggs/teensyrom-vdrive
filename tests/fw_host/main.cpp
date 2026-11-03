@@ -15,6 +15,7 @@ EEPROMStub EEPROM;
 uint8_t g_bus_in, g_bus_out;
 static uint32_t g_ms = 0, g_tick = 0;               // g_tick > 0: every millis() call advances the clock (for code that waits)
 static void (*g_on_millis)() = nullptr;               // test hook: a busy C64 issuing mailbox commands while the firmware waits
+bool g_led = true;                                    // on, as the TR leaves it while a program runs
 uint32_t millis() { g_ms += g_tick; if (g_on_millis) g_on_millis(); return g_ms; }
 static int g_fs_probes = 0;
 bool SDFullInit() { g_fs_probes++; return fs_::exists(SD.root); }
@@ -936,6 +937,30 @@ int main(int argc, char **argv)
         uint8_t z[8192]; memset(z, 0, sizeof z);
         check("the patch table lays its runs inside $E000-$FFFF (the reset hook's JMP at $FCE2)",
               VD_KernalPatchApply(z) && z[0x1CE2] == 0x4C && z[0x1CE3] == 0x75 && z[0x1CE4] == 0xF8);
+    }
+
+    // ---- drive LED: blinks against its previous state while the drive is busy, then gets that state back ----
+    {
+        g_tick = 0; g_on_millis = nullptr;
+        for (int i = 0; i < 100; i++) { g_ms += 5; PollingHndlr_VDrive(); }    // let any earlier blink run out
+        check("LED: idle state kept by the polling handler", g_led);
+        check("LED: a command for another device (a real drive) leaves it alone", (call(VD_LISTEN, 20) & 0x100) && g_led);
+        call(VD_UNLSN);
+        for (int i = 0; i < 100; i++) { g_ms += 5; PollingHndlr_VDrive(); }
+        check("LED: still on", g_led);
+        uint32_t t0 = g_ms;
+        check("LED: a command for our drive turns it the other way at once", !(call(VD_LISTEN, 8) & 0x100) && !g_led);
+        call(VD_UNLSN);
+        std::vector<std::pair<uint32_t, bool>> t;
+        for (bool last = g_led; g_ms - t0 < 400; ) { g_ms += 5; PollingHndlr_VDrive(); if (g_led != last) { last = g_led; t.push_back({g_ms - t0, last}); } }
+        check("LED: blinks every 75 ms and is back on 180 ms after the last command",
+              t.size() == 3 && t[0] == std::make_pair(75u, true) && t[1] == std::make_pair(150u, false) && t[2] == std::make_pair(180u, true));
+        g_led = false;                                                          // a pause or a cartridge turned it off
+        call(VD_LISTEN, 8); call(VD_UNLSN);
+        check("LED: from off, a command turns it on", g_led);
+        for (int i = 0; i < 40; i++) { g_ms += 5; PollingHndlr_VDrive(); }
+        check("LED: ... and back off after the hold", !g_led);
+        g_led = true;
     }
 
     printf("%s\n", fails ? "FAILED" : "ALL OK");

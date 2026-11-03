@@ -748,13 +748,52 @@ FLASHMEM void InitHndlr_VDrive()
    VD_AltButtonInit();
 }
 
+// ---- drive LED: the TR's LED blinks while the drives are busy (by ziggystar12, from his Mean Hamster Engine VDrive build) ----
+// Each serviced mailbox command for our units restarts a short hold; while it runs the LED blinks against the state it had
+// before (the TR keeps it on while a program runs, a pause or some cartridges turn it off), and gets that state back after.
+#define VD_LedPin      34    // SetLEDOn / SetLEDOff (Common_Defs.h)
+#define VD_LedBlinkMs  75
+#define VD_LedHoldMs   180
+
+static bool     vdLedActive = false, vdLedIdleHigh = false;
+static uint32_t vdLedStartedMs = 0, vdLedLastAccessMs = 0;
+
+FLASHMEM static void VD_LedPoll()
+{
+   if (!vdLedActive) return;
+   uint32_t now = millis();
+   if (now - vdLedLastAccessMs >= VD_LedHoldMs)
+   {
+      digitalWriteFast(VD_LedPin, vdLedIdleHigh);
+      vdLedActive = false;
+      return;
+   }
+   bool oddPhase = ((now - vdLedStartedMs) / VD_LedBlinkMs) & 1u;
+   digitalWriteFast(VD_LedPin, oddPhase ? vdLedIdleHigh : !vdLedIdleHigh);
+}
+
+FLASHMEM static void VD_LedAccess()
+{
+   uint32_t now = millis();
+   if (!vdLedActive)
+   {
+      vdLedIdleHigh = digitalReadFast(VD_LedPin) != 0;
+      vdLedStartedMs = now;
+      vdLedActive = true;
+   }
+   vdLedLastAccessMs = now;
+   VD_LedPoll();
+}
+
 FLASHMEM void PollingHndlr_VDrive()
 {
    if (vio == NULL) return;
    VD_AltPoll();
+   VD_LedPoll();
    if (vio_poll(vio))
    {
       lastActivityMs = millis();
+      if (vioHot.stat != VIO_NOTMINE) VD_LedAccess();     // not for a command handed back to a real drive on the bus
 #ifdef VD_TRACE   // bring-up aid: one line per mailbox command on the USB serial port (see docs/BRINGUP.md)
       Serial.printf("vd cmd=%u arg=%02x len=%u -> stat=%02x data=%02x st=%02x\n",
                     vioHot.cmd, vioHot.arg, vioHot.len, vioHot.stat, vioHot.data, vioHot.st);

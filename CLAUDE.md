@@ -8,7 +8,7 @@ real IEC code, so physical drives keep working. LOAD/SAVE have block-transfer fa
 second, the first free numbers from 8 up: the KERNAL probes the real bus on the first disk access of a run) or fixed from BASIC with
 `OPEN15,8,15,"U0>"+CHR$(n)` (kept in EEPROM, `CHR$(0)` = automatic, no reflash). Names and `CD` take paths: `LOAD"$/GAMES/G.D64",8`.
 
-Full design and per-milestone notes: `docs/DESIGN.md` (sections 1-38, in order of construction).
+Full design and per-milestone notes: `docs/DESIGN.md` (sections 1-43, in order of construction).
 Firmware integration and usage: `firmware/README.md`.
 
 ## Status (read this first)
@@ -148,6 +148,7 @@ Firmware integration and usage: `firmware/README.md`.
 * 0.9.0.45: `swiftlink-tx-fix.patch` updated to PR #80 after Travis's review: `SwiftTxOut` malloc'd in `InitHndlr_SwiftLink()` / freed in `FreeSwiftlinkBuffs()` (no static RAM2),
   cleared on a connection change, and sent at once when nothing is unacknowledged (`availableForWrite() >= FNET_SOCKET_DEFAULT_SIZE`, Nagle). Builds; **works on a real C64 (owner, 2026-11-02)**.
   Rebased on upstream `6518b966` (#80 merged, byte-identical to our patch): `swiftlink-tx-fix.patch` dropped; the patched tree is identical, so REV stays 45. Builds (`TeensyROM+_0.9.0.45_full.hex`); fw_host passes.
+* 0.9.0.46: drive activity LED, contributed by ziggystar12 (creator of Mean Hamster Engine; credited in README and CHANGELOG): the TR's LED (pin 34) blinks 75 ms phases while VDrive services mailbox commands for our units (`VD_LedAccess` after `vio_poll`, not on `VIO_NOTMINE`) and gets its earlier state back 180 ms after the last (`VD_LedPoll` every pass of `PollingHndlr_VDrive`; docs/DESIGN.md 43). Main loop only, no ISR change. `tests/fw_host`; builds; **not on hardware yet**.
 * Known open risks: the C128 has passed VDSUITE "run all" (NTSC, C64 mode) but not its hand checks, and a PAL C128 is untested; tape (device 1) intentionally broken (its code space was reclaimed: $F8E2-$FB8D, $FB97-$FCD0).
 
 ## Layout

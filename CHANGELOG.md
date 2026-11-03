@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.9.0.46
+
+### Added
+- **Drive activity LED**: the TR+'s LED blinks (75 ms phases) while a VDrive unit services requests and gets its previous state back
+  180 ms after the last one; commands handed back to a real drive on the bus do not count. Contributed by ziggystar12, the creator of
+  Mean Hamster Engine, from his own VDrive build. Host tests (`tests/fw_host`); builds; not on hardware (`docs/DESIGN.md` section 43).
+
+Firmware only: `kernal-tr.bin` is unchanged.
+
 ## v0.9.0.45
 
 ### Changed

@@ -100,6 +100,8 @@ If you want to create a new virtual image, you can make one in VICE and copy it 
 
 To switch between multiple disk images, you can use the TR+ alt button. Setup and usage is documented below. You can also issue mount/unmount commands to the TR+'s command channel over serial or Ethernet.
 
+The TR+'s LED works as a drive activity light: it blinks while a virtual drive is busy and goes back to how it was (normally on) a moment after the last access. Commands for a real drive on the bus leave it alone. This was contributed by ziggystar12, the creator of Mean Hamster Engine.
+
 ### Commands
 
 The examples here use `8` as an illustration only, and work the same on both SD and USB.
@@ -306,6 +308,9 @@ prints its results; please include them in an issue if one fails. `tests/basic/R
 * [CLAUDE.md](CLAUDE.md): project notes, status and gotchas for contributors.
 * [CONTRIBUTING.md](CONTRIBUTING.md): branches (`main` vs `bleeding-edge`), tests and project rules.
 * [CHANGELOG.md](CHANGELOG.md): changes by firmware revision.
+
+## Credits
+* ziggystar12 (creator of Mean Hamster Engine): the drive activity LED (0.9.0.46), from his own VDrive build.
 
 ## License
 MIT License, see [LICENSE](LICENSE), the same license as the TeensyROM firmware this patches. A firmware build combines both, so keep both copyright notices when distributing one.

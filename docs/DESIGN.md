@@ -473,3 +473,13 @@ Host callback `scratch` (`62` no such file, `26` refused). The glue (`VD_Scratch
 **Where.** `P_E5EE` replaces `LDX #$09 / SEI` (SX-64: `LDX #$0F`) of the stock buffer fill with `JMP shift_run`; the rest of the stock fill and the `LOAD`/`RUN` table at `$ECE7` are left unreached. `shift_run` and its 16-byte text (46 bytes) sit after `rst_hook` in the cassette IRQ set-up `$F875-$F8CF` (79 of 91 bytes used; the assert names both). `tools/build.py` refuses a ROM without `LDX #n / SEI / STX $C6` at `$E5EE`; all five ROMs on `VD_KnownKernals` have it (only the count differs on the SX-64).
 
 **Tests.** The mock's `variant` (each of the five ROMs) and `basic` scenarios put `$83` in the keyboard buffer on a cleared screen and check for `LOAD"*",8,1`, `SEARCHING FOR *`, `RUN` and `HI` (the first file on the mock disk is `10 PRINT"HI"`), and that `$0286` is unchanged. Not on hardware.
+
+## 43. Drive activity LED (0.9.0.46; firmware glue host test, not on hardware)
+
+**Credit.** The code and the idea are ziggystar12's (the creator of Mean Hamster Engine), from his own VDrive build; this is his routine under our names.
+
+**What.** The TR's LED (pin 34, the one `SetLEDOn` / `SetLEDOff` drive) blinks while the drive is busy. The first access of a burst reads the LED's current state (on while a program runs; a pause or some cartridges turn it off) and remembers it; from then on the LED is the opposite of that state for 75 ms, that state for 75 ms, and so on, until 180 ms pass with no access, when it gets the remembered state back.
+
+**Where.** `PollingHndlr_VDrive` (main loop, so every combined VDrive Special IO gets it): `VD_LedPoll()` on every pass, idle or not, and `VD_LedAccess()` after each mailbox command `vio_poll()` serviced, unless its answer is `VIO_NOTMINE` (a command for another device, which the KERNAL then sends to the real bus). One `vio_poll()` is one command (a LISTEN, a byte, a 128-byte fast-LOAD block), so a long single operation (`N:` of a D81, about 0.8 s) holds one LED state through it. Nothing in the bus ISR: the hot path is unchanged. When the handler ends (back to the menu) the menu set-up turns the LED on as before.
+
+**Tests.** `tests/fw_host` (pin 34 stubbed): a command for device 20 (not ours) leaves the LED alone; one for device 8 flips it at once, then the trace is on at 75 ms, off at 150 ms, on (the old state) at 180 ms; starting from off it does the same the other way round. Not on hardware.

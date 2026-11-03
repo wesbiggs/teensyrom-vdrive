@@ -99,6 +99,9 @@ extern FS SD, firstPartition;
 struct SerialStub { void println(const char *s) { puts(s); } template <class... A> void printf(const char *f, A... a) { ::printf(f, a...); } };
 extern SerialStub Serial;
 uint32_t millis();
+extern bool g_led;                                    // pin 34, the TR's LED (SetLEDOn = high)
+inline bool digitalReadFast(uint8_t pin) { return pin == 34 && g_led; }
+inline void digitalWriteFast(uint8_t pin, bool v) { if (pin == 34) g_led = v; }
 
 struct stcIOHandlers {
     char Name[IOHNameLength];
