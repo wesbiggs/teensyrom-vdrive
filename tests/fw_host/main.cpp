@@ -333,7 +333,38 @@ int main(int argc, char **argv)
     check("host directory listing (SD, nothing mounted)", rc == 0 && d.find("\"GAME.D64\"") != std::string::npos
           && d.find("\"SUB\"") != std::string::npos && d.find("\"SD:/") != std::string::npos);
     check("dot files hidden", d.find(".HIDDEN") == std::string::npos);
-    check("over-long names skipped", d.find("AVERYLONGFILENAME") == std::string::npos);
+    check("over-long names listed by their alias", d.find("AVERYLONGFILENAME") == std::string::npos && d.find("\"AVERYLON^AME.PRG\"") != std::string::npos);
+
+    // ---- aliases for host names the C64 can't use as they are (docs/DESIGN.md 44) ----
+    check("alias of a long folder name", d.find("\"LONG FOLDER^NAME\"") != std::string::npos);
+    cmd15("CD:LONG FOLDER^NAME");
+    check("CD: by the folder's alias", status15() == "00, OK,00,00\r" && std::string(vdUnit[0].cwd) == "/Long Folder With A Long Name");
+    d = fast_load(8, "$");
+    auto count = [](const std::string &s, const std::string &w) { int n = 0; for (size_t p = s.find(w); p != std::string::npos; p = s.find(w, p + 1)) n++; return n; };
+    check("listing shows both sides by alias", d.find("\"THE-PU^SIDE1.D64\"") != std::string::npos && d.find("\"THE-PU^SIDE2.D64\"") != std::string::npos);
+    check("... a name with a comma as A^B.PRG", d.find("\"A^B.PRG\"") != std::string::npos);
+    check("... two long names with the same alias: neither is listed", d.find("COLLID^SIDE1") == std::string::npos);
+    check("... an alias equal to a real name: only the real file is listed", count(d, "\"SHORTNAM^ONE.PRG\"") == 1);
+    check("LOAD by alias reads the host file", fast_load(8, "A^B.PRG", &rc) == std::string("\x01\x08") + "comma" && rc == 0);
+    check("... a pattern finds it by alias", fast_load(8, "A^B*", &rc) == std::string("\x01\x08") + "comma" && rc == 0);
+    check("... the real name wins over an alias", fast_load(8, "SHORTNAM^ONE.PRG", &rc) == std::string("\x01\x08") + "real" && rc == 0);
+    fast_load(8, "COLLID^SIDE1.PRG", &rc); check("... a dropped alias is not found (62)", rc == 4 && status15().rfind("62,", 0) == 0);
+    cmd15("MD:A^B.PRG"); check("MD: on an alias is 63", status15().rfind("63,", 0) == 0);
+    cmd15("S:DELETE-ME-^X.D64"); check("S: deletes an image file by its alias", status15().rfind("01,", 0) == 0
+          && !fs_::exists(SD.root / "Long Folder With A Long Name" / "Delete-Me-Long-Image-Name-x.d64"));
+    cmd15("CD:THE-PU^SIDE1.D64");
+    check("CD: mounts an image by its alias", status15() == "00, OK,00,00\r" && vdUnit[0].mounted
+          && std::string(vdUnit[0].imgName) == "The-Pumpkins-Breadbin-of-Horror-side1.D64");
+    check("... its listing", fast_load(8, "$").find("PUMPKINS1") != std::string::npos);
+    { std::ifstream f(SD.root / ".vdrive"); std::string s((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+      check("... the sidecar holds the host path", s == "/Long Folder With A Long Name/The-Pumpkins-Breadbin-of-Horror-side1.D64"); }
+    d = fast_load(8, "$/LONG FOLDER^NAME/THE-PU^SIDE2.D64");
+    check("listing by an alias path", d.find("PUMPKINS2") != std::string::npos && d.find("\"SIDE2\"") != std::string::npos);
+    check("... and the selection is back (side 1, by its host name)", vdUnit[0].mounted && std::string(vdUnit[0].imgName) == "The-Pumpkins-Breadbin-of-Horror-side1.D64"
+          && fast_load(8, "$").find("PUMPKINS1") != std::string::npos);
+    check("LOAD through an alias path", fast_load(8, "/LONG FOLDER^NAME/THE-PU^SIDE2.D64/SIDE2", &rc) == std::string("\x01\x08") + "side two" && rc == 0);
+    cmd15("CD:/"); status15();
+    d = fast_load(8, "$");
 
     // mount via CD: through the byte-level bus
     cmd15("CD:GAME.D64");
@@ -602,25 +633,25 @@ int main(int argc, char **argv)
 
         g_tick = 1;                                           // let the waiting code see time pass
         check("remote set: mounts an image on SD", VDrive_RemoteSet(0, "/GAME.D64", msg, sizeof msg) == 0 && vdUnit[0].mounted);
-        check("remote get: shows it", has(0, "\"mounted\":true,\"writable\":true,\"path\":\"/game.d64\",\"cwd\":\"/\""));
+        check("remote get: shows it", has(0, "\"mounted\":true,\"writable\":true,\"path\":\"/GAME.D64\",\"cwd\":\"/\""));
         g_tick = 0;
         int rc = -1;
         check("... and the C64 can read from it", fast_load(8, "HELLO", &rc) == hello_expect && rc == 0);
         g_tick = 1;
 
-        check("remote set: unknown image fails with 62 and keeps the current disk", VDrive_RemoteSet(0, "/NOPE.D64", msg, sizeof msg) == 62 && strstr(msg, "not found") && has(0, "/game.d64"));
-        check("remote set: a directory is not an image (74)", VDrive_RemoteSet(0, "/SUB", msg, sizeof msg) == 74 && has(0, "/game.d64"));
-        check("remote set: relative path refused (33)", VDrive_RemoteSet(0, "GAME.D64", msg, sizeof msg) == 33 && has(0, "/game.d64"));
+        check("remote set: unknown image fails with 62 and keeps the current disk", VDrive_RemoteSet(0, "/NOPE.D64", msg, sizeof msg) == 62 && strstr(msg, "not found") && has(0, "/GAME.D64"));
+        check("remote set: a directory is not an image (74)", VDrive_RemoteSet(0, "/SUB", msg, sizeof msg) == 74 && has(0, "/GAME.D64"));
+        check("remote set: relative path refused (33)", VDrive_RemoteSet(0, "GAME.D64", msg, sizeof msg) == 33 && has(0, "/GAME.D64"));
         check("remote set: no such unit", VDrive_RemoteSet(2, "/GAME.D64", msg, sizeof msg) == 1);
         check("remote set: no file was created by the failed attempts", !fs_::exists(SD.root / "NOPE.D64"));
 
-        check("remote set: other image in a folder", VDrive_RemoteSet(0, "/SUB/COPY.D64", msg, sizeof msg) == 0 && has(0, "\"path\":\"/SUB/copy.d64\",\"cwd\":\"/SUB\""));
+        check("remote set: other image in a folder", VDrive_RemoteSet(0, "/SUB/COPY.D64", msg, sizeof msg) == 0 && has(0, "\"path\":\"/SUB/COPY.D64\",\"cwd\":\"/SUB\""));
         check("... the C64 sees the new disk", (g_tick = 0, fast_load(8, "$").find("TWODISK") != std::string::npos));
         g_tick = 1;
-        { std::ifstream f(SD.root / ".vdrive"); std::string t((std::istreambuf_iterator<char>(f)), {}); check("... and it is the remembered one", t == "/SUB/copy.d64"); }
+        { std::ifstream f(SD.root / ".vdrive"); std::string t((std::istreambuf_iterator<char>(f)), {}); check("... and it is the remembered one", t == "/SUB/COPY.D64"); }
         check("remote set: D81 works too", VDrive_RemoteSet(0, "/BIG.D81", msg, sizeof msg) == 0 && vdUnit[0].d.fmt == D64_FMT_D81);
 
-        check("remote set: USB unit", VDrive_RemoteSet(1, "/USB.D64", msg, sizeof msg) == 0 && has(1, "\"path\":\"/usb.d64\"") && has(0, "/big.d81"));
+        check("remote set: USB unit", VDrive_RemoteSet(1, "/USB.D64", msg, sizeof msg) == 0 && has(1, "\"path\":\"/USB.D64\"") && has(0, "/BIG.D81"));
 
         // quiet point: a mailbox command just happened, so the swap waits at least VD_QuietMs
         g_tick = 0; call(VD_LISTEN, 8); call(VD_SECOND, 0x6F); call(VD_UNLSN); lastActivityMs = millis();
@@ -655,7 +686,7 @@ int main(int argc, char **argv)
         g_on_millis = [] { if (!vioHot.pending) { w1(VIO_LEN, 0); w1(VIO_ARG, 0); w1(VIO_CMD, VD_UNLSN); } };   // never lets go
         t0 = g_ms;
         check("quiet wait: a C64 that keeps talking is refused after the limit", VDrive_RemoteQuiet(msg, sizeof msg) == 2 && strstr(msg, "busy") && g_ms - t0 >= VD_SwapWaitMs);
-        check("remote set in the same situation fails (2) and leaves the disk alone", VDrive_RemoteSet(0, "/BIG.D81", msg, sizeof msg) == 2 && has(0, "/game.d64"));
+        check("remote set in the same situation fails (2) and leaves the disk alone", VDrive_RemoteSet(0, "/BIG.D81", msg, sizeof msg) == 2 && has(0, "/GAME.D64"));
         g_on_millis = nullptr; g_tick = 0;
         vioReady = false;
         check("quiet wait: VDrive not running is refused", VDrive_RemoteQuiet(msg, sizeof msg) == 1);
@@ -690,7 +721,7 @@ int main(int argc, char **argv)
         { std::ofstream f(firstPartition.root / ".vdrive", std::ios::trunc); f << "//USB.D64"; }
         prestart();
         check("a sidecar with a doubled slash mounts with cwd root, not //", vdUnit[1].mounted && vdUnit[1].cwd[0] == 0);
-        check("... and the status path has a single slash", VDrive_RemoteStatus(1, js, sizeof js) > 0 && strstr(js, "\"path\":\"/usb.d64\"") && !strstr(js, "//"));
+        check("... and the status path has a single slash", VDrive_RemoteStatus(1, js, sizeof js) > 0 && strstr(js, "\"path\":\"/USB.D64\"") && !strstr(js, "//"));
         fs_::remove(SD.root / ".vdrive"); fs_::remove(firstPartition.root / ".vdrive");
     }
 

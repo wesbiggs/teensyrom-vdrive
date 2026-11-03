@@ -197,6 +197,44 @@ VD_COLD static int image_kind(const char *s)
 
 VD_COLD static const char *image_tag(const char *s) { int k = image_kind(s); return k == 71 ? "D71" : k == 81 ? "D81" : "D64"; }
 
+/* ---- aliases for host names the C64 cannot use (see vdrive.h) ---- */
+VD_COLD static int alias_ok(char c)
+{
+    return c >= 0x20 && c <= 0x7a && c != '`' && !strchr("*?,=:\"", c);
+}
+
+VD_COLD int vd_alias(const char *name, char out[17])
+{
+    size_t n = strlen(name), i;
+    int bad = 0;
+    if (!n) { out[0] = 0; return -1; }
+    for (i = 0; i < n; i++) if (!alias_ok(name[i])) bad = 1;
+    if (n <= 16) {
+        for (i = 0; i < n; i++) { char c = name[i]; out[i] = !alias_ok(c) ? '^' : (c >= 'a' && c <= 'z') ? (char)(c - 0x20) : c; }
+        out[n] = 0;
+        return bad;
+    }
+    char m[256];
+    size_t len = n < sizeof m - 1 ? n : sizeof m - 1;
+    for (i = 0; i < len; i++) { char c = name[i]; m[i] = !alias_ok(c) ? '^' : (c >= 'a' && c <= 'z') ? (char)(c - 0x20) : c; }
+    m[len] = 0;
+    size_t stem = len;                                                 /* extension: '.' + 1-3 characters, not the first */
+    const char *dot = strrchr(m, '.');
+    if (dot && dot > m && len - (size_t)(dot - m) - 1 >= 1 && len - (size_t)(dot - m) - 1 <= 3) stem = (size_t)(dot - m);
+    size_t ext = len - stem, budget = 16 - ext;
+    size_t q = stem;
+    while (q > 0 && !strchr(" -_.", m[q - 1])) q--;                   /* start of the last word */
+    size_t tail = stem - q;
+    if (tail < 1 || tail > 5) tail = 3;
+    size_t head = budget - 1 - tail;                                   /* budget >= 12, tail <= 5: head >= 6 */
+    memcpy(out, m, head);
+    out[head] = '^';
+    memcpy(out + head + 1, m + stem - tail, tail);
+    memcpy(out + head + 1 + tail, m + stem, ext);
+    out[16] = 0;
+    return 1;
+}
+
 VD_COLD static void leave_image(vdrive_t *v, int unit, vd_unit_t *u)
 {
     if (!u->disk) return;

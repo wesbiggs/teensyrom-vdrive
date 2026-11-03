@@ -60,6 +60,15 @@ try:
     (sd / "OKTAB.D64").write_bytes((sd / "OKTAB.D64").read_bytes() + bytes([1] * 683))
     (sd / ".HIDDEN").write_bytes(b"x")
     (sd / "AVERYLONGFILENAME.PRG").write_bytes(b"x")
+    lf = sd / "Long Folder With A Long Name"; lf.mkdir()                 # aliases (docs/DESIGN.md 44)
+    mk(lf / "The-Pumpkins-Breadbin-of-Horror-side1.D64", "pumpkins1", "p1", {})
+    mk(lf / "The-Pumpkins-Breadbin-of-Horror-side2.D64", "pumpkins2", "p2", {"SIDE2": b"\x01\x08side two"})
+    (lf / "a,b.prg").write_bytes(b"\x01\x08comma")
+    (lf / "Delete-Me-Long-Image-Name-x.d64").write_bytes(b"x")          # DELETE-ME-^X.D64, for S:
+    (lf / "Collide-AAAAAA-x-side1.prg").write_bytes(b"\x01\x08A")      # both COLLID^SIDE1.PRG: dropped
+    (lf / "Collide-BBBBBB-x-side1.prg").write_bytes(b"\x01\x08B")
+    (lf / "Shortname-xyz-ONE.prg").write_bytes(b"\x01\x08alias")      # SHORTNAM^ONE.PRG, but a real file has that name
+    (lf / "shortnam^one.prg").write_bytes(b"\x01\x08real")
     expect = tmp / "hello.bin"; expect.write_bytes(hello)
 
     r = subprocess.run([str(exe), str(sd), str(usb), str(expect), str(kstock), str(kpatched)], capture_output=True, text=True)
