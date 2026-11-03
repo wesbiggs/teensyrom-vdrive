@@ -7,6 +7,9 @@
   an echo or reply (CCGMS text send, XMODEM ACKs) no longer pay 2 ms per exchange. The Tx buffer now takes its 256 bytes of RAM2 only
   while SwiftLink runs and is emptied when the connection changes. Matches the revised upstream PR #80; builds; works on a real C64.
 
+### Upstream
+- PR #80 merged into TeensyROM (`6518b966`); the patch now applies on that commit without its own copy of the SwiftLink fix. Same firmware.
+
 ## v0.9.0.44
 
 ### Changed

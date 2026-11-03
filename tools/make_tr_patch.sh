@@ -16,8 +16,6 @@ cd "$W"; git init -q; git add -A; git -c user.name=x -c user.email=x@x commit -q
 git apply "$HERE/firmware/kernal-fnet-poll.patch"
 # fixes to upstream Kernal Replace (fast image copy, late-ISR counters), on top of #85: applied before the edits below
 git apply "$HERE/firmware/kernalreplace-fixes.patch"
-# fix to upstream SwiftLink: Tx bytes coalesced, never a blocking client.write() (it hung loop() with the stack polled from there)
-git apply "$HERE/firmware/swiftlink-tx-fix.patch"
 
 python3 -I - "$C" "$HERE/firmware/REV" "$HERE/firmware/vdrive_remote.inc" "$HERE/firmware/vdrive_probe.asm" <<'PY'
 import sys
