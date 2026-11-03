@@ -149,6 +149,16 @@ Firmware integration and usage: `firmware/README.md`.
   cleared on a connection change, and sent at once when nothing is unacknowledged (`availableForWrite() >= FNET_SOCKET_DEFAULT_SIZE`, Nagle). Builds; **works on a real C64 (owner, 2026-11-02)**.
   Rebased on upstream `6518b966` (#80 merged, byte-identical to our patch): `swiftlink-tx-fix.patch` dropped; the patched tree is identical, so REV stays 45. Builds (`TeensyROM+_0.9.0.45_full.hex`); fw_host passes.
 * 0.9.0.46: drive activity LED, contributed by ziggystar12 (creator of Mean Hamster Engine; credited in README and CHANGELOG): the TR's LED (pin 34) blinks 75 ms phases while VDrive services mailbox commands for our units (`VD_LedAccess` after `vio_poll`, not on `VIO_NOTMINE`) and gets its earlier state back 180 ms after the last (`VD_LedPoll` every pass of `PollingHndlr_VDrive`; docs/DESIGN.md 43). Main loop only, no ISR change. `tests/fw_host`; builds; **not on hardware yet**.
+* **Remote commands while a program runs can crash it or corrupt data (owner, 2026-11-03; not VDrive bugs, stock firmware too).** Two separate causes:
+  (1) **Any USB serial write from the TeensyROM** (a command's reply, a ping's "Busy!") goes through `schedule_transfer()` in the Teensy core's `usb.c`, which runs with
+  all interrupts off while it polls USB registers. The phi2 interrupt then answers late (>250 ns, counted with teensyrom-snoop's late-interrupt counter, `trsid.py --isr`),
+  enough to crash a timing-tight cartridge (*Ms. Pac-Man* crashes at once under pings over USB; a USB port that is only held open does nothing). VDrive's IO1/IO2 answers
+  are as exposed (see Bus timing margin). Experiment, not yet on hardware: `tools/teensy_core_usb_basepri.py` in teensyrom-snoop masks only priority 32 and lower
+  there (`BASEPRI`), so the phi2 interrupt at 16 keeps running; it patches the installed Teensyduino core, so a vdrive build made while it is applied gets it too.
+  TCP replies do not have this problem.
+  (2) **Remote memory reads by DMA** (`ReadC64MemToken`, e.g. `trmon` peeking at the screen) crash or corrupt some programs **over TCP as well**, so it is the DMA reads
+  themselves, not the transport. Cause not investigated yet (the CPU is paused for the read; timing-tight code, VDrive transfers in flight and the Kernal Replace HIRAM
+  sense are the suspects). Until then: no `trmon`-style peeks during disk access or in timing-tight programs.
 * Known open risks: the C128 has passed VDSUITE "run all" (NTSC, C64 mode) but not its hand checks, and a PAL C128 is untested; tape (device 1) intentionally broken (its code space was reclaimed: $F8E2-$FB8D, $FB97-$FCD0).
 
 ## Layout
