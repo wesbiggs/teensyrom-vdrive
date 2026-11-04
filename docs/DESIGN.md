@@ -474,7 +474,7 @@ Host callback `scratch` (`62` no such file, `26` refused). The glue (`VD_Scratch
 
 **Tests.** The mock's `variant` (each of the five ROMs) and `basic` scenarios put `$83` in the keyboard buffer on a cleared screen and check for `LOAD"*",8,1`, `SEARCHING FOR *`, `RUN` and `HI` (the first file on the mock disk is `10 PRINT"HI"`), and that `$0286` is unchanged. Not on hardware.
 
-## 43. Drive activity LED (0.9.0.46; firmware glue host test, not on hardware)
+## 43. Drive activity LED (0.9.0.46; firmware glue host test, works on a real C64)
 
 **Credit.** The code and the idea are ziggystar12's (the creator of Mean Hamster Engine), from his own VDrive build; this is his routine under our names.
 
@@ -482,4 +482,4 @@ Host callback `scratch` (`62` no such file, `26` refused). The glue (`VD_Scratch
 
 **Where.** `PollingHndlr_VDrive` (main loop, so every combined VDrive Special IO gets it): `VD_LedPoll()` on every pass, idle or not, and `VD_LedAccess()` after each mailbox command `vio_poll()` serviced, unless its answer is `VIO_NOTMINE` (a command for another device, which the KERNAL then sends to the real bus). One `vio_poll()` is one command (a LISTEN, a byte, a 128-byte fast-LOAD block), so a long single operation (`N:` of a D81, about 0.8 s) holds one LED state through it. Nothing in the bus ISR: the hot path is unchanged. When the handler ends (back to the menu) the menu set-up turns the LED on as before.
 
-**Tests.** `tests/fw_host` (pin 34 stubbed): a command for device 20 (not ours) leaves the LED alone; one for device 8 flips it at once, then the trace is on at 75 ms, off at 150 ms, on (the old state) at 180 ms; starting from off it does the same the other way round. Not on hardware.
+**Tests.** `tests/fw_host` (pin 34 stubbed): a command for device 20 (not ours) leaves the LED alone; one for device 8 flips it at once, then the trace is on at 75 ms, off at 150 ms, on (the old state) at 180 ms; starting from off it does the same the other way round. Works on a real C64 (owner, 2026-11-03).
