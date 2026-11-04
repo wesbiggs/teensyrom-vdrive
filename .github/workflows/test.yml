@@ -15,6 +15,11 @@ concurrency:
 
 jobs:
   test:
+    # a pull request from main or bleeding-edge in this repository is the same commit the push already tests (its result shows on the PR too)
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name != github.repository ||
+      (github.head_ref != 'main' && github.head_ref != 'bleeding-edge')
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:

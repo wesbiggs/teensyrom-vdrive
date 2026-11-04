@@ -301,9 +301,12 @@ def main(kernal, scenario="basic"):
             check("scan: nothing for 8 or 10 was handled by the mock", all(e[4] for e in log[n0:] if e[1] in (8, 10)))
             run('LOAD"X",12\r', "DEVICE NOT PRESENT")
             # how long does probing an empty number take with drives on the bus? (jiffies = 1/60 s; LISTEN + SECOND as the scan does it)
-            run('T=TI:POKE780,12:SYS65457:POKE780,111:SYS65427:PRINT"P=";PEEK(144);"T=";TI-T\r', "P= 128")
-            import re; ticks = [int(x) for x in re.findall(r"P= 128 T= (\d+)", "".join(m.screen()))]
-            check("scan: probing an empty number takes %s jiffies (< 4 = 66 ms)" % ticks, ticks and ticks[-1] < 4)
+            # ST is 128, or 131 when the 1541s at 8 and 10 still held DATA after ATN and the KERNAL timed out as well ($03, seen in CI):
+            # bit 7 is what bus_scan tests (BMI @empty)
+            run('T=TI:POKE780,12:SYS65457:POKE780,111:SYS65427:PRINT"P=";PEEK(144);"T=";TI-T\r', "T= ")
+            import re; probe = [(int(p), int(t)) for p, t in re.findall(r"P= (\d+) T= (\d+)", "".join(m.screen()))]
+            check("scan: probing an empty number gives ST bit 7 (DEVICE NOT PRESENT): %s" % probe, bool(probe and probe[-1][0] & 0x80))
+            check("scan: probing an empty number takes %s jiffies (< 4 = 66 ms)" % [t for _, t in probe], bool(probe and probe[-1][1] < 4))
             # --- util/vdcopy: copy from the real 1541 (8) to the SD drive (9), then the other directions ---
             def vdcopy(sel, replace, expect, src="", dst=""):
                 m.keys('RUN\r'); service(1.5); m.keys('F'); service(0.5)                # the menu: F = files
