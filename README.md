@@ -231,6 +231,7 @@ With the TR menu showing (no program running) the same commands show and change 
 | `L:name` lock, `W-1` / `W-0` write protect | CMD-drive syntax. `L` toggles the lock flag (`<`, the file cannot be scratched); `W-1` makes the mounted image read-only until `W-0` or the next mount |
 | Plain files on the card | With nothing mounted, `LOAD"GAME.PRG",8` (also `"GAME"`, `"GA*"`, `"DIR/GAME.PRG"`) loads the file itself; reading only (`SAVE` answers 74), one plain file open per drive (a second answers 70) |
 | `MD:NAME` / `RD:NAME` | With nothing mounted: make / remove (empty) folders on the card, also through a CMD path (`MD//GAMES/:NEW`, `RD/OLD/:X`). With an image mounted (D81 partitions): not supported |
+| Long host file names | A card file or folder whose name has more than 16 characters, or characters the C64 cannot type (`, : * ? = "`, accents), is listed under an alias with an up arrow: `The-Pumpkins-Breadbin-of-Horror-side1.D64` shows as `THE-PU↑SIDE1.D64`, and `CD:`, `LOAD` and paths take that alias. Two names with the same alias are both hidden (rename one) |
 | `C:new=old` copy | Also joins files: `C:new=a,b,c` (up to 8); the new file has the first source's type |
 | Direct sector access | `OPEN n,8,n,"#"` takes a 256-byte buffer channel; on channel 15 `U1:n 0 t s` (or `UA`) reads a sector into it, `U2`/`UB` writes it back (`B-R`/`B-W` do the same as `U1`/`U2`), `B-P:n,pos` sets the buffer pointer, `B-A`/`B-F` allocate and free a sector in the BAM (`B-A` on a used sector answers `65` with the next free one). D64, D71 and D81; needs an image mounted |
 
@@ -238,7 +239,6 @@ With the TR menu showing (no program running) the same commands show and change 
 | Feature | Notes |
 |---|---|
 | Writing plain files to the card (`SAVE` with nothing mounted) | Mount an image (or create one with `N:NAME.D64,ID`) |
-| File names longer than 16 characters | Hidden in host listings |
 | Running programs with their own fastloaders | No `M-R`/`M-W`/`M-E`, so programs that upload code to the drive (or probe its ROM to detect the drive type) cannot run from the card. With a real 1541, `VDCOPY` `D` writes the `.d64` onto a floppy, and the program runs from there |
 | `U3`-`U8` user jumps, `B-E` | Need drive code |
 | Copy protection that checks for bad sectors | Read errors from the image's error-info bytes are emulated (`U1`, `LOAD`, `GET#`); protections that time the drive, read raw GCR, or check the drive's memory (`M-R`) still fail. Writing a bad sector does not repair it |

@@ -8,7 +8,7 @@ real IEC code, so physical drives keep working. LOAD/SAVE have block-transfer fa
 second, the first free numbers from 8 up: the KERNAL probes the real bus on the first disk access of a run) or fixed from BASIC with
 `OPEN15,8,15,"U0>"+CHR$(n)` (kept in EEPROM, `CHR$(0)` = automatic, no reflash). Names and `CD` take paths: `LOAD"$/GAMES/G.D64",8`.
 
-Full design and per-milestone notes: `docs/DESIGN.md` (sections 1-43, in order of construction).
+Full design and per-milestone notes: `docs/DESIGN.md` (sections 1-44, in order of construction).
 Firmware integration and usage: `firmware/README.md`.
 
 ## Status (read this first)
@@ -109,6 +109,7 @@ Firmware integration and usage: `firmware/README.md`.
 * 0.9.0.31: Special IO "VDrive+REU" (`firmware/IOH_VDriveREU.c`, docs/DESIGN.md 34): drive + the full 512 KB REU, no SwiftLink. Holds the IO2 split and `VDREU_Snoop` that
   VDrive+Swift+REU now shares (`IO2Hndlr_VDriveREU`). With any VDrive default, REU menu programs get it. Host tests, firmware build; **not on hardware yet**.
 * 0.9.0.33: CMD HD / sd2iec path syntax (`[n]//dir/:name`, `[n]/dir/:name`) in names, `$`, `CD`, `MD`/`RD`, `N` (`cmd_path` in `vdrive.c`, docs/DESIGN.md 36). A path before a colon is CMD (single `/` = here), after the colon or without one ours (leading `/` = root); `CD/X` changed to relative. Unit tests; VICE and hardware through VDSUITE `7`.
+* 0.9.0.47: aliases for long host names (`THE-PU^SIDE1.D64`, `vd_alias` in `d64/vdrive.c`, `VD_Resolve` in the glue; collisions are dropped, not numbered; docs/DESIGN.md 44). Unit and glue host tests; **not on hardware yet**.
 * Default device 8 for `LOAD`/`SAVE`/`VERIFY` without a number, as on the SX-64 (`P_E1DA` in `patches/vdrive.s`, docs/DESIGN.md 33). KERNAL only; VICE `basic` run; **not on hardware yet**. Rebuild `kernal-tr.bin`.
 * 0.9.0.32: bad sectors from the image's error table (the trailing error-info bytes): reads of a sector marked bad fail with its DOS code (`d64_t.errtab`, `D64_E_BADSEC`, `d64_t.bad`, `read_err()` in `vdrive.c`; the firmware keeps a RAM2 copy only when the table marks something bad; docs/DESIGN.md 35). Write errors (25/26/28) not emulated; a write does not repair a bad sector. Unit and glue host tests; VICE and hardware through VDSUITE `5` (reads only).
 * 0.9.0.34: SwiftLink Tx fix to upstream (was `firmware/swiftlink-tx-fix.patch`; merged upstream as PR #80 in `6518b966`, patch dropped). NativeEthernet's `client.write()` busy-waits for send-buffer space;
@@ -262,5 +263,5 @@ The full `make test`, VICE runs included, works in a cloud session; do not skip 
 4. **TeensyROM menu integration** (last, only if the BASIC utility feels clumsy): a `Shift-D` hotkey like the existing `Shift-K`
    (KERNAL image) / `Shift-R` (REU) that sets the highlighted file as the disk for device 8/9. Needs changes to the 6502 menu
    (`Source/C64/MainMenuCRT`, ACME) and regenerated headers, and probably an EEPROM map extension that upstream must agree to.
-5. Smaller follow-ups: D81 sub-directories/partitions, writing plain files to the card, file names > 16
-   characters in host listings, a scan that re-runs after a device is switched on later.
+5. Smaller follow-ups: D81 sub-directories/partitions, writing plain files to the card,
+   a scan that re-runs after a device is switched on later.

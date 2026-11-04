@@ -51,6 +51,7 @@ stcIOHandlers IOHndlr_VDrive =
 
 #define VD_MboxBase    0x10  // mailbox at $DE10-$DE1A: $DE00-$DE07 stays free for the SwiftLink ACIA (see IOH_VDriveSwift.c)
 #define VD_CwdLen      96
+#define VD_PathLen     (2 * VD_CwdLen + 4)   // folder + '/' + a host name (imgName: under VD_CwdLen characters)
 #define VD_FlushIdleMs 250   // write the image back this long after the last sector write
 
 struct stcVDUnit
@@ -64,7 +65,7 @@ struct stcVDUnit
    bool     mounted;
    bool     dirty;
    bool     quiet;           // temporary selection for a listing by path: leave the /.vdrive sidecar alone
-   char     imgName[VD_CwdLen];   // PETSCII name the mounted image was opened with (in cwd)
+   char     imgName[VD_CwdLen];   // host (ASCII) name of the mounted image, in cwd (the C64 may have used its alias)
    char     snapCwd[VD_CwdLen];   // folder / image selected before a listing by path (push / pop)
    char     snapImg[VD_CwdLen];   // "" = nothing was mounted
    uint32_t lastWriteMs;
@@ -105,6 +106,48 @@ FLASHMEM static void VD_PathFor(stcVDUnit *u, const char *name, char *out, size_
    if (n + 1 < cap) out[n++] = '/';
    for (; *name && n + 1 < cap; name++) out[n++] = VD_ToAscii((uint8_t)*name);
    out[n] = 0;
+}
+
+FLASHMEM static void VD_HostPath(stcVDUnit *u, const char *host, char *out, size_t cap)   // host = ASCII name in cwd
+{
+   snprintf(out, cap, "%s/%s", u->cwd, host);
+}
+
+// ---- aliases: host names the C64 can't use as they are (over 16 characters, or characters it can't type) ------------------
+// vd_alias() (vdrive.c) makes the C64 spelling. An alias holds only while no other entry of the folder shows the same name
+// (a real name or another alias); otherwise it is dropped (not listed, not found), never numbered. Every alias holds a '^',
+// so a name without one never costs a folder scan.
+FLASHMEM static int VD_Shown(const char *host, char out[17])   // 0 = real name, 1 = alias, -1 = not shown
+{
+   if (IsDotfile(host) || strlen(host) >= VD_CwdLen) return -1;   // imgName must hold any name we mount
+   return vd_alias(host, out);
+}
+
+// How many entries of the unit's folder show as `shown`; the host name of the last one goes to host (if given).
+FLASHMEM static int VD_CountShown(stcVDUnit *u, const char *shown, char *host, size_t cap, int *alias)
+{
+   File d = u->fs->open(u->cwd[0] ? u->cwd : "/");
+   if (!d) return 0;
+   int n = 0;
+   while (File e = d.openNextFile())
+   {
+      char s[17];
+      int r = VD_Shown(e.name(), s);
+      if (r >= 0 && strcmp(s, shown) == 0) { n++; if (host) strlcpy(host, e.name(), cap); if (alias) *alias = r; }
+      e.close();
+   }
+   d.close();
+   return n;
+}
+
+// The host path for a C64 name in the unit's folder: the name itself or, when that does not exist, the entry it is the alias of.
+FLASHMEM static void VD_Resolve(stcVDUnit *u, const char *name, char *out, size_t cap)
+{
+   VD_PathFor(u, name, out, cap);
+   if (!strchr(name, '^') || u->fs->exists(out)) return;
+   char host[VD_CwdLen];
+   int alias = 0;
+   if (VD_CountShown(u, name, host, sizeof host, &alias) == 1 && alias == 1) VD_HostPath(u, host, out, cap);
 }
 
 // ---- d64 sector backend ---------------------------------------------------------------------
@@ -180,12 +223,14 @@ FLASHMEM static void VD_Unmount(void *ctx, int unit)
    VD_SidecarClear(u);                                   // an explicit unmount forgets the image (a new mount re-writes it)
 }
 
-FLASHMEM static int VD_Mount(void *ctx, int unit, const char *name, d64_t **out)
+// Mount the image at path (host spelling); imgName keeps its host name.
+FLASHMEM static int VD_MountHost(int unit, const char *path, d64_t **out)
 {
    stcVDUnit *u = &vdUnit[unit];
-   char path[VD_CwdLen + 20];
-   VD_PathFor(u, name, path, sizeof path);
-   VD_Unmount(ctx, unit);
+   const char *slash = strrchr(path, '/');
+   const char *leaf = slash ? slash + 1 : path;
+   if (strlen(leaf) >= sizeof u->imgName) return 33;
+   VD_Unmount(NULL, unit);
    // Check existence and size with a read-only open first: FILE_WRITE creates missing files on SD/USB, and a mistyped
    // CD: must never litter the card with empty "images".
    File probe = u->fs->open(path, FILE_READ);
@@ -201,11 +246,18 @@ FLASHMEM static int VD_Mount(void *ctx, int unit, const char *name, d64_t **out)
    u->d.write = writable ? VD_WriteSector : NULL;
    VD_LoadErrTab(u, size);
    u->mounted = true; u->dirty = false;
-   strlcpy(u->imgName, name, sizeof u->imgName);
+   strlcpy(u->imgName, leaf, sizeof u->imgName);
    *out = &u->d;
    VD_SidecarSave(u, path);
    Printf_dbg("VDrive %d: mounted %s%s\n", unit + 8, path, writable ? "" : " (read-only)");
    return 0;
+}
+
+FLASHMEM static int VD_Mount(void *ctx, int unit, const char *name, d64_t **out)   // name = C64 (PETSCII) name or alias
+{
+   char path[VD_PathLen];
+   VD_Resolve(&vdUnit[unit], name, path, sizeof path);
+   return VD_MountHost(unit, path, out);
 }
 
 // "N:NAME.D64,ID" with nothing mounted: a new all-zero image file in the current folder, then mounted (vdrive.c formats it).
@@ -213,9 +265,9 @@ FLASHMEM static int VD_Mount(void *ctx, int unit, const char *name, d64_t **out)
 FLASHMEM static int VD_Create(void *ctx, int unit, const char *name, uint32_t size, d64_t **out)
 {
    stcVDUnit *u = &vdUnit[unit];
-   char path[VD_CwdLen + 20];
-   VD_PathFor(u, name, path, sizeof path);
-   if (u->fs->exists(path)) return 63;                                            // FILE EXISTS: never replaced
+   char path[VD_PathLen];
+   VD_Resolve(u, name, path, sizeof path);
+   if (u->fs->exists(path)) return 63;                                            // FILE EXISTS (or an alias of one): never replaced
    File f = u->fs->open(path, FILE_WRITE);
    if (!f) return 26;                                                             // card write-protected / not writable
    static const uint32_t chunk = 4096;
@@ -229,7 +281,7 @@ FLASHMEM static int VD_Create(void *ctx, int unit, const char *name, uint32_t si
    f.close();
    if (!ok) { u->fs->remove(path); return 72; }                                   // DISK FULL (the card)
    Printf_dbg("VDrive %d: created %s (%lu bytes)\n", unit + 8, path, (unsigned long)size);
-   return VD_Mount(ctx, unit, name, out);
+   return VD_MountHost(unit, path, out);
 }
 
 // Plain files in the current folder, read with nothing mounted: LOAD"GAME.PRG" (vdrive.c tries NAME.PRG and patterns itself).
@@ -242,8 +294,8 @@ FLASHMEM static void VD_PlainClose(void *ctx, int unit)
 FLASHMEM static int VD_PlainOpen(void *ctx, int unit, const char *name, uint32_t *size)
 {
    stcVDUnit *u = &vdUnit[unit];
-   char path[VD_CwdLen + 20];
-   VD_PathFor(u, name, path, sizeof path);
+   char path[VD_PathLen];
+   VD_Resolve(u, name, path, sizeof path);
    VD_PlainClose(ctx, unit);
    u->plain = u->fs->open(path, FILE_READ);                                       // FILE_READ: a missing file is not created
    if (!u->plain) return 62;
@@ -262,17 +314,17 @@ FLASHMEM static int VD_PlainRead(void *ctx, int unit, uint8_t *buf, uint16_t n)
 FLASHMEM static int VD_MkDir(void *ctx, int unit, const char *name)
 {
    stcVDUnit *u = &vdUnit[unit];
-   char path[VD_CwdLen + 20];
-   VD_PathFor(u, name, path, sizeof path);
-   if (u->fs->exists(path)) return 63;                                            // FILE EXISTS (a file or a folder)
+   char path[VD_PathLen];
+   VD_Resolve(u, name, path, sizeof path);
+   if (u->fs->exists(path)) return 63;                                            // FILE EXISTS (a file or a folder, or an alias of one)
    return u->fs->mkdir(path) ? 0 : 26;
 }
 
 FLASHMEM static int VD_RmDir(void *ctx, int unit, const char *name)
 {
    stcVDUnit *u = &vdUnit[unit];
-   char path[VD_CwdLen + 20];
-   VD_PathFor(u, name, path, sizeof path);
+   char path[VD_PathLen];
+   VD_Resolve(u, name, path, sizeof path);
    File d = u->fs->open(path, FILE_READ);
    if (!d || !d.isDirectory()) { if (d) d.close(); return 62; }
    File first = d.openNextFile();
@@ -288,8 +340,8 @@ FLASHMEM static int VD_RmDir(void *ctx, int unit, const char *name)
 FLASHMEM static int VD_Scratch(void *ctx, int unit, const char *name)
 {
    stcVDUnit *u = &vdUnit[unit];
-   char path[VD_CwdLen + 20];
-   VD_PathFor(u, name, path, sizeof path);
+   char path[VD_PathLen];
+   VD_Resolve(u, name, path, sizeof path);
    File probe = u->fs->open(path, FILE_READ);                                     // FILE_READ first: FILE_WRITE would create it
    if (!probe || probe.isDirectory()) { if (probe) probe.close(); return 62; }
    probe.close();
@@ -318,8 +370,8 @@ FLASHMEM static int VD_Pop(void *ctx, int unit, d64_t **out)
       u->quiet = false;
       if (u->mounted)
       {
-         char path[VD_CwdLen + 20];
-         VD_PathFor(u, u->imgName, path, sizeof path);
+         char path[VD_PathLen];
+         VD_HostPath(u, u->imgName, path, sizeof path);
          VD_SidecarSave(u, path);
       }
       else VD_SidecarClear(u);
@@ -329,7 +381,12 @@ FLASHMEM static int VD_Pop(void *ctx, int unit, d64_t **out)
    strlcpy(u->cwd, u->snapCwd, sizeof u->cwd);
    *out = NULL;
    int r = 0;
-   if (u->snapImg[0]) r = VD_Mount(ctx, unit, u->snapImg, out);
+   if (u->snapImg[0])
+   {
+      char path[VD_PathLen];
+      VD_HostPath(u, u->snapImg, path, sizeof path);
+      r = VD_MountHost(unit, path, out);
+   }
    if (r) *out = NULL;
    u->quiet = false;
    return r;
@@ -345,8 +402,8 @@ FLASHMEM static int VD_ChDir(void *ctx, int unit, const char *name)
       if (slash) *slash = 0; else u->cwd[0] = 0;
       return 0;
    }
-   char path[VD_CwdLen + 20];
-   VD_PathFor(u, name, path, sizeof path);
+   char path[VD_PathLen];
+   VD_Resolve(u, name, path, sizeof path);
    size_t l = strlen(path); if (l > 1 && path[l - 1] == '/') path[l - 1] = 0;   // drop trailing '/'
    File d = u->fs->open(path);
    if (!d || !d.isDirectory()) { if (d) d.close(); return 62; }
@@ -356,10 +413,35 @@ FLASHMEM static int VD_ChDir(void *ctx, int unit, const char *name)
    return 0;
 }
 
+// Hash bits of the names a folder shows, per unit: a first pass in VD_DirOpen marks names seen twice, so the listing counts
+// an alias's twins (a folder scan) only when its bit says there may be one.
+DMAMEM static uint8_t vdSeen[2][128], vdDup[2][128];
+FLASHMEM static unsigned VD_NameHash(const char *s)
+{
+   uint32_t h = 2166136261u;
+   while (*s) h = (h ^ (uint8_t)*s++) * 16777619u;
+   return h & 1023;
+}
+
 FLASHMEM static int VD_DirOpen(void *ctx, int unit, char title[17])
 {
    stcVDUnit *u = &vdUnit[unit];
    if (u->dir) u->dir.close();
+   memset(vdSeen[unit], 0, sizeof vdSeen[unit]); memset(vdDup[unit], 0, sizeof vdDup[unit]);
+   File d = u->fs->open(u->cwd[0] ? u->cwd : "/");
+   while (d) {
+      File e = d.openNextFile();
+      if (!e) break;
+      char s[17];
+      if (VD_Shown(e.name(), s) >= 0)
+      {
+         unsigned h = VD_NameHash(s); uint8_t b = (uint8_t)(1 << (h & 7));
+         if (vdSeen[unit][h >> 3] & b) vdDup[unit][h >> 3] |= b;
+         vdSeen[unit][h >> 3] |= b;
+      }
+      e.close();
+   }
+   if (d) d.close();
    u->dir = u->fs->open(u->cwd[0] ? u->cwd : "/");
    if (!u->dir) return 1;
    snprintf(title, 17, "%s:%s", unit == 0 ? "SD" : "USB", u->cwd[0] ? u->cwd : "/");
@@ -372,11 +454,13 @@ FLASHMEM static int VD_DirNext(void *ctx, int unit, char name[17], uint32_t *siz
    stcVDUnit *u = &vdUnit[unit];
    while (File e = u->dir.openNextFile())
    {
-      const char *n = e.name();
-      if (IsDotfile(n) || strlen(n) > 16) { e.close(); continue; }   // names the 16-char C64 listing can't hold
-      size_t i = 0;
-      for (; n[i]; i++) name[i] = VD_ToPetscii(n[i]);
-      name[i] = 0;
+      int r = VD_Shown(e.name(), name);                       // upper-case ASCII = PETSCII
+      if (r == 1)
+      {
+         unsigned h = VD_NameHash(name);
+         if ((vdDup[unit][h >> 3] & (1 << (h & 7))) && VD_CountShown(u, name, NULL, 0, NULL) > 1) r = -1;   // a twin: no alias
+      }
+      if (r < 0) { e.close(); continue; }
       *is_dir = e.isDirectory();
       *size = *is_dir ? 0 : e.size();
       e.close();
@@ -395,7 +479,7 @@ extern volatile uint8_t* IO1;     // defined in IOH_TeensyROM.c, which is includ
 static File       hfFile;
 static int        hfKind = -1;
 static bool       hfWriting = false;
-static char       hfText[2 * (VD_CwdLen + 20) + NumColorRefs + 6];
+static char       hfText[VD_PathLen + VD_CwdLen + NumColorRefs + 6];
 static size_t     hfTextPos = 0, hfTextLen = 0;
 
 FLASHMEM static void VD_HfClose(void *ctx, int unit, int write)
@@ -410,9 +494,9 @@ FLASHMEM static int VD_HfOpen(void *ctx, int unit, int kind, int write)
    stcVDUnit *u = &vdUnit[unit];
    if (kind == VD_HF_STATE)
    {
-      char path[VD_CwdLen + 20];
+      char path[VD_PathLen];
       path[0] = 0;
-      if (u->mounted) VD_PathFor(u, u->imgName, path, sizeof path);
+      if (u->mounted) VD_HostPath(u, u->imgName, path, sizeof path);
       hfTextLen = snprintf(hfText, sizeof hfText, "%s\n%s\n", path, u->cwd[0] ? u->cwd : "/");
       if (hfTextLen > sizeof hfText - NumColorRefs - 2) hfTextLen = sizeof hfText - NumColorRefs - 2;
       for (int i = 0; i < NumColorRefs; i++) hfText[hfTextLen++] = "0123456789ABCDEF"[IO1[rwRegColorRefStart + i] & 15];
@@ -491,7 +575,7 @@ extern volatile uint8_t BtnPressed;   // Teensy.ino: the menu button; loop() the
 FLASHMEM static int VD_MountPath(int unit, const char *rawPath)   // 0 ok, else a DOS error code
 {
    stcVDUnit *u = &vdUnit[unit];
-   char sq[VD_CwdLen + 20];
+   char sq[VD_PathLen];
    if (strlen(rawPath) >= sizeof sq) return 33;
    strlcpy(sq, rawPath, sizeof sq);
    VD_Squeeze(sq);
@@ -501,12 +585,8 @@ FLASHMEM static int VD_MountPath(int unit, const char *rawPath)   // 0 ok, else 
    size_t dl = slash ? (size_t)(slash - path) : 0;                 // "/a/b/X.D64" -> cwd "/a/b"; root -> ""
    if (dl >= VD_CwdLen || !*file) return 33;
    memcpy(u->cwd, path, dl); u->cwd[dl] = 0;
-   char pname[VD_CwdLen];                                           // VD_Mount takes PETSCII names
-   size_t i = 0;
-   for (; file[i] && i + 1 < sizeof pname; i++) pname[i] = (char)VD_ToPetscii(file[i]);
-   pname[i] = 0;
    d64_t *d = NULL;
-   int r = VD_Mount(NULL, unit, pname, &d);
+   int r = VD_MountHost(unit, path, &d);
    if (r == 0) vdrive_attach(&vio->vd, unit, d, 1);
    else u->cwd[0] = 0;
    return r;
@@ -516,7 +596,7 @@ FLASHMEM static void VD_StartupMount(int unit, bool menuUnit)
 {
    stcVDUnit *u = &vdUnit[unit];
    if (!vio->vd.unit[unit].present) return;
-   char path[VD_CwdLen + 20];
+   char path[VD_PathLen];
    if (menuUnit)
    {
       size_t n = strlen(DriveDirPath);
@@ -836,9 +916,9 @@ FLASHMEM size_t VDrive_RemoteStatus(int unit, char *out, size_t cap)
 {
    if (!VD_RemoteReady(unit)) return 0;
    stcVDUnit *u = &vdUnit[unit];
-   char path[VD_CwdLen + 20];
+   char path[VD_PathLen];
    path[0] = 0;
-   if (u->mounted) VD_PathFor(u, u->imgName, path, sizeof path);
+   if (u->mounted) VD_HostPath(u, u->imgName, path, sizeof path);
    for (char *p = path; *p; p++) if (*p == '"' || *p == '\\') *p = '?';      // FAT cannot hold either; keep the JSON valid regardless
    char cwd[VD_CwdLen];
    strlcpy(cwd, u->cwd, sizeof cwd);
@@ -906,7 +986,9 @@ FLASHMEM int VDrive_RemoteSet(int unit, const char *path, char *msg, size_t cap)
    {
       strlcpy(u->cwd, oldCwd, sizeof u->cwd);                       // put the previous disk back
       d64_t *d = NULL;
-      if (oldImg[0] && VD_Mount(NULL, unit, oldImg, &d) == 0) vdrive_attach(&vio->vd, unit, d, 1);
+      char old[VD_PathLen];
+      VD_HostPath(u, oldImg, old, sizeof old);
+      if (oldImg[0] && VD_MountHost(unit, old, &d) == 0) vdrive_attach(&vio->vd, unit, d, 1);
       else vdrive_attach(&vio->vd, unit, NULL, 1);
       snprintf(msg, cap, "cannot mount (DOS error %d)", r);
       return r;
@@ -929,7 +1011,7 @@ FLASHMEM size_t VDrive_RemoteIdleStatus(int unit, char *out, size_t cap)
 {
    if (unit < 0 || unit > 1) return 0;
    FS *fs = VD_IdleFS(unit);
-   char path[VD_CwdLen + 20];
+   char path[VD_PathLen];
    path[0] = 0;
    if (fs)
    {
@@ -945,7 +1027,7 @@ FLASHMEM size_t VDrive_RemoteIdleStatus(int unit, char *out, size_t cap)
       }
    }
    for (char *p = path; *p; p++) if (*p == '"' || *p == '\\') *p = '?';
-   char cwd[VD_CwdLen + 20];
+   char cwd[VD_PathLen];
    const char *slash = strrchr(path, '/');
    size_t cl = slash ? (size_t)(slash - path) : 0;
    memcpy(cwd, path, cl); cwd[cl] = 0;
@@ -962,7 +1044,7 @@ FLASHMEM int VDrive_RemoteIdleSet(int unit, const char *path, char *msg, size_t 
 {
    FS *fs = (unit >= 0 && unit <= 1) ? VD_IdleFS(unit) : NULL;
    if (!fs) { snprintf(msg, cap, "no such drive"); return 1; }
-   char sq[VD_CwdLen + 20];
+   char sq[VD_PathLen];
    if (strlen(path) >= sizeof sq) { snprintf(msg, cap, "path too long"); return 33; }
    strlcpy(sq, path, sizeof sq);
    VD_Squeeze(sq);
@@ -1121,7 +1203,7 @@ FLASHMEM static void VD_FlashError() { VD_Flash(VD_ColorRed, VD_ErrFlashes, VD_E
 // ---- the switch itself ----
 FLASHMEM static bool VD_SameImage(const char *a, const char *b)
 {
-   char x[VD_CwdLen + 20], y[VD_CwdLen + 20];
+   char x[VD_PathLen], y[VD_PathLen];
    strlcpy(x, a, sizeof x); strlcpy(y, b, sizeof y);
    VD_Squeeze(x); VD_Squeeze(y);
    return strcasecmp(x, y) == 0;
@@ -1146,8 +1228,8 @@ FLASHMEM static bool VD_SwitchNext(int unit)
    int start = 0;                                                          // nothing mounted, or not in the list: the first one
    if (u->mounted)
    {
-      char cur[VD_CwdLen + 20];
-      VD_PathFor(u, u->imgName, cur, sizeof cur);
+      char cur[VD_PathLen];
+      VD_HostPath(u, u->imgName, cur, sizeof cur);
       for (int i = 0; i < n; i++) if (VD_SameImage(cur, vdCfg[i].path)) { start = (i + 1) % n; break; }
    }
    for (int k = 0; k < n; k++)

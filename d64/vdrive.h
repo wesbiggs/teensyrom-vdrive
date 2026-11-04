@@ -145,6 +145,16 @@ int vdrive_mailbox(vdrive_t *v, uint8_t cmd, uint8_t arg, uint8_t *data, uint8_t
 
 size_t vdrive_sizeof(void);
 
+/* Host file names the C64 cannot use as they are get an alias of at most 16 characters (docs/DESIGN.md 44). `name` is the
+ * host's ASCII name; `out` gets the C64 spelling, upper case. A name is usable as it is when it has at most 16 characters
+ * and none the C64 cannot type or the DOS parses (* ? , = : " and anything outside $20-$7A, `); otherwise each such
+ * character becomes '^' (the up arrow) and a name over 16 characters keeps its start and its end, joined by '^':
+ *   The-Pumpkins-Breadbin-of-Horror-side1.D64 -> THE-PU^SIDE1.D64
+ * The end is the last word after ' ', '-', '_' or '.' when it has 1-5 characters, else the last 3 characters; the
+ * extension (up to 3 characters after the last '.') stays. Every alias holds a '^'. The host decides about collisions.
+ * Returns 0 = usable as is (out = name in upper case), 1 = out is an alias, -1 = empty name. */
+int vd_alias(const char *name, char out[17]);
+
 #ifdef __cplusplus
 }
 #endif

@@ -573,5 +573,48 @@ class BadSectorTests(unittest.TestCase):
         self.assertEqual(vd.status(), "22,READ ERROR,%02d,%02d\r" % (t, s))
 
 
+class Alias(unittest.TestCase):
+    """vd_alias: the C64 spelling of a host file name (docs/DESIGN.md 44)."""
+    def alias(self, name):
+        out = ctypes.create_string_buffer(17)
+        r = LIB.vd_alias(name.encode("latin1"), out)
+        return r, out.value.decode("latin1")
+
+    def test_usable_names_stay(self):
+        self.assertEqual(self.alias("game.prg"), (0, "GAME.PRG"))
+        self.assertEqual(self.alias("x" * 16), (0, "X" * 16))
+        self.assertEqual(self.alias("SHORT^ONE.PRG"), (0, "SHORT^ONE.PRG"))     # a real '^' is fine
+
+    def test_long_names_keep_start_and_last_word(self):
+        self.assertEqual(self.alias("The-Pumpkins-Breadbin-of-Horror-side1.D64"), (1, "THE-PU^SIDE1.D64"))
+        self.assertEqual(self.alias("The-Pumpkins-Breadbin-of-Horror-side2.d64"), (1, "THE-PU^SIDE2.D64"))
+        self.assertEqual(self.alias("Long Folder With A Long Name"), (1, "LONG FOLDER^NAME"))
+
+    def test_long_last_word_gives_last_three(self):
+        self.assertEqual(self.alias("AVERYLONGFILENAME.PRG"), (1, "AVERYLON^AME.PRG"))
+        self.assertEqual(self.alias("file.jpeg.longext"), (1, "FILE.JPEG.LO^EXT"))   # 7 characters after the dot: no extension
+
+    def test_untypeable_characters(self):
+        self.assertEqual(self.alias("a,b.prg"), (1, "A^B.PRG"))
+        for c in '*?,=:"`{|}~\x7f\x01':
+            r, a = self.alias("x" + c + "y")
+            self.assertEqual((r, a), (1, "X^Y"), repr(c))
+        self.assertEqual(self.alias("caf\xc3\xa9.prg"), (1, "CAF^^.PRG"))         # UTF-8: one '^' per byte
+
+    def test_every_alias_fits_and_holds_an_up_arrow(self):
+        rnd = random.Random(7)
+        chars = "abcXYZ019 -_.,!"
+        for _ in range(2000):
+            name = "".join(rnd.choice(chars) for _ in range(rnd.randint(1, 60)))
+            r, a = self.alias(name)
+            self.assertIn(r, (0, 1))
+            self.assertLessEqual(len(a), 16)
+            self.assertEqual(r == 1, len(name) > 16 or "," in name, name)
+            if r: self.assertIn("^", a)
+
+    def test_empty(self):
+        self.assertEqual(self.alias("")[0], -1)
+
+
 if __name__ == "__main__":
     unittest.main()
