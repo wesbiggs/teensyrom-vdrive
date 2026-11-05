@@ -627,6 +627,8 @@ void InitHndlr_KernalReplace();   // re-stages the KERNAL bus hook (IOH_KernalRe
 FLASHMEM static void VD_ProbeBegin();
 void VD_BannerUnits(uint8_t *img, int size, bool settled);   // below
 
+static bool vdNoMenuProbe = false;  // VD_KernalImage: the C64 keeps a KERNAL that is not this build's VDrive one (see there); one PreStart
+
 FLASHMEM void VDrive_PreStart()
 {
 #ifdef VD_ALLOC_HEAP
@@ -666,8 +668,10 @@ FLASHMEM void VDrive_PreStart()
    Serial.printf("VDrive: dev %d (SD) %s, dev %d (USB) %s%s\n",
                  vio->vd.dev[0], vio->vd.unit[0].present ? "ready" : "absent",
                  vio->vd.dev[1], vio->vd.unit[1].present ? "ready" : "absent",
-                 scanPending ? " (numbers are settled by the bus probe)" : "");
-   if (scanPending) VD_ProbeBegin();
+                 !scanPending ? "" : !vdNoMenuProbe ? " (numbers are settled by the bus probe)"
+                 : " (no bus probe in the menu: the C64's own KERNAL is not this build's; the KERNAL scans on its first disk access)");
+   if (scanPending && !vdNoMenuProbe) VD_ProbeBegin();
+   vdNoMenuProbe = false;
 }
 
 // ---- the menu's bus probe before launch (MainMenu.asm, VDriveProbe; docs/DESIGN.md 37) -------------------------------------
@@ -723,6 +727,13 @@ FLASHMEM bool VDrive_ProbeStep()
 // the C64 still waits in the TR menu, so nothing reads them yet.
 static const uint8_t VD_BannerTag[8] = { 'V', 'D', 'U', 'N', 'I', 'T', 'S', ':' };
 
+FLASHMEM static bool VD_HasBannerTag(const uint8_t *img)   // in an 8 KB image: a VDrive KERNAL from 0.9.0.36 on
+{
+   for (int a = 0; a + (int)sizeof VD_BannerTag <= 8192; a++)
+      if (memcmp(img + a, VD_BannerTag, sizeof VD_BannerTag) == 0) return true;
+   return false;
+}
+
 FLASHMEM void VD_BannerUnits(uint8_t *img, int size, bool settled)
 {
    for (int a = 0; a + (int)sizeof VD_BannerTag + 2 <= size; a++)
@@ -761,6 +772,19 @@ FLASHMEM uint32_t VD_Crc32(const uint8_t *p, size_t n)   // the zip / zlib CRC-3
    return ~c;
 }
 
+// true: every run of VD_KernalPatch is in img already, byte for byte: the C64 holds this build's VDrive KERNAL itself (burnt into a
+// ROM in the socket, a MEGA65 C64 core's KERNAL file). A table run outside $E000-$FFFF: false.
+FLASHMEM bool VD_KernalPatchPresent(const uint8_t *img)
+{
+   for (const uint8_t *r = VD_KernalPatch; ; )
+   {
+      uint16_t addr = (r[0] << 8) | r[1], len = (r[2] << 8) | r[3];
+      if (!len) return true;
+      if (addr < 0xE000 || addr + len > 0x10000 || memcmp(img + (addr - 0xE000), r + 4, len) != 0) return false;
+      r += 4 + len;
+   }
+}
+
 // Lays VD_KernalPatch over an 8 KB image at $E000; false (image untouched) if a run would leave it, which would be a build error.
 FLASHMEM bool VD_KernalPatchApply(uint8_t *img)
 {
@@ -784,8 +808,13 @@ FLASHMEM static bool VD_KernalRead(uint8_t *img)
    return true;
 }
 
+// Nothing served (false) leaves the mailbox live all the same: a VDrive KERNAL the C64 holds itself still has its drives. Only this
+// build's one gets the menu's bus probe (vdNoMenuProbe): the probe runs through the C64's own KERNAL under the menu's IO1 handler,
+// and a VDrive KERNAL older than the mailbox gate (vd_here in patches/vdrive.s) would write the menu's EEPROM-backed registers
+// at $DE11 / $DE15 there (MIDI settings, timezone). Without the probe the KERNAL's own scan settles the numbers.
 FLASHMEM bool VD_KernalImage(uint8_t *img)
 {
+   vdNoMenuProbe = true;
    if (SDFullInit())
    {
       File f = SD.open(VD_KernalFile, FILE_READ);
@@ -794,7 +823,7 @@ FLASHMEM bool VD_KernalImage(uint8_t *img)
          bool ok = !f.isDirectory() && f.size() == 8192 && f.read(img, 8192) == 8192;
          f.close();
          Serial.printf("VDrive: KERNAL %s%s\n", VD_KernalFile, ok ? "" : ": not 8192 bytes, not used");
-         if (ok) return true;
+         if (ok) { vdNoMenuProbe = false; return true; }
       }
    }
    if (!VD_KernalRead(img)) { Serial.println("VDrive: could not read the C64's KERNAL (DMA), drives off"); return false; }
@@ -804,8 +833,21 @@ FLASHMEM bool VD_KernalImage(uint8_t *img)
       {
          if (!VD_KernalPatchApply(img)) { Serial.println("VDrive: bad KERNAL patch table, drives off"); return false; }
          Serial.printf("VDrive: the C64's KERNAL %s, patched (%d bytes)\n", k.name, VD_KernalPatchBytes);
+         vdNoMenuProbe = false;
          return true;
       }
+   if (VD_KernalPatchPresent(img))
+   {
+      Serial.println("VDrive: the C64's own KERNAL is this build's VDrive KERNAL (a ROM, a MEGA65 core): nothing served, the drives answer it");
+      vdNoMenuProbe = false;
+      return false;
+   }
+   if (VD_HasBannerTag(img))
+   {
+      Serial.printf("VDrive: the C64's own KERNAL is another build's VDrive KERNAL (CRC-32 %08lx): nothing served, the drives answer it, "
+                    "no bus probe in the menu; rebuild it from this revision\n", (unsigned long)crc);
+      return false;
+   }
    Serial.printf("VDrive: the C64's KERNAL (CRC-32 %08lx) is not one the patch knows, drives off: put a patched image in " VD_KernalFile "\n",
                  (unsigned long)crc);
    return false;

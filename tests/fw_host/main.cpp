@@ -930,6 +930,19 @@ int main(int argc, char **argv)
         auto put = [&](FS &fs, const char *name, const std::string &data) { std::ofstream(fs.root / name, std::ios::binary) << data; };
         fs_::remove_all(SD.root / "VDrive");
         bool known = false;
+        // the PreStart after the image: does it ask the menu for its bus probe? (automatic numbers, so it would; the fake menu then runs it,
+        // and without it one transaction settles the numbers through the KERNAL's scan, so later checks find them settled either way)
+        auto probe_asked = [&]() {
+            IO1[rwRegScratch] = 0; VDrive_PreStart();
+            bool asked = IO1[rwRegScratch] != 0;
+            for (int dev = 8; IO1[rwRegScratch]; dev++) {
+                if (dev <= 30 && g_real_drives.count(dev)) continue;
+                IO1[rwRegScratch] = dev <= 30 ? (uint8_t)dev : VD_ProbeEnd;
+                VDrive_ProbeStep();
+            }
+            if (!asked) { call(VD_LISTEN, 31); call(VD_UNLSN); }
+            return asked;
+        };
         if (stock.size() == 8192 && patched.size() == 8192) {
             uint32_t crc = VD_Crc32((const uint8_t *)stock.data(), 8192);
             for (const stcVDKnownKernal &k : VD_KnownKernals) known |= k.crc == crc;
@@ -942,14 +955,24 @@ int main(int argc, char **argv)
             g_c64_kernal[0x123] ^= 1;                                       // one byte off: a ROM the patch does not know
             check("a ROM not on the list (one byte changed) serves nothing", !VD_KernalImage(img));
             g_c64_kernal[0x123] ^= 1;
-            memcpy(g_c64_kernal, patched.data(), 8192);                     // the replacement still served (must not happen): not on the list either
-            check("an already patched image is not patched again", !VD_KernalImage(img));
+            check("... and the menu probes the bus", VD_KernalImage(img) && probe_asked());
+            memcpy(g_c64_kernal, patched.data(), 8192);                     // this build's VDrive KERNAL in the machine itself (a ROM, a MEGA65 core)
+            check("the C64's own KERNAL is this build's VDrive one: nothing served (the mailbox answers it)",
+                  !VD_KernalImage(img) && VD_KernalPatchPresent(img));
+            check("... and the menu probes the bus through it (its mailbox gate keeps the menu's registers safe)", probe_asked());
+            g_c64_kernal[0x1CE3] ^= 1;                                      // another build's VDrive KERNAL (one byte of a run differs; the banner tag is there)
+            check("another build's VDrive KERNAL: nothing served", !VD_KernalImage(img) && !VD_KernalPatchPresent(img));
+            check("... and no bus probe in the menu (an older one would write the menu's EEPROM registers)", !probe_asked());
             memcpy(g_c64_kernal, stock.data(), 8192);
         } else {
             puts("SKIP the patched-ROM comparison: no known stock KERNAL given (run.py STOCK.bin)");
         }
         memset(g_c64_kernal, 0xAA, sizeof g_c64_kernal);
         check("unknown ROM: nothing served", !VD_KernalImage(img));
+        check("... and no bus probe in the menu", !probe_asked());
+        memcpy(g_c64_kernal + 0x1500, "VDUNITS:", 8);
+        check("an unknown ROM with the banner tag (a VDrive KERNAL of another build): nothing served, no probe", !VD_KernalImage(img) && !probe_asked());
+        memset(g_c64_kernal, 0xAA, sizeof g_c64_kernal);
         g_dma_fail = true;
         check("DMA read fails: nothing served", !VD_KernalImage(img));
         fs_::create_directories(SD.root / "VDrive");

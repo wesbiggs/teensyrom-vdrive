@@ -8,7 +8,7 @@ real IEC code, so physical drives keep working. LOAD/SAVE have block-transfer fa
 second, the first free numbers from 8 up: the KERNAL probes the real bus on the first disk access of a run) or fixed from BASIC with
 `OPEN15,8,15,"U0>"+CHR$(n)` (kept in EEPROM, `CHR$(0)` = automatic, no reflash). Names and `CD` take paths: `LOAD"$/GAMES/G.D64",8`.
 
-Full design and per-milestone notes: `docs/DESIGN.md` (sections 1-44, in order of construction).
+Full design and per-milestone notes: `docs/DESIGN.md` (sections 1-45, in order of construction).
 Firmware integration and usage: `firmware/README.md`.
 
 ## Status (read this first)
@@ -110,6 +110,12 @@ Firmware integration and usage: `firmware/README.md`.
   VDrive+Swift+REU now shares (`IO2Hndlr_VDriveREU`). With any VDrive default, REU menu programs get it. Host tests, firmware build; **not on hardware yet**.
 * 0.9.0.33: CMD HD / sd2iec path syntax (`[n]//dir/:name`, `[n]/dir/:name`) in names, `$`, `CD`, `MD`/`RD`, `N` (`cmd_path` in `vdrive.c`, docs/DESIGN.md 36). A path before a colon is CMD (single `/` = here), after the colon or without one ours (leading `/` = root); `CD/X` changed to relative. Unit tests; VICE and hardware through VDSUITE `7`.
 * 0.9.0.47: aliases for long host names (`THE-PU^SIDE1.D64`, `vd_alias` in `d64/vdrive.c`, `VD_Resolve` in the glue; collisions are dropped, not numbered; docs/DESIGN.md 44). Unit and glue host tests; **works on a real C64 (owner, 2026-11-05)**.
+* 0.9.0.48: **a VDrive KERNAL in the machine itself** (an EPROM, a MEGA65 C64 core's KERNAL file; asked for the MEGA65 by Boris Schneider-Johne; docs/DESIGN.md 45). No separate build.
+  KERNAL: `vcall` writes nothing to the mailbox unless `vd_here` reads ID0 `$DE19` = `$D6` (4 tries, so a late answer does not hand a transaction to the real bus);
+  hooks leave ARG in `$A7` and `vcall` writes `MBX_ARG` after the check; `open_named` checks before filling the window/LEN. Reason beyond speed: under the TR menu's handler
+  `$DE11`/`$DE15` are `rwRegMIDISettings`/`rwRegTimezone`, which a write stores in EEPROM. Firmware: `VD_KernalPatchPresent` (DMA image already holds every patch run) = this build's
+  KERNAL resident: nothing served, menu probe kept; banner tag but other bytes = another revision: nothing served, no menu probe (`vdNoMenuProbe`); unknown ROM / failed DMA: no probe either.
+  py65 (`make test-gate`), `tests/fw_host`, VICE `basic` (no ID: no mailbox command); **not on hardware, not on a MEGA65**. Rebuild `kernal-tr.bin`.
 * Default device 8 for `LOAD`/`SAVE`/`VERIFY` without a number, as on the SX-64 (`P_E1DA` in `patches/vdrive.s`, docs/DESIGN.md 33). KERNAL only; VICE `basic` run; **not on hardware yet**. Rebuild `kernal-tr.bin`.
 * 0.9.0.32: bad sectors from the image's error table (the trailing error-info bytes): reads of a sector marked bad fail with its DOS code (`d64_t.errtab`, `D64_E_BADSEC`, `d64_t.bad`, `read_err()` in `vdrive.c`; the firmware keeps a RAM2 copy only when the table marks something bad; docs/DESIGN.md 35). Write errors (25/26/28) not emulated; a write does not repair a bad sector. Unit and glue host tests; VICE and hardware through VDSUITE `5` (reads only).
 * 0.9.0.34: SwiftLink Tx fix to upstream (was `firmware/swiftlink-tx-fix.patch`; merged upstream as PR #80 in `6518b966`, patch dropped). NativeEthernet's `client.write()` busy-waits for send-buffer space;
@@ -172,7 +178,7 @@ d64/            portable C99 library, also compiled as C++ by the firmware (keep
 util/            VDCOPY: vdcopy.s (all machine code, BASIC SYS stub at $0801, tables BSS at $2800; tools/make_util.py assembles it);
                 VDrive Config: vdconfig.s (all machine code, same stub/BSS scheme, BSS $2000-$4FFF; tools/make_util.py assembles it into build/util/"VDrive Config.prg")
 patches/        ca65 sources overlaid on the stock KERNAL by tools/build.py; segment name P_XXXX = load address
-  vdrive.s        serial entry hooks, fast LOAD ($F4C8) / SAVE ($F605), bus scan, code placed in reclaimed tape space $F8E2-$FB8D (666 of 683 bytes used; `irq_border` for the border flash included, the build asserts the limit);
+  vdrive.s        serial entry hooks, fast LOAD ($F4C8) / SAVE ($F605), bus scan, code placed in reclaimed tape space $F8E2-$FB8D (667 of 683 bytes used; `irq_border` for the border flash and the mailbox gate `vd_here` included, the build asserts the limit);
                   the cold-start hook `rst_hook` (`JMP` at $FCE2, code at $F875-$F8CF, 33 of 91 bytes: SYS64738 back to the TR menu)
   vdbanner.s      the drive numbers in the power-on banner (INITMS: `JSR` at $E42D, `JMP` at $E43D, banner string cut at $E49A; code in reclaimed tape routines $FB97-$FCD0, 296 of 314 bytes)
 bringup/banner.s  proof patch (`TRVDRIVE 64 BASIC V2`), only in `make build/kernal-banner.bin`
@@ -182,7 +188,7 @@ tools/          build.py (patch overlay; `--table` writes the patches as `vd_kpa
                 d64py.py (ctypes wrappers incl. register-level VIO), xref.py (reference finder over a disassembly)
 tests/          test_d64*.py, test_vdrive.py, test_vio.py (unit), fw_host/ (glue vs host stubs), devcfg.c,
                 test_vdconfig.py + c64_sim.py (VDrive Config's PRG in py65, KERNAL calls answered in Python), test_vdcopy.py (VDCOPY in py65 against vdrive.c),
-                test_irq_border.py, test_banner.py, test_reset_hook.py (py65),
+                test_irq_border.py, test_banner.py, test_reset_hook.py, test_vcall_gate.py (py65),
                 menuprobe_vice.py (the menu's probe routine in VICE with true-drive 1541s), variants_vice.py (the patch on each whitelisted ROM in VICE)
 build/          generated, git-ignored (kernal images derived from the ROM, libd64.dylib, disassembly)
 ```
@@ -190,6 +196,7 @@ build/          generated, git-ignored (kernal images derived from the ROM, libd
 ## Commands
 * `make test` — everything (rebuilds `build/libd64.dylib`, runs unit tests, device-number check, firmware host test, VDrive Config in py65, three VICE runs: `basic`,
   `scan` (true-drive 1541s at 8 and 10, with two VDCOPY whole-disk runs over tracks 17-19, about 2 minutes of it) and the menu's bus probe; about 13 minutes in all on the owner's Mac, measured 2026-10-31).
+* `make test-gate` — the mailbox gate `vd_here` in py65 (no handler: no IO write, the real bus at once; late ID reads; skipped without py65; also part of `make test`).
 * `make test-reset` — the cold-start hook `rst_hook` (SYS64738 back to the menu) in py65 (skipped without py65; also part of `make test`).
 * `make test-variants` — the patch on every ROM in `VD_KnownKernals`, in VICE (mock `variant` scenario); the ROMs are looked up next to `STOCK`
   (VICE's `C64/` and `C128/` data folders), missing ones skipped. Part of `make test`. `make test-fw` passes `STOCK` so the glue's in-memory patch is compared with `kernal-tr.bin`.
@@ -232,7 +239,7 @@ The full `make test`, VICE runs included, works in a cloud session; do not skip 
 * **No Commodore ROM bytes in the repo.** Only patches. `build/` is ignored for that reason; keep it that way. The firmware's `vd_kpatch.h` holds our segments only
   (`tools/build.py --table` never reads a ROM); the firmware's ROM whitelist is CRC-32s. Adding a ROM to `VD_KnownKernals` means adding it to `tests/variants_vice.py` too (it checks both lists agree).
 * **Two background VICE runs collide**: every mock run uses VICE's binary monitor on port 6502, and a second mock connects to the first one's VICE.
-  Run `vdrive_mock.py` / `variants_vice.py` / `menuprobe_vice.py` one after another.
+  Run `vdrive_mock.py` / `variants_vice.py` / `menuprobe_vice.py` one after another. Another checkout's tests (a worktree session) can hold 6502 too: `VD_MONITOR_PORT=6510 make test` keeps out of their way.
 * **The ctypes tests load `build/libd64.dylib`.** After editing `d64/*.c` run `make build/libd64.dylib` (or `make test`) first, or you
   test a stale library.
 * The firmware compiles `.c` files inside the `.ino` as **C++**: no implicit `void*` conversions, etc. `make` runs a `-x c++`

@@ -104,13 +104,21 @@ C_MENU   = 16
 .segment "P_F8E2"
 .export iec_listen, iec_second, iec_unlsn   ; the real bus only: patches/vdbanner.s probes it before the mailbox is live
 
-; in: command in A, argument already in MBX_ARG and saved in $A7 (hooks do both).
-; Preserves X, Y. Waits up to ~1 s for the Teensy; a mailbox that never answers
-; (VDrive handler not active) is treated as "not mine" so the real IEC code runs.
+; in: command in A, argument in $A7 (written to MBX_ARG here, after the check).
+; Preserves X, Y. Nothing is written to the mailbox unless the ID register reads right (vd_here): without a VDrive handler
+; (no TR, another Special IO, the TR menu's own handler; a KERNAL in a ROM socket sees all of them) every call goes to the
+; real bus at once. That matters beyond speed: under the TR menu's handler $DE11 (ARG) and $DE15 (LEN) are EEPROM-backed
+; settings (MIDI, timezone) that a write would change. Then it waits up to ~1 s for the Teensy; a mailbox that never answers
+; is treated as "not mine" too.
 ; out: C=0 handled, A=DATA (Z set from it), $90 updated; C=1 not mine, A=original argument.
 vcall:
         pha                     ; the command: sent again after a bus scan
-vc_send:
+        jsr vd_here
+        bne @no
+@send:  lda $A7
+        sta MBX_ARG
+        pla
+        pha
         sta MBX_CMD
         lda #0
         sta $A5
@@ -147,8 +155,6 @@ vc_send:
         pha
         tya
         pha
-        lda MBX_ARG
-        pha
         lda $A7
         pha
         lda ST
@@ -157,16 +163,12 @@ vc_send:
         pla
         sta ST
         pla
-        sta $A7
-        pla
-        sta MBX_ARG             ; the Teensy kept LEN and the file name window as they were
+        sta $A7                 ; the argument again (@send writes it); the Teensy kept LEN and the file name window as they were
         pla
         tay
         pla
         tax
-        pla                     ; the command again
-        pha
-        jmp vc_send
+        jmp @send               ; the command is still on the stack
 
 ; ---- bus scan ------------------------------------------------------------------------------------------------
 ; Which device numbers are free on the real serial bus? Probe 8, 9, ... with LISTEN + SECOND, the way OPEN starts. LISTEN
@@ -179,7 +181,6 @@ vc_send:
 bus_scan:
         lda #0
         sta ST
-        sta MBX_ARG
         sta $A7
         lda #C_SCAN
         jsr vcall               ; A = how many drives need a number
@@ -205,7 +206,6 @@ bus_scan:
         sta ST                  ; forget the DEVICE NOT PRESENT of the probe
         tsx
         lda $0101,x             ; the number just probed
-        sta MBX_ARG
         sta $A7
         lda #C_FREE
         jsr vcall
@@ -215,7 +215,6 @@ bus_scan:
         rts
 
 hk_talk:
-        sta MBX_ARG
         sta $A7
         lda #C_TALK
         jsr vcall
@@ -225,7 +224,6 @@ hk_talk:
         bne tl_common
 
 hk_listen:
-        sta MBX_ARG
         sta $A7
         lda #C_LISTEN
         jsr vcall
@@ -238,7 +236,6 @@ tl_common:
         jmp $ED11
 
 hk_second:
-        sta MBX_ARG
         sta $A7
         lda #C_SECOND
         jsr vcall
@@ -250,7 +247,6 @@ iec_second:                     ; stock SECOND without the hook
         jmp $EDBE
 
 hk_tksa:
-        sta MBX_ARG
         sta $A7
         lda #C_TKSA
         jsr vcall
@@ -261,7 +257,6 @@ hk_tksa:
         jmp $EDCC
 
 hk_ciout:
-        sta MBX_ARG
         sta $A7
         lda #C_CIOUT
         jsr vcall
@@ -317,6 +312,8 @@ hk_acptr:
 ; A name of WINSZ bytes or more does not fit: C=1 ("not mine"), and the byte-level path opens it instead.
 open_named:
         pha
+        jsr vd_here             ; no handler: write neither the window nor LEN (see vcall)
+        bne @long
         ldy $B7                 ; never 0 here: LOAD / SAVE stop at MISSING FILE NAME first
         bmi @long               ; >= 128 = WINSZ
         ldy #0
@@ -329,7 +326,7 @@ open_named:
         bne @nm
         sty MBX_LEN
         lda $BA
-        sta MBX_ARG
+        sta $A7
         pla
         jmp vcall
 @long:  pla
@@ -538,3 +535,22 @@ SR_KEYS = * - sr_keys - SR_ECHO
 .assert SR_KEYS <= 10, error, "SHIFT+RUN puts more keys in the buffer than it holds ($0277-$0280)"
 rst_hook_end:
 .assert rst_hook_end <= $F8D0, lderror, "the reset hook and SHIFT+RUN overflow into the tape STOP check ($F8D0, used by PRESS PLAY)"
+
+; ---- is the VDrive handler there? (vcall asks before every command) ----
+; Z=1: ID0 ($DE19) read $D6 in one of 4 tries. Up to 4, so that a late (bit-mixed) answer of a handler that is there does not
+; hand a transaction to the real bus mid-way, where it would go wrong; with no handler 4 misses cost about 50 cycles. Under the
+; TR menu's handler $DE19 is a SID's init address, never $D6xx (I/O); a floating bus that reads $D6 by chance only gets
+; vcall's time-out, as before this check. ID1 is not asked (one byte is enough for that, and the tape space is nearly full).
+; Uses $A5 (vcall clears it next); X, Y kept. Also asked by open_named before it fills the window and LEN.
+.segment "P_F8E2"
+vd_here:
+        lda #$7C                ; counts up: $7C..$7F, then $80 (N=1, Z=0) ends it
+        sta $A5
+@try:   lda MBX_ID
+        cmp #VD_ID0
+        beq @out                ; Z=1
+        inc $A5
+        bpl @try
+@out:   rts
+vd_here_end:
+.assert vd_here_end <= $FB8E, lderror, "reclaimed tape space overflows into the stock KERNAL"

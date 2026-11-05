@@ -56,8 +56,12 @@ def make_image(workdir, bad):
 
 
 # ---- VICE binary monitor ---------------------------------------------------
+# VD_MONITOR_PORT moves it off 6502, so two VICE runs (another checkout's tests, say) do not meet on one monitor
+MON_PORT = int(os.environ.get("VD_MONITOR_PORT", "6502"))
+
+
 class Mon:
-    def __init__(self, port=6502):
+    def __init__(self, port=MON_PORT):
         for _ in range(100):
             try:
                 self.s = socket.create_connection(("127.0.0.1", port)); break
@@ -136,7 +140,7 @@ def main(kernal, scenario="basic"):
     # TrapDevice8 there, which put a virtual drive at 8 and moved the SD drive to 9); a blank config file here also catches SaveResourcesOnExit
     (workdir / "vicerc").write_text("")
     vice = subprocess.Popen(["x64sc", "-config", str(workdir / "vicerc"), "-default", "-warp", *drives, "-kernal", kernal,
-                             "-binarymonitor", "-binarymonitoraddress", "ip4://127.0.0.1:6502"],
+                             "-binarymonitor", "-binarymonitoraddress", "ip4://127.0.0.1:%d" % MON_PORT],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         m = Mon()
@@ -412,6 +416,7 @@ def main(kernal, scenario="basic"):
             m.write(MBX + 9, [0x10, 0x03])          # no ID (the menu's handler during a launch): the stock cold start
             m.jump(0xFCE2); service(1.5, limit=15)   # what a reset does; no `go` while VICE runs (it leaves the monitor stopping after every command)
             check("reset without the ID: the stock cold start, banner and READY.", banner in m.screen() and any("READY." in r for r in m.screen()))
+            m.write(MBX + 9, [0xD6, 0x64])          # the VDrive handler again (the launch is over)
             run('LOAD"$",8\r', "SEARCHING FOR $"); run('LIST\r', '0 "MOCKDISK')      # the drive still answers after it
             return 0 if ok else 1
 
@@ -610,7 +615,19 @@ def main(kernal, scenario="basic"):
         m.jump(0xFCE2); service(1.5, limit=15)   # through the RESET vector's target, as a reset (not the monitor's reset command, nor a `go` while VICE runs: both leave it stopping after every command)
         check("reset without the ID: banner and READY. (calls %r)" % [e[0] for e in log[n0 + 1:]],
               banner in m.screen() and any("READY." in r for r in m.screen()) and menu["asked"] == 1)
+        m.write(MBX + 9, [0xD6, 0x64])          # the VDrive handler again (the launch is over)
         run('LOAD"$",8\r', "SEARCHING FOR $"); run('LIST\r', '0 "MOCKDISK')      # the drive still answers after it
+        run('NEW\r')
+
+        # --- no VDrive handler (no ID: no TR, another Special IO, a KERNAL in a ROM socket): nothing written to the mailbox, the real
+        #     bus at once (vd_here), not after vcall's ~1 s time-out per call ---
+        n0 = len(log)
+        m.write(MBX + 9, [0xDE, 0xDE]); m.write(MBX, [0x77, 0x55]); m.write(MBX + 5, [0x33])
+        run('LOAD"X",8\r', "DEVICE NOT PRESENT")
+        check("no ID: no mailbox command, CMD/ARG/LEN untouched (calls %r, %r)" % ([e[0] for e in log[n0:]], m.read(MBX, 6)),
+              len(log) == n0 and m.read(MBX, 2) == b"\x77\x55" and m.read(MBX + 5, 1) == b"\x33")
+        m.write(MBX + 9, [0xD6, 0x64]); m.write(MBX, [0, 0])
+        run('LOAD"$",8\r', "SEARCHING FOR $"); run('LIST\r', '0 "MOCKDISK')      # and with the ID back, the drive again
         run('NEW\r')
 
         # --- handler absent (BUSY never clears): KERNAL must time out and use the real IEC code ---

@@ -66,11 +66,20 @@ The C64's ability to read the 8 KB of RAM under KERNAL ROM ($E000-$FFFF) is used
    | File | SHA-256 |
    |---|---|
    | stock `kernal-901227-03.bin` (input) | `83c60d47047d7beab8e5b7bf6f67f80daa088b7a6a27de0d7e016f6484042721` |
-   | `kernal-tr.bin` from this revision | `62704caed1a4f02c795fd5f73bf8e1a428d776cf70fd63c0c739c2aa7719f5cc` |
+   | `kernal-tr.bin` from this revision | `3e9d4843d5a296f45758dac5561631e8a1397579f1ce302bcffe8b926ae3d8ef` |
    | `kernal-tr.bin` last run on a real C64 (0.9.0.45, commit `02c6490`) | `62704caed1a4f02c795fd5f73bf8e1a428d776cf70fd63c0c739c2aa7719f5cc` |
 
    A different stock hash means a different ROM dump; the patches may not fit it. The "this revision" row is checked by `make test`.
    The two `kernal-tr.bin` rows differ when this revision has KERNAL changes not yet run on hardware (see [CLAUDE.md](CLAUDE.md), Status).
+4. **A KERNAL in the machine itself** (an EPROM in the KERNAL socket, a MEGA65 C64 core's KERNAL file, any board that replaces the
+   KERNAL as it does for JiffyDOS) works too, with the same `kernal-tr.bin`: no separate build. Leave `/VDrive/kernal.bin` off the card.
+   The firmware reads that KERNAL at launch, sees that it is already this build's VDrive KERNAL, serves nothing (no Kernal Replace)
+   and answers the drives as usual. The KERNAL only uses the mailbox while a VDrive Special IO answers (it checks `$DE19` for `$D6`
+   first); otherwise (no TR, another Special IO, the TR menu itself) every serial call goes straight to the real bus. Tape stays
+   broken and `SYS64738` returns to the TR menu only while a VDrive Special IO runs, as with the served image. A `kernal-tr.bin` from
+   before 0.9.0.48 has no such check: replace it (with no handler its serial calls wait out a time-out each, and under the TR menu
+   they would write the menu's settings). Firmware and KERNAL should come from the same revision; with a resident VDrive KERNAL of
+   another revision the firmware still answers the drives but skips the menu's bus probe (the KERNAL's own scan sets the numbers).
 
 While a VDrive Special IO runs, `SYS64738` (or any program that ends by jumping to the RESET vector) returns to the TR menu, writing
 back anything not yet saved, instead of restarting BASIC. To get a fresh BASIC, start it from the menu.

@@ -20,7 +20,8 @@ with tempfile.TemporaryDirectory() as t:
     subprocess.run([sys.executable, "-I", str(ROOT / "tools/build.py"), str(t / "stock.bin"), str(t / "k.bin")], check=True, capture_output=True)
     img = (t / "k.bin").read_bytes()
 
-CMD, STAT, ID0, ID1 = 0xDE10, 0xDE13, 0xDE19, 0xDE1A
+CMD, ARG, STAT, ID0, ID1 = 0xDE10, 0xDE11, 0xDE13, 0xDE19, 0xDE1A
+SENT = [(ARG, 0), (CMD, 16)]                                   # vcall writes ARG (from $A7, 0 here; VIO_MENU ignores it), then CMD
 
 
 class Mem(list):
@@ -63,7 +64,7 @@ assert img[0x1CE2:0x1CE5] == bytes([0x4C]) + img[0x1CE3:0x1CE5] and img[0x1CE5:0
 
 # VDrive answers: VIO_MENU goes out, then the CPU waits
 what, writes, _ = run({ID0: 0xD6, ID1: 0x64})
-assert what == "spin" and writes == [(CMD, 16)], (what, writes)
+assert what == "spin" and writes == SENT, (what, writes)
 
 # the TR menu's own handler (a launch): $DE19/$DE1A are a SID's init address (0 with none), the menu ignores writes there anyway
 for sid_init in (0x0000, 0x1000, 0x1003, 0xC000, 0x6400, 0xD6FF - 0x0100):
@@ -82,8 +83,8 @@ assert what == "stock" and writes == [], (what, writes)
 
 # IDs read right but the Teensy never answers (vcall's ~1 s time-out) or says "not mine": the stock cold start after all
 what, writes, sp = run({ID0: 0xD6, ID1: 0x64}, answer=None)
-assert what == "stock" and writes == [(CMD, 16)] and sp == 0xFF, (what, writes)
+assert what == "stock" and writes == SENT and sp == 0xFF, (what, writes)
 what, writes, _ = run({ID0: 0xD6, ID1: 0x64}, answer=0xA5)
-assert what == "stock" and writes == [(CMD, 16)], (what, writes)
+assert what == "stock" and writes == SENT, (what, writes)
 
 print("PASS rst_hook: menu request / launch under the menu handler / no handler / late reads / no answer")

@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.9.0.48
+
+### Added
+- **A VDrive KERNAL in the machine itself**: an EPROM in the KERNAL socket, or a MEGA65 C64 core with `kernal-tr.bin` as its KERNAL,
+  works with the regular firmware; no separate build. The firmware sees that the C64's own KERNAL is already this build's, serves
+  nothing and answers the drives; a resident VDrive KERNAL of another revision gets its drives too, but no bus probe in the menu.
+  `docs/DESIGN.md` section 45; py65, host and VICE tests; not on a MEGA65 or EPROM yet.
+
+### Changed
+- The KERNAL touches the mailbox only while a VDrive Special IO answers (`$DE19` reads `$D6`). Without one (no TR, another Special
+  IO, the TR menu's own handler) serial calls go to the real bus at once, instead of waiting a ~1 s time-out per call, and no longer
+  write the IO1 registers at `$DE11`/`$DE15`, which under the TR menu are stored settings. **Rebuild `kernal-tr.bin`** for `/VDrive/kernal.bin`.
+- With an unknown KERNAL (or a failed DMA read) the menu no longer runs its bus probe before the launch; it had nothing to give then.
+
 ## v0.9.0.47
 
 ### Added

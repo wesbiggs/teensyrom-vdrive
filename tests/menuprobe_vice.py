@@ -14,7 +14,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 if not shutil.which("acme"):
     print("SKIP acme not installed: the menu's bus probe not run in VICE"); sys.exit(0)
-from vdrive_mock import Mon
+from vdrive_mock import Mon, MON_PORT
 from d64py import VIO, R_DEV0, R_DEV1
 
 IO1 = 0xC900
@@ -50,7 +50,7 @@ def main():
     (work / "vicerc").write_text("")
     vice = subprocess.Popen(["x64sc", "-config", str(work / "vicerc"), "-default", "-warp",
                              "-drive8type", "1541", "-drive8truedrive", "-drive9type", "0", "-drive10type", "1541", "-drive10truedrive",
-                             "-drive11type", "0", "-binarymonitor", "-binarymonitoraddress", "ip4://127.0.0.1:6502"],
+                             "-drive11type", "0", "-binarymonitor", "-binarymonitoraddress", "ip4://127.0.0.1:%d" % MON_PORT],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     ok = True
     def check(label, cond):
