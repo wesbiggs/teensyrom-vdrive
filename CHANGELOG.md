@@ -6,7 +6,7 @@
 - Card files and folders with names over 16 characters (or with characters the C64 cannot type) are listed under an alias with an
   up arrow, which `CD:`, `LOAD` and paths accept: `The-Pumpkins-Breadbin-of-Horror-side1.D64` shows as `THE-PU↑SIDE1.D64`. They used
   to be hidden. Two names with the same alias are both left out (rename one). Firmware only (`docs/DESIGN.md` section 44); host and
-  glue tests, not on hardware.
+  glue tests; works on a real C64.
 
 ### Changed
 - `trvdrive` get and the `/.vdrive` sidecar keep the case of an image path as it was given (`/GAME.D64`, was `/game.d64`).
