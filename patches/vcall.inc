@@ -1,0 +1,114 @@
+; vcall (one mailbox transaction) and bus_scan (the lazy probe of the real serial bus for automatic numbers), shared by the
+; KERNAL patch (patches/vdrive.s) and the vector-hook build (vector/vdvec.s). Needs mailbox.inc first. Calls $FFB1 / $FF93 /
+; $FFAE: in the KERNAL patch those reach the hooks, which answer not-mine while the scan runs; in the vector build they are the
+; stock real-bus routines, unhooked.
+
+; in: command in A, argument in $A7 (written to MBX_ARG here, after the check).
+; Preserves X, Y. Nothing is written to the mailbox unless the ID register reads right (vd_here): without a VDrive handler
+; (no TR, another Special IO, the TR menu's own handler; a KERNAL in a ROM socket sees all of them) every call goes to the
+; real bus at once. That matters beyond speed: under the TR menu's handler $DE11 (ARG) and $DE15 (LEN) are EEPROM-backed
+; settings (MIDI, timezone) that a write would change. Then it waits up to ~1 s for the Teensy; a mailbox that never answers
+; is treated as "not mine" too.
+; out: C=0 handled, A=DATA (Z set from it), $90 updated; C=1 not mine, A=original argument.
+vcall:
+        pha                     ; the command: sent again after a bus scan
+        jsr vd_here
+        bne @no
+@send:  lda $A7
+        sta MBX_ARG
+        pla
+        pha
+        sta MBX_CMD
+        lda #0
+        sta $A5
+        sta $A6
+@wait:  lda MBX_STAT            ; BUSY ($80) until the Teensy publishes an answer token
+        cmp #STAT_OK
+        beq @ok
+        cmp #STAT_NOTMINE
+        beq @no
+        cmp #STAT_SCAN
+        beq @scan
+        inc $A5                 ; anything else (busy, or a floating-bus misread) keeps waiting
+        bne @wait
+        inc $A6
+        bne @wait
+        beq @no                 ; timed out
+@ok:    lda MBX_ST              ; every read from the TR is done twice in a row and must agree: now and then the TR answers a
+        cmp MBX_ST              ; few ns late and the 6510 gets a bit-mixed byte (seen on hardware, tests/asm/bustest.s). Two late
+        bne @ok                 ; answers in a row, both wrong the same way, are far less likely (the second read returns the first's byte)
+        ora ST
+        sta ST
+        pla
+@dr:    lda MBX_DATA
+        cmp MBX_DATA
+        bne @dr
+        cmp #0                  ; Z from DATA, as callers expect
+        clc
+        rts
+@no:    pla
+        lda $A7
+        sec
+        rts
+@scan:  txa                     ; the first transaction of the run: probe the real bus before anything else
+        pha
+        tya
+        pha
+        lda $A7
+        pha
+        lda ST
+        pha
+        jsr bus_scan
+        pla
+        sta ST
+        pla
+        sta $A7                 ; the argument again (@send writes it); the Teensy kept LEN and the file name window as they were
+        pla
+        tay
+        pla
+        tax
+        jmp @send               ; the command is still on the stack
+
+; ---- bus scan ------------------------------------------------------------------------------------------------
+; Which device numbers are free on the real serial bus? Probe 8, 9, ... with LISTEN + SECOND, the way OPEN starts. LISTEN
+; alone is not enough: every drive on the bus pulls DATA low when ATN falls, whatever address follows, so only on an
+; empty bus does LISTEN itself fail. A drive that is not addressed lets go of DATA after the first byte, so with
+; SECOND the KERNAL sees nobody there and sets ST bit 7 (DEVICE NOT PRESENT) at once, with no time-out to wait for.
+; Every number where nobody answered is reported to the Teensy, which gives it to the SD drive, then the USB drive;
+; the scan ends when both have one (or at 30). Runs inside a user program, so no zero page is free: the number being
+; probed lives on the stack. The Teensy has released its automatic numbers meanwhile, so the probes reach the real bus.
+bus_scan:
+        lda #0
+        sta ST
+        sta $A7
+        lda #C_SCAN
+        jsr vcall               ; A = how many drives need a number
+        bcs @out                ; (cannot happen: SCAN is always ours)
+        beq @out                ; none
+        lda #8
+@probe: pha
+        jsr $FFB1               ; LISTEN
+        lda ST
+        bmi @empty              ; nothing on the bus at all
+        lda #$6F
+        jsr $FF93               ; SECOND (command channel, nothing is sent on it)
+        lda ST
+        bmi @empty
+        jsr $FFAE               ; UNLSN: a real device is there
+@next:  pla
+        clc
+        adc #1
+        cmp #31
+        bcc @probe
+@out:   rts
+@empty: lda #0
+        sta ST                  ; forget the DEVICE NOT PRESENT of the probe
+        tsx
+        lda $0101,x             ; the number just probed
+        sta $A7
+        lda #C_FREE
+        jsr vcall
+        bcs @done
+        bne @next               ; somebody still needs a number
+@done:  pla
+        rts
