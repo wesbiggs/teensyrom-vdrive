@@ -185,6 +185,18 @@ int main(int argc, char **argv)
     memcpy(KernalFast + kBannerTag, "VDUNITS:", 8);          // patches/vdbanner.s: the tag, then the two unit bytes (0 as built)
     prestart();
     check("banner bytes: the menu probe settled both (8, 9)", banner(0) == 8 && banner(1) == 9);
+    check("banner registers ($DE3C-$DE3F under the menu's handler): tag, then the settled 8 / 9",
+          IO1[60] == 0xD6 && IO1[61] == 0x64 && IO1[62] == 8 && IO1[63] == 9);
+    int fs_probes0 = g_fs_probes;
+    IO1[rwRegScratch] = 0;
+    check("banner registers: an ordinary PreStart step (any Special IO) clears them first",
+          !VDrive_ProbeStep() && IO1[60] == 0 && IO1[61] == 0 && IO1[62] == 0 && IO1[63] == 0);
+    VDrive_PreStart();
+    check("banner registers: a VDrive PreStart writes them again, automatic units unsettled ($FF) until the probe",
+          IO1[60] == 0xD6 && IO1[61] == 0x64 && IO1[62] == 0xFF && IO1[63] == 0xFF);
+    { int left = 2; for (int dev = 8; left; dev++) { IO1[rwRegScratch] = (uint8_t)dev; VDrive_ProbeStep(); left = IO1[rwRegScratch]; } }
+    check("banner registers: and the probe's numbers when it ends", IO1[62] == 8 && IO1[63] == 9);
+    g_fs_probes = fs_probes0;                               // (the extra PreStart is not counted by the checks below)
     {
         uint8_t img[64]; memset(img, 0x55, sizeof img); memcpy(img + 20, "VDUNITS:", 8); img[28] = img[29] = 0;
         vio->vd.unit[1].present = 0; VD_BannerUnits(img, sizeof img, false); vio->vd.unit[1].present = 1;

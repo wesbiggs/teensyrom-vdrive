@@ -626,6 +626,7 @@ void InitHndlr_KernalReplace();   // re-stages the KERNAL bus hook (IOH_KernalRe
 // KERNAL is live every C64 instruction fetch from $E000-$FFFF depends on the bus ISR running.
 FLASHMEM static void VD_ProbeBegin();
 void VD_BannerUnits(uint8_t *img, int size, bool settled);   // below
+void VD_BannerRegs(bool on, bool settled);
 
 static bool vdNoMenuProbe = false;  // VD_KernalImage: the C64 keeps a KERNAL that is not this build's VDrive one (see there); one PreStart
 
@@ -664,6 +665,7 @@ FLASHMEM void VDrive_PreStart()
    int scanPending = vio_arm_scan(vio);   // automatic numbers: probed by the menu next (else by the KERNAL on the first disk access)
    vio_publish_devices(vio);
    VD_BannerUnits(KernalFast, 8192, false);   // the image InitHndlr_KERNALReplace_PreStart() just loaded, before the C64 prints its banner
+   VD_BannerRegs(true, false);                // and the same for a VDrive KERNAL the C64 holds itself
    vioReady = true;                 // only now may the bus handlers answer
    Serial.printf("VDrive: dev %d (SD) %s, dev %d (USB) %s%s\n",
                  vio->vd.dev[0], vio->vd.unit[0].present ? "ready" : "absent",
@@ -703,6 +705,7 @@ FLASHMEM static void VD_ProbeFinish()
    KDS_Read01Valid = false;
    fBusSnoop = vdProbeSnoop ? KernalCheckArm() : NULL;   // the C64's or the C128's check, with HIRAM_State set for it
    VD_BannerUnits(KernalFast, 8192, true);   // the probed numbers, so the banner need not probe again
+   VD_BannerRegs(true, true);
    Serial.printf("VDrive: bus probe gave dev %d (SD), %d (USB)\n", vio->vd.dev[0], vio->vd.dev[1]);
 }
 
@@ -710,7 +713,12 @@ FLASHMEM static void VD_ProbeFinish()
 FLASHMEM bool VDrive_ProbeStep()
 {
    uint8_t dev = IO1[rwRegScratch];
-   if (!vdProbing || dev == 0) { vdProbing = false; return false; }   // a new launch: a probe left over from a reset is dropped
+   if (!vdProbing || dev == 0)                // a new launch (any Special IO): a probe left over from a reset is dropped,
+   {                                         // and so are the banner registers of an earlier VDrive launch
+      vdProbing = false;
+      VD_BannerRegs(false, false);
+      return false;
+   }
    int left = (dev == VD_ProbeEnd) ? 0 : vio_probe_free(vio, dev);
    if (!left) VD_ProbeFinish();
    IO1[rwRegScratch] = (uint8_t)left;
@@ -725,6 +733,8 @@ FLASHMEM bool VDrive_ProbeStep()
 // KERNAL probes the real bus for the $FF units itself, the way the run's first disk access will (bus_scan), so the banner shows the
 // numbers that scan is going to give. An image without the tag (an older kernal-tr.bin, another KERNAL) is left alone. Runs while
 // the C64 still waits in the TR menu, so nothing reads them yet.
+#define VD_BannerRegBase 60   // IO1 offset of the banner registers under the TR menu's handler ($DE3C)
+static_assert(VD_BannerRegBase + 4 <= IO1Size, "the banner registers must lie inside the menu's IO1 array");
 static const uint8_t VD_BannerTag[8] = { 'V', 'D', 'U', 'N', 'I', 'T', 'S', ':' };
 
 FLASHMEM static bool VD_HasBannerTag(const uint8_t *img)   // in an 8 KB image: a VDrive KERNAL from 0.9.0.36 on
@@ -734,18 +744,33 @@ FLASHMEM static bool VD_HasBannerTag(const uint8_t *img)   // in an 8 KB image: 
    return false;
 }
 
+FLASHMEM static uint8_t VD_BannerByte(int i, bool settled)
+{
+   uint8_t d = vio->vd.dev[i];
+   return !vio->vd.unit[i].present ? 0xFE : !vio->vd.pin[i] && !settled ? 0xFF : d ? d : 0xFE;
+}
+
 FLASHMEM void VD_BannerUnits(uint8_t *img, int size, bool settled)
 {
    for (int a = 0; a + (int)sizeof VD_BannerTag + 2 <= size; a++)
       if (memcmp(img + a, VD_BannerTag, sizeof VD_BannerTag) == 0)
       {
-         for (int i = 0; i < 2; i++)
-         {
-            uint8_t d = vio->vd.dev[i];
-            img[a + sizeof VD_BannerTag + i] = !vio->vd.unit[i].present ? 0xFE : !vio->vd.pin[i] && !settled ? 0xFF : d ? d : 0xFE;
-         }
+         for (int i = 0; i < 2; i++) img[a + sizeof VD_BannerTag + i] = VD_BannerByte(i, settled);
          return;
       }
+}
+
+// The same two bytes for a VDrive KERNAL the C64 holds itself (an EPROM, a MEGA65 core: docs/DESIGN.md 46), which the firmware
+// cannot write into. The menu prints the banner itself after PreStart (MainMenu.asm, XferCopyRun: the KERNAL's init routines and
+// INITMS, no reset) while the menu's own handler still answers IO1, and it answers a plain read with IO1[n]. Offsets 60-63
+// ($DE3C-$DE3F) lie inside IO1Size between rwRegPwrUpDefaults3 (52) and StartSIDRegs (64), used by nothing: the tag $D6 $64, then SD,
+// USB. Cleared by every other PreStart (VDrive_ProbeStep), so a launch with another Special IO never shows a stale VDRIVE field.
+FLASHMEM void VD_BannerRegs(bool on, bool settled)
+{
+   IO1[VD_BannerRegBase + 0] = on ? 0xD6 : 0;
+   IO1[VD_BannerRegBase + 1] = on ? 0x64 : 0;
+   IO1[VD_BannerRegBase + 2] = on ? VD_BannerByte(0, settled) : 0;
+   IO1[VD_BannerRegBase + 3] = on ? VD_BannerByte(1, settled) : 0;
 }
 
 // ---- the KERNAL image (docs/DESIGN.md 40) ---------------------------------------------------------------------------------

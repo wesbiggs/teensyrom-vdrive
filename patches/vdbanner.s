@@ -15,7 +15,9 @@
 ; the real serial bus and that the other unit has not fixed, SD first, which is what the bus scan of the run's first disk access
 ; (bus_scan in vdrive.s) will give it: the probe is the same LISTEN + SECOND $6F, but through the stock routines without the mailbox
 ; hooks (iec_listen / iec_second / iec_unlsn). A unit with no number (absent, or every number taken) shows as "NOSD" / "NOUSB".
-; The image as built says 0 / 0 (no VDrive firmware wrote it: plain Kernal Replace, an older firmware): the stock line.
+; The image as built says 0 / 0 (no VDrive firmware wrote it: plain Kernal Replace, an older firmware, or this KERNAL is in the
+; machine itself, an EPROM or a MEGA65 core): then the same two bytes are taken from the TR menu's IO1 at $DE3C-$DE3F when the tag
+; $D6 $64 reads there (VD_BannerRegs; the menu prints the banner itself, under its own handler); else the stock line.
 ;
 ; Code in reclaimed tape space $FB97-$FCD0 (tape-only routines: called only from tape code at $F8A1-$F8D6 and from the tape
 ; code vdrive.s already reclaimed). Zero page $FB-$FE: no program is running yet.
@@ -30,6 +32,8 @@ STROUT = $AB1E              ; BASIC: print the 0-terminated string at A/Y
 CHROUT = $FFD2
 NEW    = $A644
 S_FREE = $E460              ; stock " BASIC BYTES FREE", CR
+S_RAM_STOCK = $E49A         ; stock " 64K RAM SYSTEM  ", 0 (its first byte is now the 0 that ends the top lines; tools/build.py checks the rest)
+MENU_REGS = $DE3C           ; the TR menu's IO1 offsets 60-63 (VD_BannerRegs in firmware/IOH_VDrive.c)
 
 .segment "P_E42D"
         jsr vd_head             ; was JSR STROUT (the banner string at $E473)
@@ -42,19 +46,37 @@ S_FREE = $E460              ; stock " BASIC BYTES FREE", CR
 ; the top lines (A/Y = the string at $E473), then the start of the second line
 vd_head:
         jsr STROUT
+        ldx #1                  ; the unit bytes the firmware wrote into the image it serves...
+@img:   lda vd_units,x
+        sta RES,x
+        dex
+        bpl @img
         jsr have_fw
         bne @vd
-        lda #<s_ram_stock
-        ldy #>s_ram_stock
-        jmp STROUT
+        lda MENU_REGS           ; ...else, for a VDrive KERNAL the C64 holds itself (an EPROM, a MEGA65 core), the copy the firmware
+        cmp #$D6                ; puts in the TR menu's IO1 ($DE3C-$DE3F: the tag $D6 $64, then SD, USB; docs/DESIGN.md 46), whose
+        bne @stock              ; handler still answers there: the menu prints this banner itself, before the program is loaded
+        lda MENU_REGS+1
+        cmp #$64
+        bne @stock
+        ldx #1
+@reg:   lda MENU_REGS+2,x        ; (with the tag the firmware always writes both: $FE, $FF or a number, never 0)
+        sta RES,x
+        dex
+        bpl @reg
 @vd:    lda #<s_ram
         ldy #>s_ram
         jmp STROUT
+@stock: lda #' '                ; the stock " 64K RAM SYSTEM  ": the ROM's own text after the cut at $E49A (RES is 0 0)
+        jsr CHROUT
+        lda #<(S_RAM_STOCK+1)
+        ldy #>(S_RAM_STOCK+1)
+        jmp STROUT
 
-; Z=1 when no VDrive firmware wrote the unit bytes
+; Z=1 when no VDrive firmware wrote the unit bytes (RES = 0 0: the stock line)
 have_fw:
-        lda vd_units
-        ora vd_units+1
+        lda RES
+        ora RES+1
         rts
 
 ; after the free bytes: the rest of the second line, CR, NEW
@@ -69,16 +91,16 @@ vd_banner:
         sta N
         ldx #0
 @unit:  stx UNIT
-        lda vd_units,x
+        lda RES,x               ; the unit's byte (vd_head copied them here); replaced by its result below
         cmp #$FF
         bne @keep               ; fixed, or absent ($FE / 0: not 8-30, shown as "NO..")
 @try:   inc N                   ; automatic: the next number that is free
         lda N
         cmp #31
         bcs @none               ; none left
-        cmp vd_units            ; fixed by a unit (comparing with our own $FF is harmless)
+        cmp RES                 ; fixed by a unit (comparing with our own $FF, or with SD's result while USB is tried, is harmless)
         beq @try
-        cmp vd_units+1
+        cmp RES+1
         beq @try
         jsr probe
         bcs @try                ; a real device answers there
@@ -163,8 +185,6 @@ prdec2: ldx #'0'
         pla
         jmp CHROUT
 
-s_ram_stock:
-        .byte " 64K RAM SYSTEM  ", 0
 s_ram:  .byte " 64K RAM  ", 0
 s_vdrive:
         .byte " FREE  VDRIVE ", 0

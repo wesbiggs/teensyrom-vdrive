@@ -16,6 +16,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 stock = bytearray(8192)
 stock[0xA31:0xA34] = bytes([0x20, 0xEA, 0xFF]); stock[0x1D9:0x1DB] = bytes([0xA2, 0x01]); stock[0x5EE:0x5F3] = bytes([0xA2, 0x09, 0x78, 0x86, 0xC6])
 stock[0x429:0x447] = bytes.fromhex("a973a0e4201eaba53738e52baaa538e52c20cdbda960a0e4201eab4c44a6")   # INITMS from $E429 (code only)
+stock[0x49A:0x4AC] = b" 64K RAM SYSTEM  \0"                                       # the stock line's text (the banner reuses it)
 with tempfile.TemporaryDirectory() as t:
     t = pathlib.Path(t); (t / "stock.bin").write_bytes(stock)
     subprocess.run([sys.executable, "-I", str(ROOT / "tools/build.py"), str(t / "stock.bin"), str(t / "k.bin")], check=True, capture_output=True)
@@ -31,11 +32,14 @@ img[0x460:0x473] = b" BASIC BYTES FREE\r\x00"   # the stock string at $E460 the 
 ST = 0x90
 
 
-def run(units, bus=()):
-    """units: the two bytes the firmware writes; bus: device numbers a real drive answers at. -> (text, probes, bus log)"""
+def run(units, bus=(), regs=(0xDE,) * 4):
+    """units: the two bytes the firmware writes; bus: device numbers a real drive answers at; regs: what $DE3C-$DE3F read (the TR menu's
+    IO1 offsets 60-63, where the firmware puts the same bytes for a VDrive KERNAL the C64 holds itself; floating $DE by default)
+    -> (text, probes, bus log)"""
     m = MPU()
     m.memory[0xE000:0xE000 + 8192] = list(img)
     m.memory[0xE000 + tag + 8] = units[0]; m.memory[0xE000 + tag + 9] = units[1]
+    m.memory[0xDE3C:0xDE40] = list(regs)
     m.memory[0x2B:0x2D] = [0x01, 0x08]; m.memory[0x37:0x39] = [0x00, 0xA0]   # BASIC from $0801 to $A000: 38911 bytes free
     m.pc, m.sp = 0xE429, 0xF0                       # INITMS after its memory check: banner string, free bytes, the rest
     out, log, cur = [], [], [None]
@@ -77,9 +81,9 @@ def run(units, bus=()):
     return text[:-1], [int(e.split()[1]) for e in log if e.startswith("LISTEN")], log
 
 
-def check(units, bus, field, probes=None):
+def check(units, bus, field, probes=None, regs=(0xDE,) * 4):
     """field: the 10-character drive field, or None for the stock line"""
-    got, pr, log = run(units, bus)
+    got, pr, log = run(units, bus, regs)
     want = " 64K RAM SYSTEM  38911 BASIC BYTES FREE" if field is None else " 64K RAM  38911 FREE  VDRIVE " + field
     assert got == want, (units, bus, got)
     assert len(got) == 39, got                          # like the stock line: one leading space, 38 characters
@@ -106,4 +110,18 @@ check((30, 0xFE), (), "SD30 NOUSB", [])
 check((0xFF, 0xFF), tuple(range(8, 31)), "NOSD NOUSB", list(range(8, 31)))   # every number taken: stops at 30
 check((0xFF, 0xFF), tuple(range(8, 30)), "SD30 NOUSB", list(range(8, 31)))
 check((0xFF, 0xFF), tuple(range(8, 19)) + (20,), "SD19 USB21", list(range(8, 22)))
+
+# a VDrive KERNAL in the machine itself (image bytes 0 0): the copy in the TR menu's IO1 registers, when the tag $D6 $64 reads right
+R = lambda sd, usb: (0xD6, 0x64, sd, usb)
+check((0, 0), (), "SD 8 USB 9", [8, 9], regs=R(0xFF, 0xFF))           # automatic, not settled: probed here as before
+check((0, 0), (8, 10), "SD 9 USB11", [8, 9, 10, 11], regs=R(0xFF, 0xFF))
+check((0, 0), (8,), "SD 9 USB11", [], regs=R(9, 11))                  # settled by the menu's probe: printed, no bus traffic
+check((0, 0), (), "NOSD USB12", [], regs=R(0xFE, 12))
+check((0, 0), (), "NOSD NOUSB", [], regs=R(0xFE, 0xFE))
+check((0, 0), (), None, [], regs=(0, 0, 0, 0))                        # cleared by a launch with another Special IO
+check((0, 0), (), None, [], regs=(0xD6, 0x65, 8, 9))                  # a wrong tag byte: the stock line
+check((0, 0), (), None, [], regs=(0xD5, 0x64, 8, 9))
+check((10, 11), (8,), "SD10 USB11", [], regs=R(0xFE, 0xFE))           # the served image's bytes come first
+
+print("PASS vd_banner: menu registers for a resident KERNAL (tag, settled / automatic / absent, cleared, wrong tag, image first)")
 print("PASS vd_banner: stock line without firmware / automatic / fixed / absent / full bus / two digits; always 38 wide; probes are LISTEN + SECOND $6F (+ UNLSN)")

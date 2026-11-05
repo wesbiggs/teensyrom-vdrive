@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.9.0.49
+
+### Added
+- **The banner's drive numbers with a VDrive KERNAL in the machine itself** (EPROM, MEGA65 core): `VDRIVE SD 8 USB 9` instead of the
+  stock line. The menu prints the banner itself before the program loads, while its own handler answers IO1, so the firmware leaves
+  the same two unit bytes it writes into a served image in four unused menu registers (`$DE3C-$DE3F`: tag `$D6 $64`, SD, USB), and
+  clears them for a launch with another Special IO. `docs/DESIGN.md` section 46; py65 and host tests; not on hardware.
+
+### Changed
+- `tools/build.py`'s check of INITMS never ran (it looked for a segment the banner does not have); it runs now, along with a check of
+  the stock ` 64K RAM SYSTEM  ` text at `$E49A`, which the stock line now prints from the ROM. **Rebuild `kernal-tr.bin`.**
+
 ## v0.9.0.48
 
 ### Added

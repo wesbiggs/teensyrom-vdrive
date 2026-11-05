@@ -8,7 +8,7 @@ real IEC code, so physical drives keep working. LOAD/SAVE have block-transfer fa
 second, the first free numbers from 8 up: the KERNAL probes the real bus on the first disk access of a run) or fixed from BASIC with
 `OPEN15,8,15,"U0>"+CHR$(n)` (kept in EEPROM, `CHR$(0)` = automatic, no reflash). Names and `CD` take paths: `LOAD"$/GAMES/G.D64",8`.
 
-Full design and per-milestone notes: `docs/DESIGN.md` (sections 1-45, in order of construction).
+Full design and per-milestone notes: `docs/DESIGN.md` (sections 1-46, in order of construction).
 Firmware integration and usage: `firmware/README.md`.
 
 ## Status (read this first)
@@ -116,6 +116,11 @@ Firmware integration and usage: `firmware/README.md`.
   `$DE11`/`$DE15` are `rwRegMIDISettings`/`rwRegTimezone`, which a write stores in EEPROM. Firmware: `VD_KernalPatchPresent` (DMA image already holds every patch run) = this build's
   KERNAL resident: nothing served, menu probe kept; banner tag but other bytes = another revision: nothing served, no menu probe (`vdNoMenuProbe`); unknown ROM / failed DMA: no probe either.
   py65 (`make test-gate`), `tests/fw_host`, VICE `basic` (no ID: no mailbox command); **not on hardware, not on a MEGA65**. Rebuild `kernal-tr.bin`.
+* 0.9.0.49: the banner's drive numbers for a resident VDrive KERNAL (docs/DESIGN.md 46). Every launch (F2 too) runs `XferCopyRun` in `MainMenu.asm`: PreStart, our probe, then the KERNAL's
+  init routines and INITMS called in place (no reset) under the menu's IO1 handler, which answers plain reads with `IO1[n]`. So `VD_BannerRegs` puts tag `$D6 $64` + the two `VDUNITS:` bytes
+  in menu IO1 offsets 60-63 (`$DE3C-$DE3F`, unused between 52 and `StartSIDRegs`), updated when the probe ends and cleared by every other PreStart (`VDrive_ProbeStep`). `vd_head` copies the image bytes
+  to `RES` ($FC/$FD), else the registers when the tag reads right; the stock line prints the ROM's own text at `$E49B` (all five ROMs have it; build.py checks; its INITMS check had never run, `E444` -> `E43D`).
+  Banner area 312 of 314 bytes. py65 (`test_banner.py`), `tests/fw_host`; **not on hardware**. Note: RAM does not survive a MEGA65 reset (Boris), but a launch is no reset.
 * Default device 8 for `LOAD`/`SAVE`/`VERIFY` without a number, as on the SX-64 (`P_E1DA` in `patches/vdrive.s`, docs/DESIGN.md 33). KERNAL only; VICE `basic` run; **not on hardware yet**. Rebuild `kernal-tr.bin`.
 * 0.9.0.32: bad sectors from the image's error table (the trailing error-info bytes): reads of a sector marked bad fail with its DOS code (`d64_t.errtab`, `D64_E_BADSEC`, `d64_t.bad`, `read_err()` in `vdrive.c`; the firmware keeps a RAM2 copy only when the table marks something bad; docs/DESIGN.md 35). Write errors (25/26/28) not emulated; a write does not repair a bad sector. Unit and glue host tests; VICE and hardware through VDSUITE `5` (reads only).
 * 0.9.0.34: SwiftLink Tx fix to upstream (was `firmware/swiftlink-tx-fix.patch`; merged upstream as PR #80 in `6518b966`, patch dropped). NativeEthernet's `client.write()` busy-waits for send-buffer space;
@@ -180,7 +185,7 @@ util/            VDCOPY: vdcopy.s (all machine code, BASIC SYS stub at $0801, ta
 patches/        ca65 sources overlaid on the stock KERNAL by tools/build.py; segment name P_XXXX = load address
   vdrive.s        serial entry hooks, fast LOAD ($F4C8) / SAVE ($F605), bus scan, code placed in reclaimed tape space $F8E2-$FB8D (667 of 683 bytes used; `irq_border` for the border flash and the mailbox gate `vd_here` included, the build asserts the limit);
                   the cold-start hook `rst_hook` (`JMP` at $FCE2, code at $F875-$F8CF, 33 of 91 bytes: SYS64738 back to the TR menu)
-  vdbanner.s      the drive numbers in the power-on banner (INITMS: `JSR` at $E42D, `JMP` at $E43D, banner string cut at $E49A; code in reclaimed tape routines $FB97-$FCD0, 296 of 314 bytes)
+  vdbanner.s      the drive numbers in the power-on banner (INITMS: `JSR` at $E42D, `JMP` at $E43D, banner string cut at $E49A; code in reclaimed tape routines $FB97-$FCD0, 312 of 314 bytes)
 bringup/banner.s  proof patch (`TRVDRIVE 64 BASIC V2`), only in `make build/kernal-banner.bin`
 firmware/       TeensyROM integration: IOH_VDrive.c (Special IO), IOH_VDriveSwift.c / IOH_VDriveREU.c / IOH_VDriveSwiftREU.c (combined Special IOs) and
                 teensyrom-vdrive.patch (git apply onto TeensyROM); vdrive_probe.asm (the TR menu's launch-time bus probe, ACME, inserted into MainMenu.asm)
