@@ -2,7 +2,7 @@
 STOCK ?= /opt/homebrew/Cellar/vice/3.10/share/vice/C64/kernal-901227-03.bin
 
 # util/ is also a directory: without .PHONY `make util` is always "up to date"
-.PHONY: test test-d64 test-devcfg test-fw test-vdconfig test-vdcopy test-dmatest test-border test-reset test-gate test-banner test-menuprobe test-variants test-hash shot testdisk util
+.PHONY: test test-vector test-d64 test-devcfg test-fw test-vdconfig test-vdcopy test-dmatest test-border test-reset test-gate test-banner test-menuprobe test-variants test-hash shot testdisk util
 
 # Hardware image: mailbox at IO1 ($DE10, above the SwiftLink ACIA at $DE00-$DE07)
 build/kernal-tr.bin: $(wildcard patches/*.s) tools/build.py
@@ -21,6 +21,15 @@ build/kernal-tr-nodma.bin: $(wildcard patches/*.s) tools/build.py
 	python3 -I tools/build.py $(STOCK) $@ -D VD_DMA_LOAD=0
 build/kernal-vd-nodma.bin: $(wildcard patches/*.s) tools/build.py
 	python3 -I tools/build.py $(STOCK) $@ -D 'MBX=$$C800' -D 'WIN=$$CA00' -D VD_DMA_LOAD=0
+# Plain-TeensyROM build (vector hooks, docs/DESIGN.md 52), VICE flavour: the hooks in RAM at $C000 (SYS49152), mailbox as above
+build/vdvec-vice.prg: vector/vdvec.s vector/vdvec.cfg patches/mailbox.inc patches/vcall.inc
+	mkdir -p build
+	ca65 -I patches -D 'MBX=$$C800' -D 'WIN=$$CA00' -o build/vdvec-vice.o vector/vdvec.s
+	ld65 -C vector/vdvec.cfg -S 0xC000 -o $@ build/vdvec-vice.o
+
+test-vector: build/vdvec-vice.prg build/libd64.dylib   # the vector hooks on the stock KERNAL in VICE (mock `vector` and `vecscan`)
+	python3 -I tools/vdrive_mock.py $(STOCK) vector build/vdvec-vice.prg
+	python3 -I tools/vdrive_mock.py $(STOCK) vecscan build/vdvec-vice.prg
 
 D64SRC = d64/d64.c d64/vdrive.c d64/vdrive_io.c
 build/libd64.dylib: $(D64SRC) $(wildcard d64/*.h)
@@ -68,7 +77,7 @@ test-menuprobe: build/libd64.dylib   # the TR menu's launch-time bus probe (firm
 test-variants: build/libd64.dylib   # the patch on each ROM the firmware patches in memory (VD_KnownKernals), in VICE; ROMs found next to STOCK
 	python3 -I tests/variants_vice.py $(STOCK)
 
-test: build/kernal-vd.bin build/kernal-vd-nodma.bin build/kernal-tr-nodma.bin build/libd64.dylib test-d64 test-devcfg test-fw test-border test-reset test-gate test-banner test-vdconfig test-vdcopy test-dmatest test-hash test-menuprobe test-variants
+test: build/kernal-vd.bin build/kernal-vd-nodma.bin build/kernal-tr-nodma.bin build/libd64.dylib test-d64 test-devcfg test-fw test-border test-reset test-gate test-banner test-vdconfig test-vdcopy test-dmatest test-hash test-menuprobe test-variants test-vector
 	python3 -I tools/vdrive_mock.py build/kernal-vd.bin
 	python3 -I tools/vdrive_mock.py build/kernal-vd-nodma.bin scan
 

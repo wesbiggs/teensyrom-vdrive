@@ -764,3 +764,51 @@ byte changed; the rest of the run (VDSUITE, the BASIC test programs, `VERIFY` wi
 from under BASIC (`$A000-$BFFF` with `$01` set to RAM, by a machine-code SAVE); timing against 0.9.0.52 (`TI` before and after); VDSUITE
 "run all"; VDrive+SwiftLink with a terminal open.
 
+## 52. The plain TeensyROM: vector hooks instead of a KERNAL (VICE only; not on hardware)
+The plain TeensyROM (Fab 0.2/0.3, `--target tr`) builds without `Fab04_Features`. It has no Kernal Replace and no full DMA, so it can neither serve a patched KERNAL nor read the C64's ROM to patch it. It also lacks the Special button (alt-button disk switching) and the REU Special IOs. Everything this project does on the Teensy side (`d64/`, `vdrive.c`, `vdrive_io.c`, most of the glue) needs none of those. What has to change is how the C64 reaches the mailbox.
+**Hooks.** `vector/vdvec.s` points the KERNAL's RAM vectors at its own handlers: `IOPEN` `$031A`, `ICLOSE`, `ICHKIN`, `ICKOUT`, `ICLRCH`, `IBASIN`, `IBSOUT`, `IGETIN`, `ICLALL`, `ILOAD` `$0330`, `ISAVE` `$0332`, plus `IMAIN` `$0302` (below). `IGETIN` is needed because stock GETIN goes to BASIN's serial code without passing through `$0324`. A handler leaves device numbers 0-3 alone. For 4 and up it sends the Teensy the commands the KERNAL patch's hooks send: LISTEN/TALK/SECOND/TKSA/CIOUT/ACPTR/UNLSN/UNTLK and the fast LOAD/SAVE commands. So `vdrive_io.c` sees the same traffic and needs no change. On "not mine" the handler jumps through the vector value it found at install (`old`, the `JMP (old+n)` exits). That keeps real drives, JiffyDOS and wedges installed earlier working, and the stock KERNAL stays as it is, tape included. `vcall` and `bus_scan` are shared with the KERNAL patch (`patches/mailbox.inc`, `patches/vcall.inc`; the patched images are byte-identical after the move). In this build, the scan's `$FFB1`/`$FF93`/`$FFAE` calls are the unhooked real-bus routines.
+- **OPEN.** The stock OPEN touches the bus only for a serial device with a name and a secondary address. For those, the handler first sends LISTEN to the Teensy: it doubles as the ownership question and triggers the lazy bus scan when one is due. If the device is ours, the handler calls the previous OPEN with the name length set to 0, so the stock code fills the file table and sends nothing. Then SECOND, the name and UNLISTEN go to the Teensy. A table error (FILE OPEN, TOO MANY FILES) still ends the Teensy's LISTEN.
+- **CLOSE.** The CLOSE goes to the Teensy, then the entry's secondary address gets bit 7, so the previous CLOSE only removes the table entry.
+- **CHKIN / CHKOUT.** The handler looks the file up as stock `$F30F`/`$F31F` do, then sends TALK+TKSA or LISTEN+SECOND. With no secondary address it sends TALK or LISTEN alone, as stock does.
+- **CLRCHN / CLALL.** UNLISTEN/UNTALK go to the Teensy, and the defaults go back to screen and keyboard, so the previous routine sends nothing on the real bus for our devices.
+- **CHRIN / GETIN.** One ACPTR per byte when ST is 0. With ST set, the stock code returns CR without bus traffic. Bytes to and from a real drive therefore cost one extra mailbox question each, as they do through the KERNAL patch's hooks.
+- **CHROUT.** One CIOUT per byte. A comes back as the byte sent (the `PRINT` regression from the KERNAL patch).
+- **LOAD.** The fast path covers LOAD and **VERIFY** (compare instead of store; a difference sets ST bit 4 and the load goes on, as at stock `$F4FE`). The KERNAL patch can leave VERIFY to its byte-level hooks; here nothing would catch it. "SEARCHING FOR" is printed once the Teensy has said "mine".
+- **SAVE.** As `fs_hook`.
+- **Names too long for the window (128+ characters).** The handler asks with LISTEN/UNLISTEN; for our device it reports FILE NOT FOUND. There is no byte-level LOAD/SAVE in this build. OPEN sends names byte by byte, so a long name works there.
+**Install and keeping the hooks.** `SYS` to the block's first byte installs it (`SYS49152` for the VICE build). A vector that already points at us keeps its saved value, so a second `SYS` is harmless; without that check, the handlers would save themselves as "old" and loop. RESTOR (`$FF8A`: RUN/STOP+RESTORE, many programs' start-up, a reset) puts the ROM vectors back, but leaves `$0300-$0313` alone. `v_main` on `IMAIN` (BASIC's direct-mode loop) checks at each `READY.`: if `ILOAD` again holds exactly the value it replaced, it hooks again. Any other value (a wedge installed after us) is left alone. A reset also runs INITV (`$E453`), which resets `IMAIN`, so after `SYS64738` the drives stay off until the `SYS`. The plan for the TR menu is to install from `PRGLoadStartReloc` right after the handler swap (`rRegIOHSwapPoll`) and before `JMP $A7AE`, unless the launched PRG loaded over `$0300-$0333`, where it would overwrite an autostart vector. The Teensy knows the load range. The launch path does not reset the C64: `XferCopyRun` runs RESTOR itself, then streams the PRG.
+**What does not reach the drives.**
+- Anything that calls the serial routines directly: `$FFB1` LISTEN, `$FFB4` TALK, `$FF93`, `$FF96`, `$FFA5`, `$FFA8`, `$FFAB`, `$FFAE`. That includes DOS wedges and some directory readers, and our own VDCOPY and VDrive Config, which probe units with `LISTEN`+`SECOND` (they would need to probe with an OPEN of channel 15).
+- Code that calls the stock routines behind the vectors directly (`$F333`, `$F4A5`, ...).
+- Programs that call RESTOR and then never return to `READY.`.
+- Programs that install their own vectors without chaining.
+Fast loaders were never served (no drive CPU).
+**What the KERNAL build has that this one cannot:**
+- the drive numbers in the banner (38)
+- SHIFT+RUN/STOP (42)
+- `SYS64738` back to the TR menu (41)
+- the IRQ border flash (22; the Special button is TR+ only anyway)
+- device 8 for a bare `LOAD` (33). This would be possible in `v_load` (`FA` = 1 → 8), but it would take the tape away.
+**Size and placement (open).** The block is 1,124 bytes. On hardware it has two possible homes:
+- **(a) Served by the Teensy from the IO pages.** `$DE20-$DEFF` and `$DF00-$DF7F` are free with no REU, about 350 bytes. The plain TR already serves executable IO2 bytes for Epyx FastLoad. This would cost no C64 RAM, but 1.1 KB would need a bank register (a write switches the served page; execution continues in the new bank). Every opcode fetch would be an IO read, and the read-twice cure of the bus timing margin (see CLAUDE.md, "Bus timing margin") cannot protect an opcode: one late answer is a crash. A soak test (a checksummed loop running from IO2 for hours, on PAL, NTSC and a C128) has to come first. The block writes into itself (`old`), so the served page must keep writes, which the Teensy can do. VICE's GeoRAM (a 256-byte RAM window at `$DE00`, banked by `$DFFE/$DFFF`) can model "code in a banked IO page" for the mock.
+- **(b) A RAM copy,** e.g. under a lowered top of BASIC as DOS wedges do it, or at `$C000` as in the VICE build. This costs 1.1 KB and collides with programs that use that RAM.
+**Firmware.** Not started.
+- VDrive's handlers are gated on `Fab04_VDrive`, and `IOH_VDrive.c` calls `PerformDMA` and touches `KDS_State` / `KernalCheckArm` without guards.
+- A plain-TR gate would compile VDrive and VDrive+SwiftLink without `VD_KernalImage`, the `KernalCheck` re-hook, the menu probe (the lazy scan is enough), the alt button and the REU variants.
+- The plain TR's RAM budget must be measured from a `--target tr` build.
+**Testing (VICE).**
+- `make build/vdvec-vice.prg` links the block at `$C000` with the mock's mailbox at `$C800`.
+- `make test-vector` (part of `make test`) runs `tools/vdrive_mock.py STOCK vector|vecscan build/vdvec-vice.prg` on the **stock** KERNAL: the PRG is written to RAM, then `SYS49152`.
+- `vector` (no real drives):
+  - nothing reaches the mailbox before the `SYS`; a second `SYS` is harmless
+  - the scan, directory, LOAD (fast, BIG intact), VERIFY OK and VERIFY ERROR
+  - 127/130-character names, the CHROUT regression, SAVE (fast), replace, 63, `@0:`, a SEQ round trip
+  - `SEQTEST`, `DOSTEST`, `BLKTEST`, `RELTEST`, `DOS2TEST`, `CDTEST`
+  - RUN/STOP+RESTORE (a jump to the NMI routine's `$FE66`) heals through `IMAIN`; a reset (`$FCE2`) needs the `SYS` again
+  - a dead mailbox falls back to the stock code
+- `vecscan` (true-drive 1541s at 8 and 10, ours at 9 and 11):
+  - both error channels in one BASIC line (the real 1541's `CBM DOS V2.6 1541` through the chained stock code, then `73 TRVDRIVE`)
+  - `FILE NOT FOUND` from the real drives, 5000 bytes from the real 1541 through the chained stock LOAD, the USB unit
+  - byte-by-byte BASIC copies real → ours → real → ours, byte-exact (CHKIN/CHKOUT alternating between a real drive and ours)
+- VDSUITE is not run here: its default-device and `SYS64738` checks are KERNAL-build features.
+**Hardware, when a board is available:** the IO-execution soak test first, then the placement decision, the firmware gate and the menu install.
