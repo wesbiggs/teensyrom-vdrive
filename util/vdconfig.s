@@ -37,6 +37,16 @@ TXTCOL  = $0286
 DEV0REG = $DE16         ; vdrive: current device number of the SD unit, $DE17 the USB unit (0 = none)
 MBXCMD  = $DE10         ; vdrive mailbox (d64/vdrive_io.h): command register ...
 MBXSTAT = $DE13         ; ... and its answer token
+MBXARG  = $DE11         ; argument (the device for the fast open)
+MBXDATA = $DE12         ; result byte (the fast open's error, a block's byte count)
+MBXST   = $DE14         ; IEC status bits of the answer ($40 EOI: the last block)
+MBXLEN  = $DE15         ; name length for the fast open
+WIN     = $DF80         ; the 128-byte IO2 window: the name out, the blocks in
+WINSZ   = 128
+C_FLOPEN = 9            ; FLOAD_OPEN / FLOAD_BLK: the fast LOAD's block transfer (d64/vdrive_io.h), used for the browser's listings
+C_FLBLK = 10
+STAT_NOTMINE = $A5
+STAT_SCAN = $3C
 VIO_MENU = 16           ; command: back to the TR menu (the Teensy resets the C64 into it)
 STAT_OK = $5A           ; answer token: done
 
@@ -481,6 +491,124 @@ perr:   jsr msgbeg
         jmp fpad
 
 ; ---------------------------------------------------------------------------------------------------------------------------------
+; ---------------------------------------------------------------------------------------------------------------------------------
+; Listings in blocks. A folder listing read with CHRIN costs one mailbox round trip per byte, which a folder of many files makes slow.
+; The KERNAL's fast LOAD reads files 128 bytes per round trip through the IO2 window (FLOAD_OPEN, then FLOAD_BLK until EOI); the
+; browser asks for its listings the same way (fopen / fget) and falls back to OPEN + CHRIN when that is not answered.
+
+; one mailbox command A: C=0 answered (A = DATA, MST = ST), C=1 not (not mine, a bus-scan request, or no answer in about a second)
+mcall:  sta MBXCMD
+        lda #0
+        sta MW0
+        sta MW1
+@w:     lda MBXSTAT
+        cmp #STAT_OK
+        beq @ok
+        cmp #STAT_NOTMINE
+        beq @no
+        cmp #STAT_SCAN
+        beq @no
+        inc MW0
+        bne @w
+        inc MW1
+        bne @w
+@no:    sec
+        rts
+@ok:    lda MBXST               ; each answer byte read twice in a row until two agree, as the KERNAL does
+        cmp MBXST
+        bne @ok
+        sta MST
+@d:     lda MBXDATA
+        cmp MBXDATA
+        bne @d
+        clc
+        rts
+
+; open the listing named in CMD (CMDLEN bytes) on DV for fget: C=0 open; C=1 not, ENUM = the drive's error if it refused (else 0:
+; a name of 128 bytes or more, or no answer: use OPEN + CHRIN)
+fopen:  lda #0
+        sta FAST
+        sta ENUM
+        ldy CMDLEN
+        bmi @no                 ; >= WINSZ: does not fit the window
+        ldy #0
+@nm:    lda CMD,y               ; the name -> window, each byte read back
+        sta WIN,y
+        cmp WIN,y
+        bne @nm
+        iny
+        cpy CMDLEN
+        bne @nm
+        sty MBXLEN
+        lda DV
+        sta MBXARG
+        lda #C_FLOPEN
+        jsr mcall
+        bcs @no
+        cmp #0
+        bne @err
+        lda #2                  ; the window holds the two load address bytes: fget hands them out first, as CHRIN would
+        sta FN
+        lda #0
+        sta FI
+        sta FEND
+        lda #$80
+        sta FAST
+        clc
+        rts
+@err:   jsr rdel                ; why (62 for a folder that is not there, ...)
+@no:    sec
+        rts
+
+; the next byte of the listing: from the block reader after fopen, else CHRIN
+rdb:    bit FAST
+        bmi fget
+        jmp CHRIN
+
+; the next byte of a listing opened by fopen, with STATUS as CHRIN from a serial file leaves it: $40 with the last byte, $42 when
+; nothing is left (a byte 0 then) or a block was not answered. X, Y kept.
+fget:   stx FGX
+        ldx FI
+        cpx FN
+        bcc @have
+        lda FEND
+        bne @past               ; the last block was used up
+        lda #C_FLBLK
+        jsr mcall
+        bcs @past
+        sta FN                  ; 0..128 bytes in the window
+        lda MST
+        and #$40
+        sta FEND                ; EOI: this is the last block
+        ldx #0
+        stx FI
+        cpx FN
+        bcc @have
+@past:  lda #$40
+        sta FEND
+        lda STATUS
+        ora #$42
+        sta STATUS
+        lda #0
+        ldx FGX
+        rts
+@have:  lda WIN,x
+        cmp WIN,x
+        bne @have
+        inx
+        stx FI
+        cpx FN
+        bcc @out
+        pha
+        lda FEND
+        beq @more
+        lda STATUS              ; the last byte of the last block
+        ora #$40
+        sta STATUS
+@more:  pla
+@out:   ldx FGX
+        rts
+
 ; Read the error channel of logical file A: ERRBUF = "NN,MESSAGE,TT,SS", ENUM = NN (255 = not understood).
 rdel:   lda EL
 rderr:  tax
@@ -2071,6 +2199,10 @@ blist:  lda #0
         lda #'/'
         jsr fch
 @s:     jsr scr
+        jsr fopen               ; in blocks when the drive answers that
+        bcc @go
+        lda ENUM
+        bne @cant               ; it refused, with a reason
         lda #1
         ldx DV
         ldy #0
@@ -2078,7 +2210,7 @@ blist:  lda #0
         jsr rdel
         lda ENUM
         beq @rd
-        lda #1
+@cant:  lda #1
         jsr CLOSE
         jsr msgbeg
         PS "Cannot list: "
@@ -2086,13 +2218,13 @@ blist:  lda #0
         jmp fpad
 @rd:    ldx #1
         jsr CHKIN
-        lda #0
+@go:    lda #0
         sta STATUS
-        jsr CHRIN               ; load address
-        jsr CHRIN
-@line:  jsr CHRIN               ; link
+        jsr rdb                 ; load address
+        jsr rdb
+@line:  jsr rdb                 ; link
         sta T0
-        jsr CHRIN
+        jsr rdb
         ora T0
         sta T0
         lda STATUS
@@ -2100,11 +2232,11 @@ blist:  lda #0
         bne @end
         lda T0
         beq @end
-        jsr CHRIN               ; line number (blocks)
-        jsr CHRIN
+        jsr rdb                 ; line number (blocks)
+        jsr rdb
         lda #0
         sta LLEN
-@ch:    jsr CHRIN
+@ch:    jsr rdb
         sta CH
         lda STATUS
         sta RS
@@ -2394,4 +2526,12 @@ BR:     .res 1
 Q1:     .res 1
 Q2:     .res 1
 NLN:    .res 1
+FAST:   .res 1              ; $80: the listing comes from fget
+FI:     .res 1              ; fget: next byte in the window,
+FN:     .res 1              ; bytes in it,
+FEND:   .res 1              ; $40 once the last block came
+FGX:    .res 1
+MST:    .res 1              ; mcall: the answer's ST
+MW0:    .res 1
+MW1:    .res 1
 THN:    .res 7              ; the colours being read (THEME takes them when all seven came)

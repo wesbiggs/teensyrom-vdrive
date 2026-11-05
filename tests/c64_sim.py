@@ -7,7 +7,9 @@ CHRIN, CHROUT, GETIN, PLOT, LISTEN, SECOND, UNLSN. Any other jump into the ROM a
 codes and the two character sets (CHR$(14) / CHR$(142); row() shows what the set displays: in the lower-case set $41-$5A as
 small letters and $C1-$DA as capitals), keys come from a script. run() returns "key" when the program waits for a key it does not
 have, "end" when it returns to BASIC and "menu" when it writes the vdrive mailbox's VIO_MENU command (the Teensy would reset the
-C64 into the TR menu then; answered at $DE13 unless menu_answer is False).
+C64 into the TR menu then; answered at $DE13 unless menu_answer is False). The fast LOAD's block commands FLOAD_OPEN / FLOAD_BLK are
+answered from the drive as well (the name and the blocks in the IO2 window at $DF80, DATA $DE12, ST $DE14), unless fast is False
+("not mine": the program must fall back to OPEN + CHRIN); fast_blocks counts the blocks sent.
 Kept from the real KERNAL on purpose: CHRIN from a serial file answers CR without reading while ST ($90) is not 0, every read ORs its
 bits into ST, and bytes sent to a file reach the drive at UNLISTEN (CLRCHN / CLOSE), so a command is one PRINT#."""
 from py65.devices.mpu6502 import MPU
@@ -69,9 +71,10 @@ def petscii(s): return "".join(chr(ord(c) - 32) if "a" <= c <= "z" else c for c 
 
 
 class C64:
-    MBXCMD, MBXSTAT, VIO_MENU = 0xDE10, 0xDE13, 16
+    MBXCMD, MBXARG, MBXDATA, MBXSTAT, MBXST, MBXLEN, WIN, VIO_MENU, FLOAD_OPEN, FLOAD_BLK = 0xDE10, 0xDE11, 0xDE12, 0xDE13, 0xDE14, 0xDE15, 0xDF80, 16, 9, 10
+    FL = "fast-load"                                    # the drive channel the fast commands use
 
-    def __init__(self, prg, drive, mem=None, menu_answer=True):
+    def __init__(self, prg, drive, mem=None, menu_answer=True, fast=True):
         prg = bytes(prg)
         self.cpu = c = MPU(memory=ObservableMemory())
         self.mem = c.memory
@@ -84,6 +87,7 @@ class C64:
         self.files, self.inp, self.outp, self.wbuf, self.cmdbuf = {}, None, None, bytearray(), {}
         self.lfs, self.name, self.ldev, self.steps = (0, 0, 0), "", None, 0
         self.menu, self.menu_answer = False, menu_answer
+        self.fast, self.fast_blocks, self.fast_opens = fast, 0, 0
         self.mem.subscribe_to_write([self.MBXCMD], self.mbx_cmd)
         c.sp = 0xF6
         self.push((END - 1) >> 8); self.push((END - 1) & 0xFF)
@@ -128,6 +132,34 @@ class C64:
             else: self.keys.append(k)
 
     def mbx_cmd(self, addr, v):
+        m = self.mem
+        if v in (self.FLOAD_OPEN, self.FLOAD_BLK):
+            if not self.fast: m[self.MBXSTAT] = 0xA5; return
+            m[self.MBXST] = 0
+            if v == self.FLOAD_OPEN:                    # as fload_open in d64/vdrive_io.c: OPEN on secondary 0, the first two bytes
+                self.fast_opens += 1
+                self.drive.close(self.FL)
+                name = bytes(m[self.WIN:self.WIN + m[self.MBXLEN]]).decode("latin1")
+                dev = m[self.MBXARG]
+                if dev not in self.drive.units: m[self.MBXDATA] = 5
+                else:
+                    self.drive.open(self.FL, dev, 0, name)
+                    if self.drive.chans[self.FL].kind != "r": self.drive.close(self.FL); m[self.MBXDATA] = 4
+                    else:
+                        for i in range(2): m[self.WIN + i] = self.drive.get(self.FL)
+                        m[self.MBXDATA] = 0
+            else:                                       # fload_blk: up to 128 bytes, ST $40 with the last block, then the channel closes
+                n, st = 0, 0x40
+                if self.FL in self.drive.chans:
+                    st = 0
+                    while n < 128:
+                        m[self.WIN + n] = self.drive.get(self.FL); n += 1
+                        if self.drive.st & 0x40: st = 0x40; break
+                    if st: self.drive.close(self.FL)
+                    self.fast_blocks += 1
+                m[self.MBXDATA] = n; m[self.MBXST] = st
+            m[self.MBXSTAT] = 0x5A
+            return
         if v != self.VIO_MENU: raise RuntimeError("mailbox command %d, not modelled" % v)
         self.mem[self.MBXSTAT] = 0x5A if self.menu_answer else 0x80
         self.menu = self.menu_answer

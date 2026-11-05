@@ -171,7 +171,7 @@ CONFIG = ("# my disks\r\n/GAMES/ZORK.D64, 5, 2\r\n/UTIL/TOOLS.D64,7\r\n\r\n/BIG.
 
 
 class T(unittest.TestCase):
-    def start(self, sd=None, usb=None, cfg=CONFIG, usb_cfg=None, devs=(8, 9), mounted=None):
+    def start(self, sd=None, usb=None, cfg=CONFIG, usb_cfg=None, devs=(8, 9), mounted=None, fast=True):
         files = make_sd() if sd is None else sd
         if cfg is not None: files["/vdrive-config.txt"] = cfg.encode()
         ufiles = None
@@ -180,7 +180,7 @@ class T(unittest.TestCase):
             if usb_cfg is not None: ufiles["/vdrive-config.txt"] = usb_cfg.encode()
         self.drive = FakeDrive(files, ufiles)
         if mounted: self.drive.units[8].mounted = mounted; self.drive.units[8].cwd = mounted.rpartition("/")[0]
-        self.b = C64(PRG, self.drive, {56854: devs[0], 56855: devs[1], 53280: 14, 53281: 6, 646: 14})
+        self.b = C64(PRG, self.drive, {56854: devs[0], 56855: devs[1], 53280: 14, 53281: 6, 646: 14}, fast=fast)
         self.assertEqual(self.b.run(), "key")
         return self.b
 
@@ -371,6 +371,46 @@ class T(unittest.TestCase):
         self.assertEqual(self.drive.units[8].mounted, "/big.d81")
         self.assertEqual(self.row(1), "SD  8: /big.d81"); self.assertEqual(self.row(20), "Mounted")
         self.assertEqual(self.config(), CONFIG, "mounting from the browser does not touch the list")
+
+    # ---- the browser's listings in 128-byte blocks (FLOAD_OPEN / FLOAD_BLK), OPEN + CHRIN when those are not answered ----
+    def browse_screens(self, sd=None, fast=True, path=()):
+        self.start(sd=sd, fast=fast)
+        self.keys("b", *path)
+        return [self.row(r) for r in range(1, 25)]
+
+    def test_browser_reads_listings_in_blocks(self):
+        rows = self.browse_screens()
+        self.assertGreaterEqual(self.b.fast_opens, 1)
+        self.assertGreaterEqual(self.b.fast_blocks, 1)
+        self.assertTrue(any("big.d81" in r for r in rows), rows)
+        self.assertFalse(any(c.dev == 8 and c.name == "0" for c in self.drive.chans.values()), "no channel left open")
+
+    def test_browser_falls_back_to_byte_reads(self):
+        fast = self.browse_screens(fast=True, path=(DOWN, RET))
+        slow = self.browse_screens(fast=False, path=(DOWN, RET))
+        self.assertEqual(self.b.fast_blocks, 0)
+        self.assertEqual(fast, slow)
+
+    def test_browser_big_folder(self):
+        sd = make_sd()
+        sd["/many"] = None
+        for i in range(400): sd["/many/prog%03d.prg" % i] = b"x"                       # what the browser skips
+        for i in range(150): sd["/many/disk%03d.d64" % i] = IMG                         # more images than it keeps (MAXB = 100)
+        fast = self.browse_screens(sd=sd, path=(DOWN, DOWN, RET))
+        self.assertTrue(self.row(3).startswith("Browse: /many"), self.row(3))
+        self.assertTrue(any("disk000.d64" in r for r in fast), fast)
+        n = len(self.drive.listing(self.drive.units[8], "/many"))
+        self.assertLessEqual(self.b.fast_blocks, 2 + (n + 127) // 128 + 2, "one block per 128 bytes (root and /many)")
+        slow = self.browse_screens(sd=sd, fast=False, path=(DOWN, DOWN, RET))
+        self.assertEqual(fast, slow)
+
+    def test_browser_folder_gone(self):
+        for fast in (True, False):
+            self.start(fast=fast)
+            self.keys("b")
+            del self.drive.units[8].files["/games"]                                     # gone between the listing and the RETURN
+            self.keys(DOWN, RET)
+            self.assertEqual(self.row(20), "Cannot list: file not found", fast)     # the drive's 62, from the error channel either way
 
     def test_edit(self):
         self.start()

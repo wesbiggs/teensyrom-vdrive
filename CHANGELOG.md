@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.9.0.50
+
+### Changed
+- **VDrive Config's browser reads folder listings in 128-byte blocks**, the way the KERNAL's fast `LOAD` does (`FLOAD_OPEN` /
+  `FLOAD_BLK` through the IO2 window), instead of one mailbox round trip per byte. Folders with many files open much faster (reported
+  slow on a MEGA65 with a full card). Falls back to `OPEN` + `CHRIN` when the block commands are not answered. `docs/DESIGN.md`
+  section 47; py65 tests; not on hardware. Firmware only (VDrive Config is in the TR menu); `kernal-tr.bin` is unchanged.
+
 ## v0.9.0.49
 
 ### Added

@@ -8,7 +8,7 @@ real IEC code, so physical drives keep working. LOAD/SAVE have block-transfer fa
 second, the first free numbers from 8 up: the KERNAL probes the real bus on the first disk access of a run) or fixed from BASIC with
 `OPEN15,8,15,"U0>"+CHR$(n)` (kept in EEPROM, `CHR$(0)` = automatic, no reflash). Names and `CD` take paths: `LOAD"$/GAMES/G.D64",8`.
 
-Full design and per-milestone notes: `docs/DESIGN.md` (sections 1-46, in order of construction).
+Full design and per-milestone notes: `docs/DESIGN.md` (sections 1-47, in order of construction).
 Firmware integration and usage: `firmware/README.md`.
 
 ## Status (read this first)
@@ -121,6 +121,9 @@ Firmware integration and usage: `firmware/README.md`.
   in menu IO1 offsets 60-63 (`$DE3C-$DE3F`, unused between 52 and `StartSIDRegs`), updated when the probe ends and cleared by every other PreStart (`VDrive_ProbeStep`). `vd_head` copies the image bytes
   to `RES` ($FC/$FD), else the registers when the tag reads right; the stock line prints the ROM's own text at `$E49B` (all five ROMs have it; build.py checks; its INITMS check had never run, `E444` -> `E43D`).
   Banner area 312 of 314 bytes. py65 (`test_banner.py`), `tests/fw_host`; **not on hardware**. Note: RAM does not survive a MEGA65 reset (Boris), but a launch is no reset.
+* 0.9.0.50: VDrive Config's browser lists folders in 128-byte blocks (`fopen`/`fget`/`mcall` in `util/vdconfig.s`: `FLOAD_OPEN` with the `$/path/` name in the window, then `FLOAD_BLK` until EOI;
+  `rdb` picks `fget` or `CHRIN`), falling back to `OPEN` + `CHRIN` when not answered (`$A5`, `$3C`, time-out, a name of 128+). Reported slow by Boris (MEGA65, a full card; CBM FileBrowser, which uses `LOAD`, was fast).
+  `tests/c64_sim.py` answers the two commands from the drive model (`fast=False`: not mine); `test_vdconfig.py` block/fallback/big-folder/error cases. PRG ends at `$1FA3` (BSS `$2000`). **Not on hardware.**
 * Default device 8 for `LOAD`/`SAVE`/`VERIFY` without a number, as on the SX-64 (`P_E1DA` in `patches/vdrive.s`, docs/DESIGN.md 33). KERNAL only; VICE `basic` run; **not on hardware yet**. Rebuild `kernal-tr.bin`.
 * 0.9.0.32: bad sectors from the image's error table (the trailing error-info bytes): reads of a sector marked bad fail with its DOS code (`d64_t.errtab`, `D64_E_BADSEC`, `d64_t.bad`, `read_err()` in `vdrive.c`; the firmware keeps a RAM2 copy only when the table marks something bad; docs/DESIGN.md 35). Write errors (25/26/28) not emulated; a write does not repair a bad sector. Unit and glue host tests; VICE and hardware through VDSUITE `5` (reads only).
 * 0.9.0.34: SwiftLink Tx fix to upstream (was `firmware/swiftlink-tx-fix.patch`; merged upstream as PR #80 in `6518b966`, patch dropped). NativeEthernet's `client.write()` busy-waits for send-buffer space;
