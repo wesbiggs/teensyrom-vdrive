@@ -666,6 +666,49 @@ Fast loaders were never served (no drive CPU).
 **Size and placement (open).** The block is 1,124 bytes. On hardware it has two possible homes:
 - **(a) Served by the Teensy from the IO pages.** `$DE20-$DEFF` and `$DF00-$DF7F` are free with no REU, about 350 bytes. The plain TR already serves executable IO2 bytes for Epyx FastLoad. This would cost no C64 RAM, but 1.1 KB would need a bank register (a write switches the served page; execution continues in the new bank). Every opcode fetch would be an IO read, and the read-twice cure of the bus timing margin (see CLAUDE.md, "Bus timing margin") cannot protect an opcode: one late answer is a crash. A soak test (a checksummed loop running from IO2 for hours, on PAL, NTSC and a C128) has to come first. The block writes into itself (`old`), so the served page must keep writes, which the Teensy can do. VICE's GeoRAM (a 256-byte RAM window at `$DE00`, banked by `$DFFE/$DFFF`) can model "code in a banked IO page" for the mock.
 - **(b) A RAM copy,** e.g. under a lowered top of BASIC as DOS wedges do it, or at `$C000` as in the VICE build. This costs 1.1 KB and collides with programs that use that RAM.
+
+**IO-page layouts, sized (2026-11-05).** VICE's GeoRAM is a faithful enough model of Teensy-served code. A spike confirmed:
+- Code runs from its `$DE00` page.
+- A `STA $DFFE` in the middle of a routine carries on at the next address in the new page.
+- Writes stay with their own page.
+- The binary monitor can switch pages (with side effects) for inspection.
+- The image loads from a file (`-georam -georamsize 512 -georamimage`, `+georamimagerw`).
+
+Sizes in bytes, from the listing:
+
+| Routine | Bytes |
+|---|---|
+| install hook + tables | 102 |
+| `vcall` | 101 |
+| `bus_scan` | 73 |
+| the byte-level primitives | 61 |
+| OPEN | 97 |
+| CLOSE | 51 |
+| CHKIN/CHKOUT | 105 |
+| CLRCHN/CLALL | 43 |
+| CHRIN/GETIN/CHROUT | 61 |
+| LOAD | 162 |
+| SAVE | 150 |
+| name helpers | 53 |
+| IMAIN | 22 |
+| `find` | 14 |
+| `old` table and entry jump | 27 |
+
+What decides the layout is re-entrancy. LOAD, SAVE, OPEN and CHKIN/CHKOUT call ROM routines that come back in through our own vectors while the handler is still running: "SEARCHING"/"LOADING"/"SAVING" go through CHROUT, and the error exits (`$F715`) go through CLRCHN. So CHROUT, CLRCHN and everything they use (`vcall`, the primitives) must be reachable without a bank switch.
+
+Two layouts fit that rule:
+- **(a1) Resident + overlays.** A fixed part in IO1 holds `old`, the entry gates, `vcall`, the primitives, CHRIN/GETIN/CHROUT, CLRCHN/CLALL and IMAIN. The big handlers are 128-byte overlays in IO2 `$DF00-$DF7F` behind a bank register:
+  - one overlay each for hook, OPEN, CLOSE, CHKIN/CHKOUT and `bus_scan`
+  - two each for LOAD and SAVE
+  
+  A nested call only ever reaches the resident part, so no bank has to be saved and restored; `old` is read through `JMP (old+n)` from any overlay. The resident part comes to about 300 bytes (about 270 if CHRIN/GETIN merge, the primitives become one `prim` with the command in Y, and `vcall`'s scan branch moves to its overlay), against 224 in `$DE20-$DEFF`. It fits only if the mailbox registers move to the end of IO1 (240 bytes; possible because this build's KERNAL side and firmware are built together) or the data window shrinks to 64 bytes. VICE model: the resident part in RAM (standing in for IO1), the overlays in the GeoRAM page at `$DE00` capped at 128 bytes (standing in for IO2).
+- **(b) A small agent with the logic on the Teensy.** About 250 bytes of 6502 code, unbanked:
+  - 12 entry stubs
+  - a send/wait loop
+  - a few operations the Teensy sends back: return with A/X/Y/C, chain to the old vector, store a run of bytes from the window into RAM, copy RAM into the window, compare (for VERIFY), call a ROM routine and report back
+  
+  OPEN/CLOSE/CHKIN/... and the file table become C on the Teensy (host-testable), on top of `vdrive_mailbox` and the fast LOAD/SAVE code. The agent keeps nothing in the IO page across a call, so a nested entry during a ROM call is just a second request that the Teensy answers while the first waits. The cost is a new mailbox protocol layer, and a call that needs RAM contents (OPEN's name) takes one more round trip. VICE model: the agent in the GeoRAM page at `$DE00`.
+
 **Firmware.** Not started.
 - VDrive's handlers are gated on `Fab04_VDrive`, and `IOH_VDrive.c` calls `PerformDMA` and touches `KDS_State` / `KernalCheckArm` without guards.
 - A plain-TR gate would compile VDrive and VDrive+SwiftLink without `VD_KernalImage`, the `KernalCheck` re-hook, the menu probe (the lazy scan is enough), the alt button and the REU variants.
