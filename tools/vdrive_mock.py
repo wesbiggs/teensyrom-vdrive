@@ -7,9 +7,12 @@ transport is faked here.
 Drives x64sc through its binary monitor: a store-checkpoint on MBX+0 (CMD)
 stops the CPU, this script plays the Teensy (state machine for IEC devices
 8/9 backed by a tiny in-memory 'disk'), writes DATA/STAT/ST and resumes.
-usage: vdrive_mock.py KERNAL.bin [basic|scan]
-  basic  the whole feature test, no physical drives (the SD drive ends up as device 8 after the start-up scan)
-  scan   physical 1541s at 8 and 10: the SD and USB drives must end up at 9 and 11
+usage: vdrive_mock.py KERNAL.bin [basic|scan|variant]
+       vdrive_mock.py STOCK.bin vector|vecscan VDVEC.prg
+  basic    the whole feature test, no physical drives (the SD drive ends up as device 8 after the start-up scan)
+  scan     physical 1541s at 8 and 10: the SD and USB drives must end up at 9 and 11
+  vector   the plain-TeensyROM build (vector hooks, docs/DESIGN.md 45) on the stock KERNAL: VDVEC.prg goes to RAM, SYS installs it
+  vecscan  the same with physical 1541s at 8 and 10: chaining to the real drives, copies between a real drive and ours
 """
 import socket, struct, subprocess, sys, time, threading, queue
 
@@ -109,8 +112,9 @@ class Mon:
             out.append(row.rstrip())
         return out
 
-def main(kernal, scenario="basic"):
-    scan = scenario == "scan"
+def main(kernal, scenario="basic", vecprg=None):
+    vector = scenario in ("vector", "vecscan")
+    scan = scenario in ("scan", "vecscan")
     workdir = pathlib.Path(tempfile.mkdtemp())
     drives = ["-drive8type", "0"]
     if scan:       # real 1541s at 8 and 10, each with a blank disk so that a LOAD gets a quick FILE NOT FOUND instead of a long "no disk" wait
@@ -120,9 +124,11 @@ def main(kernal, scenario="basic"):
         real = {"rprg": b"\x00\x40" + bytes(rnd.randrange(256) for _ in range(5000)),         # a PRG of 20 sectors
                 "rseq": bytes([13, 0, 10, 255, 34, 44, 58] * 400),                                 # SEQ with CR, NUL, quotes, commas
                 "test": b"\x01\x08" + b"real drive version"}                                      # exists on the SD already
+        if vector:                                                                                # a short SEQ for the byte-by-byte copies
+            real["rsml"] = bytes([13, 0, 10, 255, 34, 44, 58, 65, 66, 67] * 12)
         for nm_, data in real.items():
             (workdir / (nm_ + ".bin")).write_bytes(data)
-            subprocess.run(["c1541", "-attach", str(workdir / "real8.d64"), "-write", str(workdir / (nm_ + ".bin")), nm_ + (",s" if nm_ == "rseq" else "")],
+            subprocess.run(["c1541", "-attach", str(workdir / "real8.d64"), "-write", str(workdir / (nm_ + ".bin")), nm_ + (",s" if nm_ in ("rseq", "rsml") else "")],
                            check=True, capture_output=True)
         drives = ["-drive8type", "1541", "-drive8truedrive", "-drive9type", "0", "-drive10type", "1541", "-drive10truedrive", "-drive11type", "0",
                   "-8", str(workdir / "real8.d64"), "-10", str(workdir / "real10.d64")]
@@ -283,6 +289,10 @@ def main(kernal, scenario="basic"):
                   i is not None and "SEARCHING FOR *" in scr[i:] and "RUN" in scr[i:] and "HI" in scr[i:])
             check("SHIFT+RUN: text colour ($0286) untouched", m.read(0x0286, 1) == col)
 
+        if vector:
+            good = vector_tests(m, run, check, service, log, disk, big, workdir, pathlib.Path(vecprg).read_bytes(), cp_num,
+                                real if scan else None)
+            return 0 if good and ok else 1
         banner = " 64K RAM  38911 FREE  VDRIVE " + ("SD 9 USB11" if scan else "SD 8 NOUSB")
         check("banner: %r (the KERNAL probed the bus itself at power-on)" % banner, banner in m.screen())
         if scan:
@@ -642,5 +652,158 @@ def main(kernal, scenario="basic"):
         vice.terminate()
         shutil.rmtree(workdir, ignore_errors=True)
 
+def vector_tests(m, run, check, service, log, disk, big, workdir, vec, cp_num, real):
+    """The plain-TeensyROM build (vector/vdvec.s) on the stock KERNAL. `real` is set in vecscan (true-drive 1541s at 8 and 10)."""
+    res = {"ok": True}
+    def chk(label, cond):
+        check(label, cond); res["ok"] = res["ok"] and bool(cond)
+    def expect(keys, want=None, absent=None):
+        n = len(log); run(keys, want, absent)
+        scr = m.screen()
+        good = (want is None or any(want in r for r in scr)) and not (absent and any(absent in r for r in scr))
+        res["ok"] = res["ok"] and good
+        return log[n:]
+    def prog(name, dev, answers, want, wait=3.0):
+        expect('NEW\r'); expect('LOAD"%s",%d\r' % (name.upper(), dev), "READY.")
+        m.keys('RUN\r'); service(1.0)
+        for a in answers:
+            m.keys(a + '\r'); service(wait)
+        norm = [" ".join(r.split()) for r in m.screen()]
+        good = all(any(" ".join(e.split()) in r for r in norm) for e in want)
+        chk("BASIC program %s: %s" % (name, want), good)
+        if not good: print("\n".join(m.screen()))
+    def file_on(d, name):
+        img = workdir / "vec_after.d64"; img.write_bytes(d.dump())
+        out = workdir / "vec.out"; out.unlink(missing_ok=True)
+        subprocess.run(["c1541", "-attach", str(img), "-read", name, str(out)], capture_output=True)
+        return out.read_bytes() if out.exists() else b""
+
+    D = 9 if real else 8                               # the SD unit after the scan
+    start = struct.unpack_from("<H", vec, 0)[0]
+    expect('LOAD"$",%d\r' % D, "DEVICE NOT PRESENT")
+    chk("not installed: the stock KERNAL, nothing reached the mailbox", not log)
+    m.write(start, vec[2:])
+    expect('SYS%d\r' % start, "READY.")
+    v_load = bytes(m.read(0x0330, 2))
+    chk("SYS: ILOAD points into the hooks ($%04X)" % struct.unpack("<H", v_load)[0],
+        start <= struct.unpack("<H", v_load)[0] < start + len(vec) - 2)
+    expect('SYS%d\r' % start, "READY.")                # twice: must not save its own handlers as the "old" vectors (an endless loop)
+    expect('LOAD"$",%d\r' % D, "SEARCHING FOR $")
+    expect('LIST\r', '0 "MOCKDISK')
+    want_scan = [(14, 0), (15, 9), (15, 11)] if real else [(14, 0), (15, 8)]
+    chk("the first transaction ran the bus scan: %r" % [(e[0], e[1]) for e in log if e[0] in (14, 15)],
+        [(e[0], e[1]) for e in log if e[0] in (14, 15)] == want_scan)
+
+    if real:
+        # both error channels in one line: the real 1541 through the chained stock code, ours through the mailbox
+        expect('NEW\r')
+        expect('10 OPEN1,8,15:INPUT#1,A,B$:CLOSE1:OPEN2,9,15,"UI":INPUT#2,C,D$:CLOSE2\r')
+        expect('20 PRINT A;B$;"/";C;D$\r')
+        expect('RUN\r', "CBM DOS V2.6 1541/ 73 TRVDRIVE")
+        new = expect('LOAD"X",8\r', "FILE NOT FOUND", absent="DEVICE NOT PRESENT")
+        expect('LOAD"X",10\r', "FILE NOT FOUND", absent="DEVICE NOT PRESENT")
+        expect('LOAD"X",12\r', "DEVICE NOT PRESENT")
+        chk("a LOAD from 8 asks the mailbox and is not ours", all(e[4] for e in new if e[0] == 9))
+        expect('NEW\r')
+        m.keys('\x93LOAD"RPRG",8,1\r')                      # the stock load from the true drive sends nothing to the mailbox:
+        for _ in range(60):                                 # wait for its READY. on a cleared screen
+            service(1.0, limit=1)
+            if any("READY." in r for r in m.screen()): break
+        chk("RPRG (5000 bytes) from the real 1541 through the chained stock LOAD", bytes(m.read(0x4000, 5000)) == real["rprg"][2:])
+        expect('LOAD"$",11\r', "SEARCHING FOR $")
+        expect('LIST\r', '0 "USBDISK')
+        # byte-by-byte copies through BASIC: real -> ours, ours -> real, real -> ours (CHKIN / CHKOUT alternating between the two)
+        def copy(src, sname, dst, dname):
+            expect('NEW\r')
+            expect('10 OPEN2,%d,2,"%s,S,R":OPEN3,%d,3,"%s,S,W"\r' % (src, sname, dst, dname))
+            expect('20 GET#2,A$:S=ST:IFA$=""THENA$=CHR$(0)\r')
+            expect('30 PRINT#3,A$;:IFS=0THEN20\r')
+            expect('40 CLOSE2:CLOSE3:PRINT"COPIED";S\r')
+            m.keys('RUN\r')
+            for _ in range(60):
+                service(1.0, limit=3)
+                if any("COPIED" in r for r in m.screen()): break
+            chk("BASIC copy %s,%d -> %s,%d ends at EOI" % (sname, src, dname, dst), any("COPIED 64" in r for r in m.screen()))
+        copy(8, "RSML", 9, "CP")
+        chk("real -> ours: CP == RSML byte for byte", file_on(disk, "cp,s") == real["rsml"])
+        copy(9, "CP", 10, "BACK")
+        copy(10, "BACK", 9, "CP2")
+        chk("ours -> real -> ours: CP2 == RSML byte for byte", file_on(disk, "cp2,s") == real["rsml"])
+
+    # --- LOAD / VERIFY / SAVE ---
+    expect('NEW\r')
+    expect('LOAD"TEST",%d\r' % D, "READY.")
+    expect('LIST\r', '10 PRINT"HI"')
+    expect('LOAD"NOPE",%d\r' % D, "FILE NOT FOUND")
+    n0 = len(log)
+    expect('LOAD"BIG",%d,1\r' % D, "READY.")
+    chk("BIG (6000 bytes) loaded to $2000 intact", bytes(m.read(0x2000, len(big) - 2)) == big[2:])
+    chk("LOAD went the fast way (no byte-level ACPTR)", any(e[0] == 10 for e in log[n0:]) and not any(e[0] == 6 for e in log[n0:]))
+    expect('VERIFY"BIG",%d,1\r' % D, "OK")
+    m.write(0x2000 + 3000, [m.read(0x2000 + 3000, 1)[0] ^ 0xFF])
+    expect('VERIFY"BIG",%d,1\r' % D, "VERIFY  ERROR")
+    new = expect('N$="":FORI=1TO127:N$=N$+"X":NEXT:LOAD N$,%d\r' % D, "FILE NOT FOUND")
+    chk("127-character name: the fast open", any(e[0] == 9 for e in new))
+    new = expect('N$="":FORI=1TO130:N$=N$+"X":NEXT:LOAD N$,%d\r' % D, "FILE NOT FOUND")
+    chk("130-character name: asked with LISTEN, refused (no byte-level LOAD in this build)",
+        not any(e[0] == 9 for e in new) and any(e[0] == 1 and not e[4] for e in new))
+    expect('NEW\r')
+    expect('OPEN2,%d,2,"NUMTST,S,W"\r' % D)
+    expect('PRINT#2,1;"A";2:PRINT#2,12;34\r', None, absent="SYNTAX")     # CHROUT returns the byte sent
+    expect('CLOSE2\r')
+    expect('OPEN15,%d,15,"S:NUMTST":CLOSE15\r' % D)
+    expect('NEW\r'); expect('10 PRINT"SAVED"\r')
+    new = expect('SAVE"SAVEME",%d\r' % D, "SAVING SAVEME")
+    chk("SAVE went the fast way", any(e[0] == 12 for e in new) and not any(e[0] == 5 for e in new))
+    expect('NEW\r'); expect('LOAD"SAVEME",%d\r' % D, "READY."); expect('RUN\r', "SAVED")
+    expect('VERIFY"SAVEME",%d\r' % D, "OK")
+    expect('NEW\r'); expect('10 PRINT"V2"\r')
+    expect('SAVE"SAVEME",%d\r' % D)
+    expect('20 OPEN15,%d,15:INPUT#15,A,B$:PRINT"ER=";A;B$:CLOSE15\r' % D)
+    expect('RUN\r', "ER= 63 FILE EXISTS")
+    expect('SAVE"@0:SAVEME",%d\r' % D, "SAVING @0:SAVEME")
+    expect('NEW\r'); expect('LOAD"SAVEME",%d\r' % D, "READY."); expect('LIST\r', 'PRINT"V2"')
+    expect('NEW\r')
+    expect('10 OPEN2,%d,2,"DATA,S,W":PRINT#2,"HELLO":PRINT#2,"WORLD":CLOSE2\r' % D)
+    expect('20 OPEN3,%d,3,"DATA,S,R":INPUT#3,A$,B$:CLOSE3:PRINT"GOT:";A$;B$\r' % D)
+    expect('RUN\r', "GOT:HELLOWORLD")
+    expect('NEW\r')
+
+    if not real:
+        # the shipped BASIC test programs talk to device 8
+        prog("seqtest", 8, [""], ["SEQ TEST PASS", "CHECKED 100 LINES, 0 ERRORS"])
+        prog("dostest", 8, [""], ["10 PASSED, 0 FAILED"])
+        prog("blktest", 8, [""], ["12 PASSED, 0 FAILED"])
+        prog("reltest", 8, [""], ["14 PASSED, 0 FAILED"], wait=8.0)
+        prog("dos2test", 8, [""], ["12 PASSED, 0 FAILED"], wait=6.0)
+        prog("cdtest", 8, [""], ["6 PASSED, 0 FAILED"])
+        expect('OPEN15,8,15,"CD:MOCK.D64":CLOSE15\r')
+        expect('NEW\r')
+
+    # --- RUN/STOP+RESTORE: the NMI routine's RESTOR / IOINIT / CINT / BASIC warm start ($FE66). IMAIN survives and hooks again ---
+    m.jump(0xFE66); service(1.5, limit=15)
+    chk("RUN/STOP+RESTORE: READY. and ILOAD is ours again (%r)" % bytes(m.read(0x0330, 2)),
+        any("READY." in r for r in m.screen()) and bytes(m.read(0x0330, 2)) == v_load)
+    expect('LOAD"$",%d\r' % D, "SEARCHING FOR $")
+    expect('LIST\r', '0 "MOCKDISK')
+    # --- a reset ($FCE2): INITV resets IMAIN too, so the drives are gone until SYS ---
+    m.jump(0xFCE2); service(1.5, limit=15)
+    chk("reset: READY., the stock vectors", any("READY." in r for r in m.screen()) and bytes(m.read(0x0330, 2)) != v_load)
+    n0 = len(log)
+    expect('LOAD"$",%d\r' % D, "DEVICE NOT PRESENT")
+    chk("reset: nothing reached the mailbox", len(log) == n0)
+    expect('SYS%d\r' % start, "READY.")
+    expect('LOAD"$",%d\r' % D, "SEARCHING FOR $")
+    expect('LIST\r', '0 "MOCKDISK')
+
+    # --- dead mailbox (handler gone): every call times out and falls back to the stock code ---
+    m.req(0x13, struct.pack("<I", cp_num))
+    m.write(0xC800 + 3, [0x80])
+    expect('LOAD"X",%d\r' % D, "DEVICE NOT PRESENT")
+    if not res["ok"]: print("\n".join(m.screen()))
+    print("mailbox calls:", len(log))
+    return res["ok"]
+
+
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else "basic"))
+    sys.exit(main(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else "basic", sys.argv[3] if len(sys.argv) > 3 else None))
