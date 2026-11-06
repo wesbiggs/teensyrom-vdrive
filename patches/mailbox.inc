@@ -1,5 +1,5 @@
 ; The TR mailbox: register layout, answer tokens and command numbers (d64/vdrive_io.h). Shared by the KERNAL patch
-; (patches/vdrive.s) and the vector-hook build for the plain TeensyROM (vector/vdvec.s). MBX / WIN may be set with -D.
+; (patches/vdrive.s) and the plain TeensyROM's agent (vector/vdagent.s). MBX / WIN may be set with -D.
 ; Constants only: including it emits no bytes.
 .ifndef MBX
 MBX = $DE10

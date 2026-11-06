@@ -143,6 +143,8 @@ class VDrive:
 # ---------------------------------------------------------------------------
 # register-level view (vio_t): exactly what the 6502 / IO1+IO2 handlers see
 LIB.vio_sizeof.restype = ctypes.c_size_t
+LIB.vvec_sizeof.restype = ctypes.c_size_t
+LIB.vvec_poll.restype = ctypes.c_int
 LIB.vio_hot_sizeof.restype = ctypes.c_size_t
 LIB.vio_io1_read.restype = ctypes.c_uint8
 LIB.vio_io2_read.restype = ctypes.c_uint8
@@ -249,3 +251,12 @@ class VIO:
             self.win_write(part)
             self.call(F_SAVE_BLK, 0, len(part))
         return self.call(F_SAVE_CLOSE)[1]
+
+
+class VVec:
+    """the vector engine (d64/vdrive_vec.c) on top of a VIO: answers the agent's VV_C_VEC / VV_C_CONT, anything else goes to vio_poll"""
+    def __init__(self, io, base):
+        self.e = ctypes.create_string_buffer(LIB.vvec_sizeof())
+        LIB.vvec_init(self.e, io.v, ctypes.c_uint16(base))
+        self.io = io
+    def poll(self): return LIB.vvec_poll(self.e)
