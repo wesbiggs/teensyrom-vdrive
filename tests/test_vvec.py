@@ -19,7 +19,10 @@ class Agent:
     def __init__(self, vv, io):
         self.vv, self.io = vv, io
         self.mem = bytearray(65536)
-        for a, v in STOCK.items(): self.mem[a:a + 2] = struct.pack("<H", v)
+        for a, v in STOCK.items():
+            self.mem[a:a + 2] = struct.pack("<H", v)
+            if a >= 0x0314: self.mem[0xFD30 + a - 0x0314:0xFD32 + a - 0x0314] = struct.pack("<H", v)   # RESTOR's table
+        self.mem[0xE449:0xE44B] = struct.pack("<H", STOCK[0x0302])                                   # INITV's ($E447 = $0300)
         self.zp = dict(st=0, nfiles=0, dfltn=0, dflto=3)
 
     def w16(self, a): return self.mem[a] | self.mem[a + 1] << 8
@@ -91,6 +94,23 @@ class VVecTest(unittest.TestCase):
         self.install()                                                # again: nothing changes, the old vectors stay the stock ones
         self.assertEqual(bytes(m.mem[0x0300:0x0334]), before)
         self.assertEqual(m.call("CLRCH")[0], 0xF333, "CLRCHN with nothing of ours chains to the stock routine")
+
+    def test_launch_install_only_over_the_roms_vectors(self):
+        """the menu's PRG loader calls INSTALL with A = $A5: an autostart PRG that loaded over the vectors keeps its own"""
+        m = self.ag
+        m.mem[0x0326:0x0328] = struct.pack("<H", 0x02A7)            # the PRG's own CHROUT vector
+        before = bytes(m.mem[0x0300:0x0334])
+        t = m.call("INSTALL", a=0xA5)
+        self.assertEqual((t[0], t[4] & 1), (RTS, 1), "refused, C set")
+        self.assertEqual(bytes(m.mem[0x0300:0x0334]), before, "nothing changed")
+        m.mem[0x0326:0x0328] = struct.pack("<H", 0xF1CA)
+        m.mem[0x0302:0x0304] = struct.pack("<H", 0x1234)            # IMAIN changed (a BASIC wedge in the PRG)
+        t = m.call("INSTALL", a=0xA5)
+        self.assertEqual(t[4] & 1, 1)
+        m.mem[0x0302:0x0304] = struct.pack("<H", STOCK[0x0302])
+        t = m.call("INSTALL", a=0xA5)
+        self.assertEqual((t[0], t[4] & 1), (RTS, 0), "the ROM's vectors: hooked")
+        self.assertEqual(m.w16(0x0330), ENTRIES + 3 * E["LOAD"])
 
     def test_install_keeps_a_wedge_as_old_vector(self):
         self.ag.mem[0x0330:0x0332] = struct.pack("<H", 0xC123)       # a wedge installed before us

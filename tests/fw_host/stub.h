@@ -117,11 +117,15 @@ struct stcIOHandlers {
 struct EEPROMStub { uint8_t m[8192]; uint8_t read(int a) { return m[a]; } void write(int a, uint8_t v) { m[a] = v; } };
 extern EEPROMStub EEPROM;
 enum { eepAdVDriveDevs = 4235, eepAdNextIOHndlr = 6 };
+#ifndef PLAIN_TR                                      // -DPLAIN_TR: the plain TeensyROM (no Fab04_*: no KERNAL handlers, REU, Special button)
 #define Fab04_REU
+#define Fab04_VDrive
 #ifndef VD_TEST_NO_DMA                                // run.py also builds the glue without it: the window LOAD only (no DMA hook)
 #define Fab04_VDriveDMALoad
 #endif
-enum { IOH_None = 0, IOH_Swiftlink, IOH_REU, IOH_VDrive, IOH_VDriveSwift, IOH_VDriveSwiftREU, IOH_VDriveREU, IOH_Other };   // only the order within the real enum is irrelevant here
+#endif
+#define VDrive_Agent
+enum { IOH_None = 0, IOH_Swiftlink, IOH_REU, IOH_VDrive, IOH_VDriveSwift, IOH_VDriveSwiftREU, IOH_VDriveREU, IOH_VDriveAgent, IOH_Other };   // only the order within the real enum is irrelevant here
 extern bool (*fBusSnoop)(uint16_t Address, bool R_Wn);
 bool KernalCheck(uint16_t Address, bool R_Wn);
 extern uint8_t HIRAM_State;
@@ -133,7 +137,9 @@ bool (*KernalCheckArm())(uint16_t Address, bool R_Wn); // the check a launch hoo
 extern volatile uint8_t BtnPressed;
 
 enum { rwRegPwrUpDefaults2 = 8, rpud2AltBtnActionMask = 0b00111000, rpud2AltBtnAutoLaunch = 0, rpud2AltBtnPause = 0b00001000, rpud2AltBtnNone = 0b00100000 };
+#ifndef PLAIN_TR
 #define Fab04_SpecialButton
+#endif
 extern void (*fSpecialBtnChange)(bool Up_nDn);
 enum { rWRegCurrMenuWAIT = 3, rwRegScratch = 9, rwRegColorRefStart = 42, NumColorRefs = 7, rmtUSBDrive = 0, rmtSD = 1, rmtTeensy = 2 };
 enum { IO1Size = 104 };   // Menu_Regs.h: StartSIDRegs + 40

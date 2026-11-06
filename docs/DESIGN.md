@@ -783,3 +783,43 @@ The TR+ build is untouched: its KERNAL patch and the fast LOAD/SAVE commands sta
   - the IO-execution soak test (section 50);
   - the per-call latency, which decides whether BASIC loops doing GET#/PRINT# to a disk file feel slower than on the TR+ (each byte is one round trip there as well);
   - the STOP key, which LOAD and SAVE do not check (the KERNAL patch's fast paths do not either).
+
+## 52. The agent in the firmware: "VDrive" on the plain TeensyROM, "VDrive Agent" on the TR+ (0.9.0.53; host tests and both firmware builds; not on hardware)
+
+**Gates** (`Common_Defs.h`, set by the patch):
+- `VDrive_Agent`: both boards.
+- `VDrive_Any`: anything both kinds of VDrive share. That covers the remote get/set commands, the listing bypass while a program runs, the EEPROM device numbers, the handler remap and VDrive Config in the TR menu's Utilities.
+- `Fab04_VDrive`: as before, the KERNAL handlers on the TR+ only.
+
+`firmware/IOH_VDrive.c` stays the one glue file. Its KERNAL parts (the image, the DMA read, the menu probe, the banner bytes, `InitHndlr_VDrive`, `IO1Hndlr_VDrive`) are under `Fab04_VDrive`. The polling core is `VD_PollCommon(did)`, and `vdDrivePoll` is the running handler's drive poll, which the remote control's quiet wait calls. `VD_IsKernalHandler` names the handlers that load a KERNAL; `VD_IsHandler` adds the agent.
+
+**`firmware/IOH_VDriveAgent.c`:**
+- **IO1:** a 256-byte RAM1 page holding `VD_Agent` at `$DE08` (`vd_agent.h`, from `tools/build_agent.py`). It keeps the 6502's writes, which are the agent's self-patched operands, and is refreshed from flash at every init. `$DE00-$DE07` are unanswered.
+- **IO2:** the mailbox registers at `$DF00-$DF0A`, with ID `$D6 $64` at `$DF09/$DF0A`, and the window at `$DF80`.
+- **Polling:** `vvec_poll`.
+- **`VDrive_AgentPreStart()`**, called first in `KERNALPreStart()` (outside its Kernal Replace block, so it runs on the plain TR too), runs the drive's PreStart (`VDrive_PreStart(true)`: SD/USB, auto-mount, remembered mounts) and returns before any KERNAL is loaded. It skips the menu probe, so `rwRegScratch` stays 0 and the menu doesn't probe; the engine's lazy scan runs instead.
+- **The list.** On the TR+ the agent comes after the four KERNAL handlers and before Kernal Replace, so a stored default index of Kernal Replace or Debug from 0.9.0.47 or earlier now selects the next entry down. The menu shows its name in the Special IO list: "VDrive Agent" on the TR+, "VDrive" on the plain TR. With the agent as the default, VDrive Config runs with it, and REU or SwiftLink programs keep their own handlers, because there are no combined agent handlers yet.
+
+**Launch.** The menu's PRG loader (`PRGLoadStartReloc.s`, in the tape buffer, shared by both boards) waits for the handler swap. Then, if `$DF09/$DF0A` read `$D6 $64` and `$DE14` holds a `JSR` (the INSTALL entry), it calls `$DE14` with A = `VV_LAUNCH` (`$A5`). For a launch INSTALL the engine first compares the vectors with the ROM's own RESTOR and INITV tables (`$FD30`, `$E447`). If the program changed any of them (an autostart PRG loaded over them), it leaves them alone and returns C set. After a reset, `SYS 56852` hooks again.
+
+**Patch generation.** `make_tr_patch.sh` now also edits `PRGLoadStartReloc.s` and copies `vdrive_vec.c/.h`, `IOH_VDriveAgent.c` and the generated `vd_agent.h`. The owner's TeensyROM checkout has local edits (the teensyrom-snoop `0.9-sn3` build: `Common_Defs.h`, `ISRs.c`, `SerUSBIO.ino`, `Teensy.ino`, `TeensyROM.h`, `WriteSnoop.*`, `snoop/`). So 0.9.0.53's patch was made from a copy of that checkout with those four files replaced by the pristine blobs (matched by git blob hash in the other local checkouts). Before regenerating, that tree reproduced 0.9.0.47's committed patch byte for byte. At the rebase onto bleeding-edge (0.9.0.52: DMA LOAD, the mailbox gate) the same tree reproduced 0.9.0.52's committed patch byte for byte first; the branch's numbers moved with it: REV 48 to 53, sections 45-47 to 50-52, the agent's commands 17/18 to 18/19 (17 is `VIO_FLOAD_DMA`). The firmware was built in a copy of it with the snoop files removed.
+
+**Fit.** Both targets built as 0.9.0.48, before the rebase onto 0.9.0.52 (not measured again since; CI builds the rebased tree). Main image, against stock 0.9 built from the same tree and toolchain:
+
+| Board | RAM1 free for locals | RAM1 variables | RAM1 code | RAM2 | Flash code |
+|---|---|---|---|---|---|
+| Plain TR | 122,748 → 116,924 (−5,824) | +5,824 | +1,360 (padding 6,328 → 4,968) | +8,448 | +51,480 |
+| TR+ (all VDrive handlers, agent included) | 79,868 → 65,820 (−14,048) | — | +1,744 (padding 26,824 → 25,080) | +8,448 | +53,960 |
+
+On the plain TR, RAM1 variables include the served page (256 bytes), the registers and window, and the glue's units.
+
+**Tests.**
+- `tests/fw_host`: the TR+ configuration checks the agent's name, wiring, `VD_IsHandler` / `VD_IsKernalHandler` and the remap with the agent as the default. `tests/fw_host/plain.cpp` builds the glue and the agent with `-DPLAIN_TR` (no `Fab04_*`) and drives it through IO1/IO2: the served bytes, open bus at `$DE00-$DE07` and `$DF0B-$DF7F`, kept writes and their reset at init, the ID, DEV0, and an INSTALL frame answered with a PEEK of `$0302`.
+- `tests/test_vvec.py`: the launch-install rule.
+
+**Not checked:**
+- the menu's loader change in VICE (the TR menu does not run there);
+- anything on hardware: the IO execution timing (section 50), the latency, the launch install;
+- the RAM-budget numbers against stock.
+
+The NativeEthernet late-ISR fix (the `loop()` poll, PR #85) is TR+ only: on a plain TR with Ethernet initialized, late phi2 interrupts could hit the agent's opcode fetches.

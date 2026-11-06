@@ -1,4 +1,4 @@
-#ifdef Fab04_VDrive
+#ifdef VDrive_Any
 FLASHMEM void VDriveRemoteCommand(bool Set)
 {
    //   App: VDriveGetToken 0x64E3, Drive(1)                        Drive: as the file commands, USBDrive = 0, SD = 1
