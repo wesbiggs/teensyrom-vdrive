@@ -151,6 +151,16 @@ VD_COLD static int vv_run(vvec_t *e, vv_ctx_t *c)
     /* handlers (an if chain, not a switch: YIELD's case labels must belong to the protothread's switch) */
     if (c->entry == VV_E_INSTALL) {
         PEEK(0x0302, 0x34 - 0x02);
+        if (c->a == VV_LAUNCH) {
+            /* from the menu's PRG loader, after the program is in memory: hook only if the vectors are still the ones RESTOR / INITV
+             * left (the ROM's own tables). A program that loaded over them (an autostart PRG) keeps its own. */
+            memcpy(c->data, c->buf, 0x32);
+            PEEK(0xFD30 + (0x031A - 0x0314), 0x34 - 0x1A);
+            c->n = (uint8_t)(memcmp(c->buf, c->data + 0x18, 0x34 - 0x1A) == 0);
+            PEEK(0xE447 + 2, 2);                               /* BASIC's INITV table: $0302's value */
+            if (!c->n || memcmp(c->buf, c->data, 2)) { sc_ret(e, c, c->a, c->x, c->y, 1); DONE(c); }
+            memcpy(c->buf, c->data, 0x32);
+        }
         install(e, c);
         sc_ret(e, c, c->a, c->x, c->y, 0);
         DONE(c);

@@ -34,6 +34,7 @@ enum { VV_E_INSTALL, VV_E_OPEN, VV_E_CLOSE, VV_E_CHKIN, VV_E_CKOUT, VV_E_CLRCH, 
 #define VV_OFS_RTS      241
 #define VV_NZ           4       /* zero-page bytes in the frame: $90 $98 $99 $9A */
 
+#define VV_LAUNCH 0xA5          /* A at INSTALL from the menu's PRG loader: hook only vectors the program left as the ROM set them */
 #define VV_DEPTH 4              /* nested calls (a ROM routine calling back into a vector) */
 #define VV_CHUNK 118            /* bytes per POKE / PEEK of file data */
 

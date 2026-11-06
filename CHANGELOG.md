@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.9.0.58
+
+### Added
+- **VDrive on the plain TeensyROM (no TR+), through the KERNAL's RAM vectors** (branch `plain-tr-vectors`): the C64 keeps its own
+  KERNAL (tape keeps working), its vectors point into a 246-byte 6502 agent served from IO1 `$DE08`, and the drive logic runs on the
+  Teensy (`d64/vdrive_vec.c`). The Special IO is "VDrive" on the plain TR and "VDrive Agent" on the TR+; the TR menu's PRG loader
+  installs the agent at launch (`SYS56852` installs it by hand). Host tests and VICE (GeoRAM stands in for the served page);
+  **nothing on hardware yet**, the menu loader change is not run anywhere. `docs/DESIGN.md` sections 52-54.
+
+### Changed
+- On the TR+ the new "VDrive Agent" entry sits before Kernal Replace in the Special IO list: a stored default of Kernal Replace or
+  Debug now selects the entry below it; pick it again.
+
 ## v0.9.0.57
 
 ### Added
