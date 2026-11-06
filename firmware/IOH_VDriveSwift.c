@@ -31,6 +31,7 @@ FLASHMEM uint8_t VDriveSwift_Remap(uint8_t ioh)
    uint8_t pref = EEPROM.read(eepAdNextIOHndlr);
    if (!VD_IsHandler(pref)) return ioh;
    if (ioh == IOH_VDrive) return pref;                       // a VDrive program (VDrive Config) keeps the default's REU / SwiftLink
+   if (pref == IOH_VDriveAgent) return ioh;                  // the agent has no combined handlers (yet): REU / SwiftLink programs get theirs
 #ifdef Fab04_REU
    if (ioh == IOH_REU) return IOH_VDriveREU;
    if (pref == IOH_VDriveSwiftREU) return (ioh == IOH_Swiftlink) ? IOH_VDriveSwiftREU : ioh;

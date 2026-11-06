@@ -8,7 +8,7 @@ real IEC code, so physical drives keep working. LOAD/SAVE have block-transfer fa
 second, the first free numbers from 8 up: the KERNAL probes the real bus on the first disk access of a run) or fixed from BASIC with
 `OPEN15,8,15,"U0>"+CHR$(n)` (kept in EEPROM, `CHR$(0)` = automatic, no reflash). Names and `CD` take paths: `LOAD"$/GAMES/G.D64",8`.
 
-Full design and per-milestone notes: `docs/DESIGN.md` (sections 1-46, in order of construction).
+Full design and per-milestone notes: `docs/DESIGN.md` (sections 1-47, in order of construction).
 Firmware integration and usage: `firmware/README.md`.
 
 ## Status (read this first)
@@ -115,7 +115,13 @@ Firmware integration and usage: `firmware/README.md`.
   table, chaining to the old vectors, the bus scan) is C in `d64/vdrive_vec.c` (protothread handlers, scripts of GO/POKE/PEEK/CONT). The stock KERNAL stays (tape works).
   CHROUT/CHRIN/GETIN for devices < 4 take a fast path inside the agent. VICE: GeoRAM's page stands in for the served page (`make test-agent`: `agent`, `agentscan` with
   true-drive 1541s); host: `tests/test_vvec.py`. The first try, RAM-resident hooks (`vector/vdvec.s`), is retired (DESIGN 45 has the analysis).
-  Not done: the firmware side (plain-TR gate, a served IO1 page that keeps writes, registers moved to IO2, the menu installing the agent), and anything on hardware.
+  **Firmware (0.9.0.48, docs/DESIGN.md 47):** `firmware/IOH_VDriveAgent.c` ("VDrive" on the plain TR, "VDrive Agent" on the TR+; gate `VDrive_Agent`, shared parts
+  `VDrive_Any`, KERNAL parts still `Fab04_VDrive`) serves the agent from a RAM1 page at IO1 `$DE08` that keeps its writes, registers at IO2 `$DF00`, window `$DF80`;
+  `KERNALPreStart()` runs `VDrive_AgentPreStart()` first; the menu's PRG loader (`PRGLoadStartReloc.s`) calls INSTALL (`$DE14`, A=`$A5`) when `$DF09/$DF0A` read `$D6 $64`,
+  and the engine hooks only vectors still as the ROM set them. Both targets build (`TeensyROM_0.9.0.48_full.hex`, `TeensyROM+_0.9.0.48_full.hex`); `tests/fw_host` covers both
+  configurations (`plain.cpp`, `-DPLAIN_TR`). Fit vs stock 0.9 (same tree, main image): plain TR RAM1 free for locals 122748 -> 116924, RAM2 +8.4 KB, flash code +51 KB;
+  TR+ 79868 -> 65820. **Nothing on hardware**; the menu loader change is not run anywhere. On the TR+ the new list entry shifts Kernal Replace / Debug by one.
+  The owner's TeensyROM checkout carries the teensyrom-snoop edits (`0.9-sn3`): generate the patch from a pristine tree (DESIGN 47 says how 0.9.0.48's was made).
   The owner's TR+ shorted out (2026-11-05), replacement pending: no hardware runs until then.
 * Default device 8 for `LOAD`/`SAVE`/`VERIFY` without a number, as on the SX-64 (`P_E1DA` in `patches/vdrive.s`, docs/DESIGN.md 33). KERNAL only; VICE `basic` run; **not on hardware yet**. Rebuild `kernal-tr.bin`.
 * 0.9.0.32: bad sectors from the image's error table (the trailing error-info bytes): reads of a sector marked bad fail with its DOS code (`d64_t.errtab`, `D64_E_BADSEC`, `d64_t.bad`, `read_err()` in `vdrive.c`; the firmware keeps a RAM2 copy only when the table marks something bad; docs/DESIGN.md 35). Write errors (25/26/28) not emulated; a write does not repair a bad sector. Unit and glue host tests; VICE and hardware through VDSUITE `5` (reads only).
@@ -185,11 +191,12 @@ patches/        ca65 sources overlaid on the stock KERNAL by tools/build.py; seg
                   the cold-start hook `rst_hook` (`JMP` at $FCE2, code at $F875-$F8CF, 33 of 91 bytes: SYS64738 back to the TR menu)
   vdbanner.s      the drive numbers in the power-on banner (INITMS: `JSR` at $E42D, `JMP` at $E43D, banner string cut at $E49A; code in reclaimed tape routines $FB97-$FCD0, 296 of 314 bytes)
 bringup/banner.s  proof patch (`TRVDRIVE 64 BASIC V2`), only in `make build/kernal-banner.bin`
-firmware/       TeensyROM integration: IOH_VDrive.c (Special IO), IOH_VDriveSwift.c / IOH_VDriveREU.c / IOH_VDriveSwiftREU.c (combined Special IOs) and
+firmware/       TeensyROM integration: IOH_VDrive.c (Special IO), IOH_VDriveSwift.c / IOH_VDriveREU.c / IOH_VDriveSwiftREU.c (combined Special IOs),
+                IOH_VDriveAgent.c (the agent's Special IO, both boards), and
                 teensyrom-vdrive.patch (git apply onto TeensyROM); vdrive_probe.asm (the TR menu's launch-time bus probe, ACME, inserted into MainMenu.asm)
-tools/          build.py (patch overlay; `--table` writes the patches as `vd_kpatch.h` for the firmware), make_tr_patch.sh (regenerate the TeensyROM patch), vdrive_mock.py (VICE mock),
+tools/          build.py (patch overlay; `--table` writes the patches as `vd_kpatch.h` for the firmware), build_agent.py (the agent as `vd_agent.h`), make_tr_patch.sh (regenerate the TeensyROM patch), vdrive_mock.py (VICE mock),
                 d64py.py (ctypes wrappers incl. register-level VIO), xref.py (reference finder over a disassembly)
-tests/          test_d64*.py, test_vdrive.py, test_vio.py (unit), fw_host/ (glue vs host stubs), devcfg.c,
+tests/          test_d64*.py, test_vdrive.py, test_vio.py, test_vvec.py (unit), fw_host/ (glue vs host stubs; plain.cpp = the plain-TR build), devcfg.c,
                 test_vdconfig.py + c64_sim.py (VDrive Config's PRG in py65, KERNAL calls answered in Python), test_vdcopy.py (VDCOPY in py65 against vdrive.c),
                 test_irq_border.py, test_banner.py, test_reset_hook.py (py65),
                 menuprobe_vice.py (the menu's probe routine in VICE with true-drive 1541s), variants_vice.py (the patch on each whitelisted ROM in VICE)

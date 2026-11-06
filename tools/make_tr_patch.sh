@@ -10,7 +10,7 @@ mkdir -p "$W/$C/IO_Handlers"
 for f in Common_Defs.h Menu_Regs.h IOHandlers.h ISRs.c IO_Handlers/StatusFunctions.c IO_Handlers/IOH_KernalReplace.c IO_Handlers/Swift_ATcommands.c IO_Handlers/IOH_Swiftlink.c; do cp "$TR/$C/$f" "$W/$C/$f"; done
 mkdir -p "$W/Source/Teensy"; cp "$TR/Source/Teensy/Teensy.ino" "$TR/Source/Teensy/IOHandlers.ino" "$TR/Source/Teensy/SerUSBIO.ino" "$TR/Source/Teensy/MainMenuItems.h" "$W/Source/Teensy/"
 M=Source/C64/MainMenuCRT/source; mkdir -p "$W/$M" "$W/Source/Teensy/TRMenuFiles/ROMs"
-cp "$TR/$M/MainMenu.asm" "$W/$M/"; cp "$TR/Source/Teensy/TRMenuFiles/ROMs/TeensyROMC64.h" "$W/Source/Teensy/TRMenuFiles/ROMs/"
+cp "$TR/$M/MainMenu.asm" "$TR/$M/PRGLoadStartReloc.s" "$W/$M/"; cp "$TR/Source/Teensy/TRMenuFiles/ROMs/TeensyROMC64.h" "$W/Source/Teensy/TRMenuFiles/ROMs/"
 cd "$W"; git init -q; git add -A; git -c user.name=x -c user.email=x@x commit -qm base
 # upstream PR #85 (Ethernet stack polled from loop() while Kernal Replace serves the KERNAL), byte for byte; drop it once merged
 git apply "$HERE/firmware/kernal-fnet-poll.patch"
@@ -28,6 +28,12 @@ edit(f"{C}/Common_Defs.h",
      "   #define Fab04_KernalReplace        //include Kernal Replacement support\n",
      "   #define Fab04_KernalReplace        //include Kernal Replacement support\n"
      "   #define Fab04_VDrive               //virtual IEC drive for the replacement KERNAL (needs Fab04_KernalReplace)\n")
+# both boards: the drive through the KERNAL's RAM vectors and a 6502 agent served from IO1 (docs/DESIGN.md 46; IOH_VDriveAgent.c)
+edit(f"{C}/Common_Defs.h",
+     "   #define Fab04_DebugSignals         //For debug only\n#endif\n",
+     "   #define Fab04_DebugSignals         //For debug only\n#endif\n"
+     "#define VDrive_Agent   //virtual IEC drive through the KERNAL's RAM vectors and a 6502 agent served from IO1 (no Kernal Replace)\n"
+     "#define VDrive_Any     //any VDrive Special IO: the agent, and on the TR+ the replacement-KERNAL ones (Fab04_VDrive)\n")
 # #85's loop poll and AT-command PIT unmask also for the VDrive Special IOs (all serve the replaced KERNAL; VDrive+SwiftLink runs AT commands)
 edit("Source/Teensy/Teensy.ino",
      "   bool want = FnetPollHold || (CurrentIOHandler == IOH_KernalReplace)\n",
@@ -52,7 +58,7 @@ edit(f"{C}/Common_Defs.h",
 edit("Source/Teensy/SerUSBIO.ino",
      "      case FWCheckToken: //Check firmware type\n         SendU16(FWFullToken);\n         return;   \n",
      "      case FWCheckToken: //Check firmware type\n         SendU16(FWFullToken);\n         return;   \n"
-     "#ifdef Fab04_VDrive\n      case VDriveGetToken:  //VDrive disk image of a unit (works while a C64 program runs)\n      case VDriveSetToken:  //VDrive change the disk image of a unit\n"
+     "#ifdef VDrive_Any\n      case VDriveGetToken:  //VDrive disk image of a unit (works while a C64 program runs)\n      case VDriveSetToken:  //VDrive change the disk image of a unit\n"
      "         VDriveRemoteCommand(TokenVal == VDriveSetToken);\n         return;\n#endif\n")
 edit("Source/Teensy/SerUSBIO.ino",
      "FLASHMEM bool ReceiveFileName(RegMenuTypes* DriveType, char *FileNamePath)\n",
@@ -62,7 +68,7 @@ edit("Source/Teensy/SerUSBIO.ino",
 edit("Source/Teensy/SerUSBIO.ino",
      "       TokenVal == CopyFileToken     || TokenVal == DeleteFileToken);\n",
      "       TokenVal == CopyFileToken     || TokenVal == DeleteFileToken);\n"
-     "#ifdef Fab04_VDrive\n"
+     "#ifdef VDrive_Any\n"
      "   //VDrive running a C64 program: directory listings (so a client can browse for an image to mount) once the drive is quiet;\n"
      "   //  ASIDAllowed is only read by the Busy! test below, so it doubles as \"allowed while a program runs\"\n"
      "   if (VD_IsHandler(CurrentIOHandler) && (TokenVal == GetDirectoryToken || TokenVal == GetDirNDJSONToken))\n   {\n"
@@ -75,21 +81,24 @@ edit(f"{C}/Common_Defs.h",
      "   eepAdNext          = 4237, // Next address to be used\n")
 edit("Source/Teensy/Teensy.ino",
      "   //future use:\n",
-     "#ifdef Fab04_VDrive\n   EEPROM.write(eepAdVDriveDevs, 0);   //VDrive device numbers: 0 = defaults (8/9)\n   EEPROM.write(eepAdVDriveDevs+1, 0);\n#endif\n\n   //future use:\n")
+     "#ifdef VDrive_Any\n   EEPROM.write(eepAdVDriveDevs, 0);   //VDrive device numbers: 0 = defaults (8/9)\n   EEPROM.write(eepAdVDriveDevs+1, 0);\n#endif\n\n   //future use:\n")
 # The enum and table entries go *before* the Kernal Replace entries, not after: the lines after them (IOH_Debug and the
 # "last manually selectable" comment) are what upstream's open GeoRAM PRs rewrite, and a hunk with those lines as context
 # would not apply on top of them. (Include order is separate and stays after IOH_KernalReplace.c, which IOH_VDrive.c needs.)
 edit(f"{C}/Menu_Regs.h",
      "   #ifdef Fab04_KernalReplace\n      IOH_KernalReplace,\n   #endif  \n",
      "   #ifdef Fab04_VDrive\n      IOH_VDrive,\n      IOH_VDriveSwift,\n   #ifdef Fab04_REU\n      IOH_VDriveSwiftREU,\n      IOH_VDriveREU,\n   #endif\n   #endif  \n"
+     "   #ifdef VDrive_Agent\n      IOH_VDriveAgent,\n   #endif  \n"
      "   #ifdef Fab04_KernalReplace\n      IOH_KernalReplace,\n   #endif  \n")
 edit(f"{C}/IOHandlers.h",
      '   #ifdef Fab04_KernalReplace\n      #include "IO_Handlers/IOH_KernalReplace.c"\n   #endif    \n',
      '   #ifdef Fab04_KernalReplace\n      #include "IO_Handlers/IOH_KernalReplace.c"\n   #endif    \n'
-     '   #ifdef Fab04_VDrive\n      #include "IO_Handlers/IOH_VDrive.c"\n   #endif    \n')
+     '   #ifdef VDrive_Any\n      #include "IO_Handlers/IOH_VDrive.c"\n   #endif    \n'
+     '   #ifdef VDrive_Agent\n      #include "IO_Handlers/IOH_VDriveAgent.c"   //needs IOH_VDrive.c\n   #endif    \n')
 edit(f"{C}/IOHandlers.h",
      "   #ifdef Fab04_KernalReplace\n      &IOHndlr_KernalReplace,      //IOH_KernalReplace,\n   #endif  \n",
      "   #ifdef Fab04_VDrive\n      &IOHndlr_VDrive,             //IOH_VDrive,\n      &IOHndlr_VDriveSwift,        //IOH_VDriveSwift,\n   #ifdef Fab04_REU\n      &IOHndlr_VDriveSwiftREU,     //IOH_VDriveSwiftREU,\n      &IOHndlr_VDriveREU,          //IOH_VDriveREU,\n   #endif\n   #endif  \n"
+     "   #ifdef VDrive_Agent\n      &IOHndlr_VDriveAgent,        //IOH_VDriveAgent,\n   #endif  \n"
      "   #ifdef Fab04_KernalReplace\n      &IOHndlr_KernalReplace,      //IOH_KernalReplace,\n   #endif  \n")
 edit(f"{C}/IOHandlers.h",
      '      #include "IO_Handlers/IOH_Swiftlink.c"\n',
@@ -102,10 +111,10 @@ edit(f"{C}/IO_Handlers/StatusFunctions.c",
      "#ifdef Fab04_VDrive\n      NextIOHndlr = VDriveSwift_Remap(NextIOHndlr);   //SwiftLink programs keep the virtual drive\n#endif\n")
 edit(f"{C}/IO_Handlers/StatusFunctions.c",
      "   if (NextIOHndlr == IOH_KernalReplace)\n   {\n      InitHndlr_KERNALReplace_PreStart(); //separate function so it doesn't get called twice\n",
-     "   if (NextIOHndlr == IOH_KernalReplace\n#ifdef Fab04_VDrive\n       || VD_IsHandler(NextIOHndlr)\n#endif\n      )\n   {\n"
-     "#ifdef Fab04_VDrive\n      KernalImageSource = VD_IsHandler(NextIOHndlr) ? &VD_KernalImage : NULL; //VDrive: its own image (IOH_VDrive.c), not the <Shift-K> file\n#endif\n"
+     "   if (NextIOHndlr == IOH_KernalReplace\n#ifdef Fab04_VDrive\n       || VD_IsKernalHandler(NextIOHndlr)\n#endif\n      )\n   {\n"
+     "#ifdef Fab04_VDrive\n      KernalImageSource = VD_IsKernalHandler(NextIOHndlr) ? &VD_KernalImage : NULL; //VDrive: its own image (IOH_VDrive.c), not the <Shift-K> file\n#endif\n"
      "      InitHndlr_KERNALReplace_PreStart(); //separate function so it doesn't get called twice\n"
-     "#ifdef Fab04_VDrive\n      if (VD_IsHandler(NextIOHndlr)) VDrive_PreStart(); //SD/USB probing now, while the C64 still waits\n#endif\n")
+     "#ifdef Fab04_VDrive\n      if (VD_IsKernalHandler(NextIOHndlr)) VDrive_PreStart(); //SD/USB probing now, while the C64 still waits\n#endif\n")
 # The VDrive Special IOs serve their own KERNAL (/VDrive/kernal.bin, else the C64's own ROM patched in memory; docs/DESIGN.md 40):
 # PreStart takes the image from KernalImageSource when one is set, the <Shift-K> file otherwise. The file branch stays where it
 # is, only braced, so the hunks are two small insertions.
@@ -130,7 +139,19 @@ edit(f"{C}/IO_Handlers/StatusFunctions.c",
      "   //called before BASIC init and program load/launch\n#ifdef Fab04_KernalReplace\n",
      "   //called before BASIC init and program load/launch\n"
      "#ifdef Fab04_VDrive\n   if (VDrive_ProbeStep()) return; //a step of the menu's bus probe after a VDrive PreStart (MainMenu.asm, VDriveProbe)\n#endif\n"
+     "#ifdef VDrive_Agent\n   //the agent's drive (IOH_VDriveAgent.c): SD/USB probing now, while the C64 still waits; it serves no KERNAL\n"
+     "   if (VDrive_AgentPreStart((IO1[rWRegCurrMenuWAIT] == rmtTeensy && MenuSource[SelItemFullIdx].IOHndlrAssoc != IOH_None) ?\n"
+     "                            MenuSource[SelItemFullIdx].IOHndlrAssoc : IO1[rwRegNextIOHndlr])) return;\n#endif\n"
      "#ifdef Fab04_KernalReplace\n")
+# The PRG loader (copied to the tape buffer, shared by both boards): once the new IO handler answers, the agent hooks the KERNAL's
+# vectors (A = $A5: only those the program left as the ROM set them). Its ID at IO2 $DF09/$DF0A and the JSR of its INSTALL entry
+# at $DE14 must both be there: no other handler answers that way.
+edit("Source/C64/MainMenuCRT/source/PRGLoadStartReloc.s",
+     "smcSkipPrintRunning:\n",
+     "   ;VDrive agent (teensyrom-vdrive, docs/DESIGN.md 46): let it hook the KERNAL's vectors now that the program is in memory\n"
+     "   lda $df09\n   cmp #$d6\n   bne +\n   lda $df0a\n   cmp #$64\n   bne +\n   lda $de14\n   cmp #$20\n   bne +\n"
+     "   lda #$a5\n   jsr $de14\n+\n"
+     "smcSkipPrintRunning:\n")
 edit("Source/C64/MainMenuCRT/source/MainMenu.asm",
      ";Check for Kernal Replace Special IO and start it now\n   lda #rCtlKERNALPreStartWAIT\n   sta wRegControl+IO1Port\n"
      "   jsr WaitForTRDots ;use WaitForTRWaitMsg instead?\n",
@@ -147,19 +168,21 @@ edit("Source/C64/MainMenuCRT/source/MainMenu.asm",
 edit("Source/Teensy/MainMenuItems.h",
      '#include "TRMenuFiles/ROMs/ccgms_2021_Swiftlink_DE_38400.prg.h"\n',
      '#include "TRMenuFiles/ROMs/ccgms_2021_Swiftlink_DE_38400.prg.h"\n'
-     '#ifdef Fab04_VDrive\n   #include "TRMenuFiles/ROMs/vdconfig.prg.h"\n#endif\n')
+     '#ifdef VDrive_Any\n   #include "TRMenuFiles/ROMs/vdconfig.prg.h"\n#endif\n'
+     '#ifdef Fab04_VDrive\n   #define IOH_VDriveMenu IOH_VDrive        //VDrive Config runs with the default VDrive Special IO (VDriveSwift_Remap)\n'
+     '#else\n   #define IOH_VDriveMenu IOH_VDriveAgent   //the plain TR\'s only one\n#endif\n')
 edit("Source/Teensy/MainMenuItems.h",
      ', (uint8_t*)Load8Run_prg               , sizeof(Load8Run_prg) , //used by location, see Load8Run:\n',
      ', (uint8_t*)Load8Run_prg               , sizeof(Load8Run_prg) , //used by location, see Load8Run:\n'
-     '#ifdef Fab04_VDrive\n'
-     '     rtFilePrg  , IOH_VDrive       , (char*)"VDrive Config             +VDrive", (uint8_t*)vdconfig_prg               , sizeof(vdconfig_prg) ,\n'
+     '#ifdef VDrive_Any\n'
+     '     rtFilePrg  , IOH_VDriveMenu   , (char*)"VDrive Config             +VDrive", (uint8_t*)vdconfig_prg               , sizeof(vdconfig_prg) ,\n'
      '#endif\n')
 # A macro around the whole of IOHandlerSelectInit(), not an edit inside it: upstream PRs rewrite its first lines (#81 puts a
 # GEOS case ahead of the menu one), and any hunk within three lines of them would not apply. The remap leaves every handler
 # but SwiftLink, REU and VDrive alone (GEOS's GeoRAM / REU_TRPage pass through).
 edit("Source/Teensy/IOHandlers.ino",
      "void IOHandlerSelectInit()\n",
-     "#ifdef Fab04_VDrive\n"
+     "#ifdef VDrive_Any\n"
      "   //menu programs keep the virtual drive: SwiftLink / REU ones get the matching VDrive Special IO (VDriveSwift_Remap)\n"
      "   #define IOHandlerInit(h) IOHandlerInit(VDriveSwift_Remap(h))\n"
      "#endif\n"
@@ -167,10 +190,10 @@ edit("Source/Teensy/IOHandlers.ino",
 edit("Source/Teensy/IOHandlers.ino",
      "   else IOHandlerNextInit();\n}\n",
      "   else IOHandlerNextInit();\n}\n"
-     "#ifdef Fab04_VDrive\n   #undef IOHandlerInit\n#endif\n")
+     "#ifdef VDrive_Any\n   #undef IOHandlerInit\n#endif\n")
 PY
 cp "$HERE/firmware/IOH_VDrive.c" "$HERE/firmware/IOH_VDriveSwift.c" "$HERE/firmware/IOH_VDriveREU.c" "$HERE/firmware/IOH_VDriveSwiftREU.c" \
-   "$C/IO_Handlers/"
+   "$HERE/firmware/IOH_VDriveAgent.c" "$C/IO_Handlers/"
 # the VDrive Config PRG as a menu binary, in the TR's own header format
 python3 -I "$HERE/tools/make_util.py" "$W/util" >/dev/null
 mkdir -p Source/Teensy/TRMenuFiles/ROMs
@@ -185,15 +208,17 @@ rm -rf "$W/util"
 # the menu, rebuilt into its header (TeensyROMC64.h) by the TR's own tool (ACME 0.97, node), in a scratch copy of what it reads
 B="$(mktemp -d)"; mkdir -p "$B/Source" "$B/$C"
 cp -R "$TR/tools" "$B/"; cp -R "$TR/Source/C64" "$B/Source/"; cp "$C/Menu_Regs.h" "$B/$C/"
-cp "$M/MainMenu.asm" "$B/$M/"
+cp "$M/MainMenu.asm" "$M/PRGLoadStartReloc.s" "$B/$M/"
 (cd "$B" && node tools/build-c64.mjs --project MainMenuCRT --rom-dir "$W/Source/Teensy/TRMenuFiles/ROMs" >/dev/null)
 cmp -s "$B/$M/Menu_Regs.i" "$TR/$M/Menu_Regs.i" || { echo "Menu_Regs.i would change: carry it in the patch" >&2; exit 1; }
 rm -rf "$B"
 mkdir -p "$C/vdrive"
 cp "$HERE"/d64/d64.c "$HERE"/d64/d64.h "$HERE"/d64/vdrive.c "$HERE"/d64/vdrive.h \
-   "$HERE"/d64/vdrive_io.c "$HERE"/d64/vdrive_io.h "$HERE"/d64/vd_cfg.h "$C/vdrive/"
+   "$HERE"/d64/vdrive_io.c "$HERE"/d64/vdrive_io.h "$HERE"/d64/vdrive_vec.c "$HERE"/d64/vdrive_vec.h "$HERE"/d64/vd_cfg.h "$C/vdrive/"
 # the KERNAL patches as a table for VD_KernalPatchApply (our bytes only; the firmware lays them over the C64's own ROM)
 python3 -I "$HERE/tools/build.py" --table "$C/vdrive/vd_kpatch.h"
+# the plain TR's agent (vector/vdagent.s) for IOH_VDriveAgent.c: linked at $DE08, registers at $DF00, window at $DF80
+python3 -I "$HERE/tools/build_agent.py" "$C/vdrive/vd_agent.h"
 git add -A -N
 git diff --no-color > "$HERE/firmware/teensyrom-vdrive.patch"
 echo "wrote firmware/teensyrom-vdrive.patch ($(grep -c '^+++ ' "$HERE/firmware/teensyrom-vdrive.patch") files)"

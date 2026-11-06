@@ -1,3 +1,6 @@
+// The VDrive Special IOs: the virtual IEC drive and its SD / USB glue. On the TeensyROM+ (Fab04_VDrive) "VDrive KERNAL" and its
+// combined handlers serve a replacement KERNAL; on both boards (VDrive_Agent) IOH_VDriveAgent.c reaches the same drive through the
+// KERNAL's RAM vectors and a 6502 agent (docs/DESIGN.md 46). The KERNAL-only parts are under Fab04_VDrive.
 // "VDrive" Special IO for TeensyROM+: replacement KERNAL + virtual IEC drive.
 //   unit 0 = SD card, unit 1 = USB drive. Device numbers are automatic by default: the first free numbers from 8 up
 //   (the KERNAL probes the real serial bus on the first disk access of a run, see vdrive_io.h), so 8 (SD) and 9 (USB) when
@@ -19,16 +22,18 @@
 #include "../vdrive/d64.c"
 #include "../vdrive/vdrive.c"
 #include "../vdrive/vdrive_io.c"
-#include "../vdrive/vd_kpatch.h"   // VD_KernalPatch[]: patches/*.s as runs (tools/build.py --table)
 
-void VDrive_PreStart();   // called from KERNALPreStart(), see StatusFunctions.c
+void VDrive_PreStart(bool agent = false);   // called from KERNALPreStart(), see StatusFunctions.c; agent: for IOH_VDriveAgent
+uint8_t VDriveSwift_Remap(uint8_t ioh);   // IOH_VDriveSwift.c (IOH_VDriveAgent.c on the plain TR); used by KERNALPreStart() and IOHandlerSelectInit()
+void IO2Hndlr_VDrive(uint8_t Address, bool R_Wn);
+
+#ifdef Fab04_VDrive
+#include "../vdrive/vd_kpatch.h"   // VD_KernalPatch[]: patches/*.s as runs (tools/build.py --table)
 bool VD_KernalImage(uint8_t *img);   // KernalImageSource for InitHndlr_KERNALReplace_PreStart() (IOH_KernalReplace.c), set by KERNALPreStart()
 bool VDrive_ProbeStep();  // likewise, first: the menu's bus probe (below)
-uint8_t VDriveSwift_Remap(uint8_t ioh);   // IOH_VDriveSwift.c; used by KERNALPreStart() and IOHandlerSelectInit()
 void InitHndlr_VDrive();
 void PollingHndlr_VDrive();
 void IO1Hndlr_VDrive(uint8_t Address, bool R_Wn);
-void IO2Hndlr_VDrive(uint8_t Address, bool R_Wn);
 
 stcIOHandlers IOHndlr_VDrive =
 {
@@ -41,13 +46,18 @@ stcIOHandlers IOHndlr_VDrive =
   &PollingHndlr_VDrive,     //Polled in main routine: does all file system work
   NULL,                     //called at the end of EVERY c64 cycle
 };
-
-// The VDrive Special IOs: PreStart, the remote control and the listings while a program runs treat them all alike.
-#ifdef Fab04_REU
-   #define VD_IsHandler(h) ((h) == IOH_VDrive || (h) == IOH_VDriveSwift || (h) == IOH_VDriveSwiftREU || (h) == IOH_VDriveREU)
-#else
-   #define VD_IsHandler(h) ((h) == IOH_VDrive || (h) == IOH_VDriveSwift)
 #endif
+
+// The VDrive Special IOs: the remote control and the listings while a program runs treat them all alike. VD_IsKernalHandler: the
+// ones that serve a KERNAL (PreStart loads it).
+#if defined(Fab04_VDrive) && defined(Fab04_REU)
+   #define VD_IsKernalHandler(h) ((h) == IOH_VDrive || (h) == IOH_VDriveSwift || (h) == IOH_VDriveSwiftREU || (h) == IOH_VDriveREU)
+#elif defined(Fab04_VDrive)
+   #define VD_IsKernalHandler(h) ((h) == IOH_VDrive || (h) == IOH_VDriveSwift)
+#else
+   #define VD_IsKernalHandler(h) false
+#endif
+#define VD_IsHandler(h) (VD_IsKernalHandler(h) || (h) == IOH_VDriveAgent)
 
 #define VD_MboxBase    0x10  // mailbox at $DE10-$DE1A: $DE00-$DE07 stays free for the SwiftLink ACIA (see IOH_VDriveSwift.c)
 #define VD_CwdLen      96
@@ -81,6 +91,7 @@ static vio_hot_t  vioHot;           // registers + window: the ONLY memory the b
 static vio_t     *vio = NULL;       // everything else (main loop only, may live in slower RAM2)
 static volatile bool vioReady = false;
 static uint32_t   lastActivityMs = 0;
+static void     (*vdDrivePoll)() = NULL;   // the running VDrive handler's drive poll (set by its init; the remote control's waits call it)
 static stcVDUnit  vdUnit[2];
 
 // ---- PETSCII <-> ASCII (names are uppercase on the C64 side) -------------------------------
@@ -619,15 +630,19 @@ FLASHMEM static void VD_StartupMount(int unit, bool menuUnit)
 // ---- handler ---------------------------------------------------------------------------------
 extern bool SDFullInit();
 extern bool USBFileSystemWait();
+#ifdef Fab04_VDrive
 void InitHndlr_KernalReplace();   // re-stages the KERNAL bus hook (IOH_KernalReplace.c)
+#endif
 
 // All storage access (SD/USB probing, sizing) happens here, called from KERNALPreStart() while the C64 is still
 // waiting for the TR ("WaitForTRDots"). Doing it later is unsafe: SD reads mask interrupts, and once the replacement
 // KERNAL is live every C64 instruction fetch from $E000-$FFFF depends on the bus ISR running.
+#ifdef Fab04_VDrive
 FLASHMEM static void VD_ProbeBegin();
 void VD_BannerUnits(uint8_t *img, int size, bool settled);   // below
+#endif
 
-FLASHMEM void VDrive_PreStart()
+FLASHMEM void VDrive_PreStart(bool agent)
 {
 #ifdef VD_ALLOC_HEAP
    if (vio == NULL) vio = (vio_t *)malloc(sizeof(vio_t));
@@ -659,17 +674,23 @@ FLASHMEM void VDrive_PreStart()
    vdrive_attach(&vio->vd, 1, NULL, USBFileSystemWait());
    VD_StartupMount(0, IO1[rWRegCurrMenuWAIT] == rmtSD);
    VD_StartupMount(1, IO1[rWRegCurrMenuWAIT] == rmtUSBDrive);
-   int scanPending = vio_arm_scan(vio);   // automatic numbers: probed by the menu next (else by the KERNAL on the first disk access)
-   vio_publish_devices(vio);
-   VD_BannerUnits(KernalFast, 8192, false);   // the image InitHndlr_KERNALReplace_PreStart() just loaded, before the C64 prints its banner
+   int scanPending = vio_arm_scan(vio);   // automatic numbers: probed by the menu next (else on the first disk access, by the KERNAL
+   vio_publish_devices(vio);              //   or, with the agent, by the vector engine: docs/DESIGN.md 46)
+#ifdef Fab04_VDrive
+   if (!agent) VD_BannerUnits(KernalFast, 8192, false);   // the image InitHndlr_KERNALReplace_PreStart() just loaded, before the C64 prints its banner
+#endif
    vioReady = true;                 // only now may the bus handlers answer
    Serial.printf("VDrive: dev %d (SD) %s, dev %d (USB) %s%s\n",
                  vio->vd.dev[0], vio->vd.unit[0].present ? "ready" : "absent",
                  vio->vd.dev[1], vio->vd.unit[1].present ? "ready" : "absent",
-                 scanPending ? " (numbers are settled by the bus probe)" : "");
-   if (scanPending) VD_ProbeBegin();
+                 !scanPending ? "" : agent ? " (numbers are settled on the first disk access)" : " (numbers are settled by the bus probe)");
+#ifdef Fab04_VDrive
+   if (scanPending && !agent) VD_ProbeBegin();   // the agent leaves rwRegScratch at 0: the menu skips its probe, the engine scans
+#endif
+   (void)agent;
 }
 
+#ifdef Fab04_VDrive
 // ---- the menu's bus probe before launch (MainMenu.asm, VDriveProbe; docs/DESIGN.md 37) -------------------------------------
 // Only the 6502 can see which numbers real drives hold. The TR menu probes the bus right after this PreStart, so DEV0/DEV1
 // are right from the program's first instruction (the KERNAL's own scan, on the first disk access, is the fallback and is
@@ -826,7 +847,11 @@ FLASHMEM void InitHndlr_VDrive()
    }
    InitHndlr_KernalReplace();
    VD_AltButtonInit();
+   vdDrivePoll = &PollingHndlr_VDrive;
 }
+#else
+void VD_AltPoll();
+#endif // Fab04_VDrive
 
 // ---- drive LED: the TR's LED blinks while the drives are busy (by ziggystar12, from his Mean Hamster Engine VDrive build) ----
 // Each serviced mailbox command for our units restarts a short hold; while it runs the LED blinks against the state it had
@@ -865,12 +890,12 @@ FLASHMEM static void VD_LedAccess()
    VD_LedPoll();
 }
 
-FLASHMEM void PollingHndlr_VDrive()
+// what every VDrive handler polls; did = a mailbox command was answered just now (vio_poll, or the agent's vvec_poll)
+FLASHMEM static void VD_PollCommon(bool did)
 {
-   if (vio == NULL) return;
    VD_AltPoll();
    VD_LedPoll();
-   if (vio_poll(vio))
+   if (did)
    {
       lastActivityMs = millis();
       if (vioHot.stat != VIO_NOTMINE) VD_LedAccess();     // not for a command handed back to a real drive on the bus
@@ -891,6 +916,14 @@ FLASHMEM void PollingHndlr_VDrive()
       if (vdUnit[i].dirty && now - vdUnit[i].lastWriteMs > VD_FlushIdleMs && now - lastActivityMs > VD_FlushIdleMs)
          VD_Flush(&vdUnit[i]);
 }
+
+#ifdef Fab04_VDrive
+FLASHMEM void PollingHndlr_VDrive()
+{
+   if (vio == NULL) return;
+   VD_PollCommon(vio_poll(vio) != 0);
+}
+#endif
 
 // ---- remote control: the get / set commands on the TCP 2112 / USB serial port (SerUSBIO.ino) ------------------------------
 // Both run in the main loop, between polls, so they never see a half-processed mailbox command. A change of disk waits for a
@@ -939,7 +972,7 @@ FLASHMEM int VDrive_RemoteQuiet(char *msg, size_t cap)
    while (!VD_Quiet())
    {
       if (millis() - began > VD_SwapWaitMs) { snprintf(msg, cap, "C64 is busy with the drive"); return 2; }
-      PollingHndlr_VDrive();           // keep answering the C64 while we wait
+      if (vdDrivePoll) vdDrivePoll();  // keep answering the C64 while we wait
    }
    msg[0] = 0;
    return 0;
@@ -1282,6 +1315,7 @@ static_assert(offsetof(vio_hot_t, cmd) == VIO_CMD && offsetof(vio_hot_t, arg) ==
               offsetof(vio_hot_t, dev0) == VIO_DEV0 && offsetof(vio_hot_t, dev1) == VIO_DEV1 && offsetof(vio_hot_t, border) == VIO_BORDER &&
               offsetof(vio_hot_t, id0) == VIO_ID0 && offsetof(vio_hot_t, id1) == VIO_ID1, "register bytes must stay in register order");
 
+#ifdef Fab04_VDrive
 FASTRUN void IO1Hndlr_VDrive(uint8_t Address, bool R_Wn)
 {
    Address -= VD_MboxBase;                                 // wraps for offsets below the base
@@ -1297,6 +1331,7 @@ FASTRUN void IO1Hndlr_VDrive(uint8_t Address, bool R_Wn)
       vio_io1_write(&vioHot, Address, Data);
    }
 }
+#endif
 
 FASTRUN void IO2Hndlr_VDrive(uint8_t Address, bool R_Wn)
 {

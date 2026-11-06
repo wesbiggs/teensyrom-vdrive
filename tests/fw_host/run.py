@@ -14,9 +14,11 @@ try:
     shutil.copy(ROOT / "firmware/IOH_VDriveSwift.c", tmp / "IO_Handlers/swift.c")
     shutil.copy(ROOT / "firmware/IOH_VDriveREU.c", tmp / "IO_Handlers/vdreu.c")
     shutil.copy(ROOT / "firmware/IOH_VDriveSwiftREU.c", tmp / "IO_Handlers/swiftreu.c")
+    shutil.copy(ROOT / "firmware/IOH_VDriveAgent.c", tmp / "IO_Handlers/agent.c")
     for f in (ROOT / "d64").iterdir():
         if f.suffix in (".c", ".h"): shutil.copy(f, tmp / "vdrive" / f.name)
     subprocess.run([sys.executable, "-I", str(ROOT / "tools/build.py"), "--table", str(tmp / "vdrive/vd_kpatch.h")], check=True)
+    subprocess.run([sys.executable, "-I", str(ROOT / "tools/build_agent.py"), str(tmp / "vdrive/vd_agent.h")], check=True)
     stock = pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else None
     kstock, kpatched = tmp / "kstock.bin", tmp / "kpatched.bin"
     if stock and stock.exists():
@@ -38,6 +40,14 @@ try:
         if r.returncode:
             print(r.stdout + r.stderr); sys.exit(1)
         print("PASS glue also compiles with", flag)
+    # the plain TeensyROM: no Fab04_*, only the agent handler (tests/fw_host/plain.cpp)
+    shutil.copy(ROOT / "tests/fw_host/plain.cpp", tmp / "plain.cpp")
+    plain = tmp / "fwplain"
+    r = subprocess.run(["c++", "-std=gnu++17", "-Wall", "-Wextra", "-Wno-unused-parameter", "-Werror", "-DPLAIN_TR", "-I", str(tmp / "vdrive"),
+                        "-o", str(plain), str(tmp / "plain.cpp")], capture_output=True, text=True)
+    if r.returncode:
+        print(r.stdout + r.stderr); sys.exit(1)
+    print("PASS glue + agent compile for the plain TeensyROM (-DPLAIN_TR, no Fab04_*)")
 
     sd, usb = tmp / "sdroot", tmp / "usbroot"
     (sd / "SUB").mkdir(parents=True); usb.mkdir()
@@ -74,6 +84,9 @@ try:
     r = subprocess.run([str(exe), str(sd), str(usb), str(expect), str(kstock), str(kpatched)], capture_output=True, text=True)
     print(r.stdout, end="")
     ok = r.returncode == 0
+    r = subprocess.run([str(plain), str(sd)], capture_output=True, text=True)
+    print(r.stdout, end="")
+    ok = ok and r.returncode == 0
 
     out = subprocess.run(["c1541", "-attach", str(sd / "GAME.D64"), "-list"], capture_output=True, text=True, encoding="latin1").stdout.lower()
     good = '"newfile"' in out

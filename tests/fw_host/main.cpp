@@ -72,6 +72,7 @@ bool KernalCheck(uint16_t, bool) { g_kc++; return false; }
 bool (*KernalCheckArm())(uint16_t, bool) { HIRAM_State = HIRAM_State_Unknown; return &KernalCheck; }   // a C64
 #include "IO_Handlers/vdreu.c"      // = firmware/IOH_VDriveREU.c
 #include "IO_Handlers/swiftreu.c"   // = firmware/IOH_VDriveSwiftREU.c
+#include "IO_Handlers/agent.c"      // = firmware/IOH_VDriveAgent.c ("VDrive Agent" on the TR+; tests/fw_host/plain.cpp drives it)
 
 static int fails = 0;
 static void check(const char *what, bool ok) { printf("%s %s\n", ok ? "PASS" : "FAIL", what); if (!ok) fails++; }
@@ -238,6 +239,14 @@ int main(int argc, char **argv)
     check("remap: default VDrive+REU -> REU programs keep it, SwiftLink programs get VDrive+SwiftLink",
           VDriveSwift_Remap(IOH_REU) == IOH_VDriveREU && VDriveSwift_Remap(IOH_Swiftlink) == IOH_VDriveSwift
           && VDriveSwift_Remap(IOH_Other) == IOH_Other);
+    EEPROM.write(eepAdNextIOHndlr, IOH_VDriveAgent);
+    check("remap: default VDrive Agent -> VDrive Config runs with it, REU / SwiftLink programs keep theirs (no combined agent handlers)",
+          VDriveSwift_Remap(IOH_VDrive) == IOH_VDriveAgent && VDriveSwift_Remap(IOH_REU) == IOH_REU
+          && VDriveSwift_Remap(IOH_Swiftlink) == IOH_Swiftlink);
+    check("the agent is a VDrive handler but serves no KERNAL", VD_IsHandler(IOH_VDriveAgent) && !VD_IsKernalHandler(IOH_VDriveAgent)
+          && VD_IsKernalHandler(IOH_VDriveREU));
+    check("VDrive Agent named and wired on the TR+", strcmp(IOHndlr_VDriveAgent.Name, "VDrive Agent") == 0
+          && IOHndlr_VDriveAgent.IO1Hndlr == IO1Hndlr_VDriveAgent && IOHndlr_VDriveAgent.IO2Hndlr == IO2Hndlr_VDriveAgent);
     EEPROM.write(eepAdNextIOHndlr, IOH_None);
     check("remap: default not VDrive -> REU program stays plain", VDriveSwift_Remap(IOH_REU) == IOH_REU);
 
