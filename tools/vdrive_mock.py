@@ -8,11 +8,12 @@ Drives x64sc through its binary monitor: a store-checkpoint on MBX+0 (CMD)
 stops the CPU, this script plays the Teensy (state machine for IEC devices
 8/9 backed by a tiny in-memory 'disk'), writes DATA/STAT/ST and resumes.
 usage: vdrive_mock.py KERNAL.bin [basic|scan|variant]
-       vdrive_mock.py STOCK.bin vector|vecscan VDVEC.prg
+       vdrive_mock.py STOCK.bin agent|agentscan VDAGENT.prg
   basic    the whole feature test, no physical drives (the SD drive ends up as device 8 after the start-up scan)
   scan     physical 1541s at 8 and 10: the SD and USB drives must end up at 9 and 11
-  vector   the plain-TeensyROM build (vector hooks, docs/DESIGN.md 45) on the stock KERNAL: VDVEC.prg goes to RAM, SYS installs it
-  vecscan  the same with physical 1541s at 8 and 10: chaining to the real drives, copies between a real drive and ours
+  agent    the plain-TeensyROM build (docs/DESIGN.md 45, 46) on the stock KERNAL: the agent (vector/vdagent.s) served from GeoRAM's
+           page at $DE00 (the stand-in for the Teensy's IO1 page), all logic in d64/vdrive_vec.c (VVec); SYS to its INSTALL entry
+  agentscan  the same with physical 1541s at 8 and 10: chaining to the real drives, copies between a real drive and ours
 """
 import socket, struct, subprocess, sys, time, threading, queue
 
@@ -26,7 +27,7 @@ ANSWERED = 0x5A
 # ---- drive backed by libd64 ------------------------------------------------
 import ctypes, os, random, shutil, tempfile, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from d64py import LIB, Disk, VDrive, VIO, R_DEV0, R_DEV1, WIN_SIZE
+from d64py import LIB, Disk, VDrive, VIO, VVec, R_DEV0, R_DEV1, R_CMD, WIN_SIZE
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "tests"))
 from test_vio import HostStruct               # ctypes layout of vd_host_t
 import suite_files
@@ -113,8 +114,8 @@ class Mon:
         return out
 
 def main(kernal, scenario="basic", vecprg=None):
-    vector = scenario in ("vector", "vecscan")
-    scan = scenario in ("scan", "vecscan")
+    agent = scenario in ("agent", "agentscan")
+    scan = scenario in ("scan", "agentscan")
     workdir = pathlib.Path(tempfile.mkdtemp())
     drives = ["-drive8type", "0"]
     if scan:       # real 1541s at 8 and 10, each with a blank disk so that a LOAD gets a quick FILE NOT FOUND instead of a long "no disk" wait
@@ -124,7 +125,7 @@ def main(kernal, scenario="basic", vecprg=None):
         real = {"rprg": b"\x00\x40" + bytes(rnd.randrange(256) for _ in range(5000)),         # a PRG of 20 sectors
                 "rseq": bytes([13, 0, 10, 255, 34, 44, 58] * 400),                                 # SEQ with CR, NUL, quotes, commas
                 "test": b"\x01\x08" + b"real drive version"}                                      # exists on the SD already
-        if vector:                                                                                # a short SEQ for the byte-by-byte copies
+        if agent:                                                                                 # a short SEQ for the byte-by-byte copies
             real["rsml"] = bytes([13, 0, 10, 255, 34, 44, 58, 65, 66, 67] * 12)
         for nm_, data in real.items():
             (workdir / (nm_ + ".bin")).write_bytes(data)
@@ -141,7 +142,14 @@ def main(kernal, scenario="basic", vecprg=None):
     # -config + -default: start from VICE's defaults, not the user's vicerc (another VICE session saved e.g. Drive8Type=1581 with
     # TrapDevice8 there, which put a virtual drive at 8 and moved the SD drive to 9); a blank config file here also catches SaveResourcesOnExit
     (workdir / "vicerc").write_text("")
-    vice = subprocess.Popen(["x64sc", "-config", str(workdir / "vicerc"), "-default", "-warp", *drives, "-kernal", kernal,
+    geo = []
+    if agent:      # the agent in GeoRAM's first page, at its link address: VICE's stand-in for the page the Teensy serves
+        prg = pathlib.Path(vecprg).read_bytes()
+        at = struct.unpack_from("<H", prg, 0)[0] - 0xDE00
+        gimg = bytearray(512 * 1024); gimg[at:at + len(prg) - 2] = prg[2:]
+        (workdir / "geo.bin").write_bytes(gimg)
+        geo = ["-georam", "-georamsize", "512", "-georamimage", str(workdir / "geo.bin"), "+georamimagerw"]
+    vice = subprocess.Popen(["x64sc", "-config", str(workdir / "vicerc"), "-default", "-warp", *drives, *geo, "-kernal", kernal,
                              "-binarymonitor", "-binarymonitoraddress", "ip4://127.0.0.1:6502"],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
@@ -226,6 +234,7 @@ def main(kernal, scenario="basic", vecprg=None):
         else:
             io.attach(1, None, present=False)      # the USB drive is not present in the mock
         io.arm_scan()                              # the first IEC transaction triggers the bus scan, like on the TR+
+        vv = VVec(io, struct.unpack_from("<H", pathlib.Path(vecprg).read_bytes(), 0)[0]) if agent else None
         log = []
         last_devs = [None]
         fault = {"at": 0, "n": 0}               # fault injection: answer NOT_MINE to the Nth FLOAD_BLK of a run
@@ -256,6 +265,16 @@ def main(kernal, scenario="basic", vecprg=None):
                         devs = (io.r(R_DEV0), io.r(R_DEV1))
                         if devs != last_devs[0]: m.write(DEV0, list(devs)); last_devs[0] = devs
                         m.write(STAT, [NOT_MINE if nm else io.stat])      # (nm may also come from fault injection)
+                        m.write(CMD, [0])
+                    elif c in (17, 18) and vv:                  # the agent: frame / data in, script out
+                        io.win_write(bytes(m.read(WIN, WIN_SIZE)))
+                        io.w(R_CMD, c)
+                        assert vv.poll() == 1
+                        log.append((c, a, 0, 0, False))
+                        m.write(WIN, io.win_read(WIN_SIZE))
+                        devs = (io.r(R_DEV0), io.r(R_DEV1))
+                        if devs != last_devs[0]: m.write(DEV0, list(devs)); last_devs[0] = devs
+                        m.write(STAT, [io.r(3)])
                         m.write(CMD, [0])
                     m.go()
 
@@ -289,9 +308,8 @@ def main(kernal, scenario="basic", vecprg=None):
                   i is not None and "SEARCHING FOR *" in scr[i:] and "RUN" in scr[i:] and "HI" in scr[i:])
             check("SHIFT+RUN: text colour ($0286) untouched", m.read(0x0286, 1) == col)
 
-        if vector:
-            good = vector_tests(m, run, check, service, log, disk, big, workdir, pathlib.Path(vecprg).read_bytes(), cp_num,
-                                real if scan else None)
+        if agent:
+            good = agent_tests(m, run, check, service, log, disk, big, workdir, pathlib.Path(vecprg).read_bytes(), real if scan else None)
             return 0 if good and ok else 1
         banner = " 64K RAM  38911 FREE  VDRIVE " + ("SD 9 USB11" if scan else "SD 8 NOUSB")
         check("banner: %r (the KERNAL probed the bus itself at power-on)" % banner, banner in m.screen())
@@ -652,8 +670,9 @@ def main(kernal, scenario="basic", vecprg=None):
         vice.terminate()
         shutil.rmtree(workdir, ignore_errors=True)
 
-def vector_tests(m, run, check, service, log, disk, big, workdir, vec, cp_num, real):
-    """The plain-TeensyROM build (vector/vdvec.s) on the stock KERNAL. `real` is set in vecscan (true-drive 1541s at 8 and 10)."""
+def agent_tests(m, run, check, service, log, disk, big, workdir, vec, real):
+    """The plain-TeensyROM build on the stock KERNAL: vector/vdagent.s in GeoRAM, the logic in d64/vdrive_vec.c. `real` is set in
+    agentscan (true-drive 1541s at 8 and 10)."""
     res = {"ok": True}
     def chk(label, cond):
         check(label, cond); res["ok"] = res["ok"] and bool(cond)
@@ -680,19 +699,18 @@ def vector_tests(m, run, check, service, log, disk, big, workdir, vec, cp_num, r
 
     D = 9 if real else 8                               # the SD unit after the scan
     start = struct.unpack_from("<H", vec, 0)[0]
+    sys_at = start + 12                                # the agent's INSTALL entry (VV_OFS_ENTRIES)
     expect('LOAD"$",%d\r' % D, "DEVICE NOT PRESENT")
     chk("not installed: the stock KERNAL, nothing reached the mailbox", not log)
-    m.write(start, vec[2:])
-    expect('SYS%d\r' % start, "READY.")
+    expect('SYS%d\r' % sys_at, "READY.")
     v_load = bytes(m.read(0x0330, 2))
-    chk("SYS: ILOAD points into the hooks ($%04X)" % struct.unpack("<H", v_load)[0],
+    chk("SYS: ILOAD points into the agent ($%04X)" % struct.unpack("<H", v_load)[0],
         start <= struct.unpack("<H", v_load)[0] < start + len(vec) - 2)
-    expect('SYS%d\r' % start, "READY.")                # twice: must not save its own handlers as the "old" vectors (an endless loop)
+    expect('SYS%d\r' % sys_at, "READY.")               # twice: must not save its own handlers as the "old" vectors (an endless loop)
     expect('LOAD"$",%d\r' % D, "SEARCHING FOR $")
     expect('LIST\r', '0 "MOCKDISK')
-    want_scan = [(14, 0), (15, 9), (15, 11)] if real else [(14, 0), (15, 8)]
-    chk("the first transaction ran the bus scan: %r" % [(e[0], e[1]) for e in log if e[0] in (14, 15)],
-        [(e[0], e[1]) for e in log if e[0] in (14, 15)] == want_scan)
+    want_devs = bytes([9, 11]) if real else bytes([8, 0])
+    chk("the first OPEN/LOAD/SAVE ran the bus scan: DEV0/DEV1 %r" % bytes(m.read(0xC800 + 6, 2)), bytes(m.read(0xC800 + 6, 2)) == want_devs)
 
     if real:
         # both error channels in one line: the real 1541 through the chained stock code, ours through the mailbox
@@ -700,10 +718,9 @@ def vector_tests(m, run, check, service, log, disk, big, workdir, vec, cp_num, r
         expect('10 OPEN1,8,15:INPUT#1,A,B$:CLOSE1:OPEN2,9,15,"UI":INPUT#2,C,D$:CLOSE2\r')
         expect('20 PRINT A;B$;"/";C;D$\r')
         expect('RUN\r', "CBM DOS V2.6 1541/ 73 TRVDRIVE")
-        new = expect('LOAD"X",8\r', "FILE NOT FOUND", absent="DEVICE NOT PRESENT")
+        expect('LOAD"X",8\r', "FILE NOT FOUND", absent="DEVICE NOT PRESENT")
         expect('LOAD"X",10\r', "FILE NOT FOUND", absent="DEVICE NOT PRESENT")
         expect('LOAD"X",12\r', "DEVICE NOT PRESENT")
-        chk("a LOAD from 8 asks the mailbox and is not ours", all(e[4] for e in new if e[0] == 9))
         expect('NEW\r')
         m.keys('\x93LOAD"RPRG",8,1\r')                      # the stock load from the true drive sends nothing to the mailbox:
         for _ in range(60):                                 # wait for its READY. on a cleared screen
@@ -738,15 +755,12 @@ def vector_tests(m, run, check, service, log, disk, big, workdir, vec, cp_num, r
     n0 = len(log)
     expect('LOAD"BIG",%d,1\r' % D, "READY.")
     chk("BIG (6000 bytes) loaded to $2000 intact", bytes(m.read(0x2000, len(big) - 2)) == big[2:])
-    chk("LOAD went the fast way (no byte-level ACPTR)", any(e[0] == 10 for e in log[n0:]) and not any(e[0] == 6 for e in log[n0:]))
+    chk("LOAD in %d agent round trips (118-byte POKEs)" % len(log[n0:]), len(log[n0:]) < 80)
     expect('VERIFY"BIG",%d,1\r' % D, "OK")
     m.write(0x2000 + 3000, [m.read(0x2000 + 3000, 1)[0] ^ 0xFF])
     expect('VERIFY"BIG",%d,1\r' % D, "VERIFY  ERROR")
-    new = expect('N$="":FORI=1TO127:N$=N$+"X":NEXT:LOAD N$,%d\r' % D, "FILE NOT FOUND")
-    chk("127-character name: the fast open", any(e[0] == 9 for e in new))
-    new = expect('N$="":FORI=1TO130:N$=N$+"X":NEXT:LOAD N$,%d\r' % D, "FILE NOT FOUND")
-    chk("130-character name: asked with LISTEN, refused (no byte-level LOAD in this build)",
-        not any(e[0] == 9 for e in new) and any(e[0] == 1 and not e[4] for e in new))
+    expect('N$="":FORI=1TO127:N$=N$+"X":NEXT:LOAD N$,%d\r' % D, "FILE NOT FOUND")
+    expect('N$="":FORI=1TO130:N$=N$+"X":NEXT:LOAD N$,%d\r' % D, "FILE NOT FOUND")   # names of any length: PEEKed in pieces
     expect('NEW\r')
     expect('OPEN2,%d,2,"NUMTST,S,W"\r' % D)
     expect('PRINT#2,1;"A";2:PRINT#2,12;34\r', None, absent="SYNTAX")     # CHROUT returns the byte sent
@@ -754,7 +768,7 @@ def vector_tests(m, run, check, service, log, disk, big, workdir, vec, cp_num, r
     expect('OPEN15,%d,15,"S:NUMTST":CLOSE15\r' % D)
     expect('NEW\r'); expect('10 PRINT"SAVED"\r')
     new = expect('SAVE"SAVEME",%d\r' % D, "SAVING SAVEME")
-    chk("SAVE went the fast way", any(e[0] == 12 for e in new) and not any(e[0] == 5 for e in new))
+    chk("SAVE in %d agent round trips" % len(new), len(new) < 20)
     expect('NEW\r'); expect('LOAD"SAVEME",%d\r' % D, "READY."); expect('RUN\r', "SAVED")
     expect('VERIFY"SAVEME",%d\r' % D, "OK")
     expect('NEW\r'); expect('10 PRINT"V2"\r')
@@ -792,14 +806,11 @@ def vector_tests(m, run, check, service, log, disk, big, workdir, vec, cp_num, r
     n0 = len(log)
     expect('LOAD"$",%d\r' % D, "DEVICE NOT PRESENT")
     chk("reset: nothing reached the mailbox", len(log) == n0)
-    expect('SYS%d\r' % start, "READY.")
+    expect('SYS%d\r' % sys_at, "READY.")
     expect('LOAD"$",%d\r' % D, "SEARCHING FOR $")
     expect('LIST\r', '0 "MOCKDISK')
 
-    # --- dead mailbox (handler gone): every call times out and falls back to the stock code ---
-    m.req(0x13, struct.pack("<I", cp_num))
-    m.write(0xC800 + 3, [0x80])
-    expect('LOAD"X",%d\r' % D, "DEVICE NOT PRESENT")
+    # (no dead-mailbox test: the agent has no time-out, since while its code is visible the handler serving it runs; DESIGN.md 46)
     if not res["ok"]: print("\n".join(m.screen()))
     print("mailbox calls:", len(log))
     return res["ok"]

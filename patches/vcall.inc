@@ -1,7 +1,6 @@
-; vcall (one mailbox transaction) and bus_scan (the lazy probe of the real serial bus for automatic numbers), shared by the
-; KERNAL patch (patches/vdrive.s) and the vector-hook build (vector/vdvec.s). Needs mailbox.inc first. Calls $FFB1 / $FF93 /
-; $FFAE: in the KERNAL patch those reach the hooks, which answer not-mine while the scan runs; in the vector build they are the
-; stock real-bus routines, unhooked.
+; vcall (one mailbox transaction) and bus_scan (the lazy probe of the real serial bus for automatic numbers) of the KERNAL patch
+; (patches/vdrive.s). Needs mailbox.inc first. Its $FFB1 / $FF93 / $FFAE calls reach the patch's hooks, which answer not-mine while
+; the scan runs. (A separate file since the first plain-TR build shared it, DESIGN.md 45; the agent does its scan in C.)
 
 ; in: command in A, argument already in MBX_ARG and saved in $A7 (hooks do both).
 ; Preserves X, Y. Waits up to ~1 s for the Teensy; a mailbox that never answers

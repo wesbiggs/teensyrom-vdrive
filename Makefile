@@ -2,7 +2,7 @@
 STOCK ?= /opt/homebrew/Cellar/vice/3.10/share/vice/C64/kernal-901227-03.bin
 
 # util/ is also a directory: without .PHONY `make util` is always "up to date"
-.PHONY: test test-vector test-d64 test-devcfg test-fw test-vdconfig test-vdcopy test-border test-reset test-banner test-menuprobe test-variants test-hash shot testdisk util
+.PHONY: test test-agent test-d64 test-devcfg test-fw test-vdconfig test-vdcopy test-border test-reset test-banner test-menuprobe test-variants test-hash shot testdisk util
 
 # Hardware image: mailbox at IO1 ($DE10, above the SwiftLink ACIA at $DE00-$DE07)
 build/kernal-tr.bin: $(wildcard patches/*.s) tools/build.py
@@ -16,17 +16,17 @@ test-hash: build/kernal-tr.bin README.md
 build/kernal-vd.bin: $(wildcard patches/*.s) tools/build.py
 	python3 -I tools/build.py $(STOCK) $@ -D 'MBX=$$C800' -D 'WIN=$$CA00'
 
-# Plain-TeensyROM build (vector hooks, docs/DESIGN.md 45), VICE flavour: the hooks in RAM at $C000 (SYS49152), mailbox as above
-build/vdvec-vice.prg: vector/vdvec.s vector/vdvec.cfg patches/mailbox.inc patches/vcall.inc
+# The agent (docs/DESIGN.md 46), VICE flavour: served from GeoRAM's page at $DE08, mailbox as above
+build/vdagent-vice.prg: vector/vdagent.s vector/agent.cfg patches/mailbox.inc
 	mkdir -p build
-	ca65 -I patches -D 'MBX=$$C800' -D 'WIN=$$CA00' -o build/vdvec-vice.o vector/vdvec.s
-	ld65 -C vector/vdvec.cfg -S 0xC000 -o $@ build/vdvec-vice.o
+	ca65 -I patches -D 'MBX=$$C800' -D 'WIN=$$CA00' -o build/vdagent-vice.o vector/vdagent.s
+	ld65 -C vector/agent.cfg -S 0xDE08 -o $@ build/vdagent-vice.o
 
-test-vector: build/vdvec-vice.prg build/libd64.dylib   # the vector hooks on the stock KERNAL in VICE (mock `vector` and `vecscan`)
-	python3 -I tools/vdrive_mock.py $(STOCK) vector build/vdvec-vice.prg
-	python3 -I tools/vdrive_mock.py $(STOCK) vecscan build/vdvec-vice.prg
+test-agent: build/vdagent-vice.prg build/libd64.dylib   # the agent + d64/vdrive_vec.c on the stock KERNAL in VICE (mock `agent` and `agentscan`)
+	python3 -I tools/vdrive_mock.py $(STOCK) agent build/vdagent-vice.prg
+	python3 -I tools/vdrive_mock.py $(STOCK) agentscan build/vdagent-vice.prg
 
-D64SRC = d64/d64.c d64/vdrive.c d64/vdrive_io.c
+D64SRC = d64/d64.c d64/vdrive.c d64/vdrive_io.c d64/vdrive_vec.c
 build/libd64.dylib: $(D64SRC) $(wildcard d64/*.h)
 	cc -std=c99 -Wall -Wextra -Werror -fPIC -shared -o $@ $(D64SRC)
 	c++ -x c++ -std=gnu++17 -Wall -Wextra -Werror -fsyntax-only $(D64SRC)   # firmware compiles these as C++
@@ -38,6 +38,7 @@ test-d64: build/libd64.dylib
 	python3 -I tests/test_vdrive.py
 	python3 -I tests/test_rel.py
 	python3 -I tests/test_vio.py
+	python3 -I tests/test_vvec.py
 
 test-devcfg:
 	cc -std=c99 -Wall -Wextra -Werror -DVD_DEV0=10 -DVD_DEV1=11 -o build/devcfg tests/devcfg.c d64/d64.c d64/vdrive.c && ./build/devcfg
@@ -66,7 +67,7 @@ test-menuprobe: build/libd64.dylib   # the TR menu's launch-time bus probe (firm
 test-variants: build/libd64.dylib   # the patch on each ROM the firmware patches in memory (VD_KnownKernals), in VICE; ROMs found next to STOCK
 	python3 -I tests/variants_vice.py $(STOCK)
 
-test: build/kernal-vd.bin build/libd64.dylib test-d64 test-devcfg test-fw test-border test-reset test-banner test-vdconfig test-vdcopy test-hash test-menuprobe test-variants test-vector
+test: build/kernal-vd.bin build/libd64.dylib test-d64 test-devcfg test-fw test-border test-reset test-banner test-vdconfig test-vdcopy test-hash test-menuprobe test-variants test-agent
 	python3 -I tools/vdrive_mock.py build/kernal-vd.bin
 	python3 -I tools/vdrive_mock.py build/kernal-vd.bin scan
 

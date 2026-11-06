@@ -498,6 +498,8 @@ Tested: `tests/test_vdrive.py` (`Alias`: the examples, the characters, a random 
 
 ## 45. The plain TeensyROM: vector hooks instead of a KERNAL (VICE only; not on hardware)
 
+*Decided 2026-11-06: layout (b), the agent (section 46). `vector/vdvec.s`, the RAM-resident hooks described below, was retired with its `vector`/`vecscan` mock scenarios. The agent covers the RAM fallback too, because nothing in it depends on its address. What follows is the analysis that led there.*
+
 The plain TeensyROM (Fab 0.2/0.3, `--target tr`) builds without `Fab04_Features`. It has no Kernal Replace and no full DMA, so it can neither serve a patched KERNAL nor read the C64's ROM to patch it. It also lacks the Special button (alt-button disk switching) and the REU Special IOs. Everything this project does on the Teensy side (`d64/`, `vdrive.c`, `vdrive_io.c`, most of the glue) needs none of those. What has to change is how the C64 reaches the mailbox.
 
 **Hooks.** `vector/vdvec.s` points the KERNAL's RAM vectors at its own handlers: `IOPEN` `$031A`, `ICLOSE`, `ICHKIN`, `ICKOUT`, `ICLRCH`, `IBASIN`, `IBSOUT`, `IGETIN`, `ICLALL`, `ILOAD` `$0330`, `ISAVE` `$0332`, plus `IMAIN` `$0302` (below). `IGETIN` is needed because stock GETIN goes to BASIN's serial code without passing through `$0324`. A handler leaves device numbers 0-3 alone. For 4 and up it sends the Teensy the commands the KERNAL patch's hooks send: LISTEN/TALK/SECOND/TKSA/CIOUT/ACPTR/UNLSN/UNTLK and the fast LOAD/SAVE commands. So `vdrive_io.c` sees the same traffic and needs no change. On "not mine" the handler jumps through the vector value it found at install (`old`, the `JMP (old+n)` exits). That keeps real drives, JiffyDOS and wedges installed earlier working, and the stock KERNAL stays as it is, tape included. `vcall` and `bus_scan` are shared with the KERNAL patch (`patches/mailbox.inc`, `patches/vcall.inc`; the patched images are byte-identical after the move). In this build, the scan's `$FFB1`/`$FF93`/`$FFAE` calls are the unhooked real-bus routines.
@@ -597,3 +599,54 @@ Two layouts fit that rule:
 - VDSUITE is not run here: its default-device and `SYS64738` checks are KERNAL-build features.
 
 **Hardware, when a board is available:** the IO-execution soak test first, then the placement decision, the firmware gate and the menu install.
+
+## 46. The agent: a 246-byte 6502 routine, the vector logic in C (VICE only; not on hardware)
+
+The design is option (b) of section 45: the KERNAL's vectors point into `vector/vdagent.s`, which the Teensy serves from IO1 and which only carries messages. Everything else is `d64/vdrive_vec.c` on the Teensy, on top of the byte-level drive (`vdrive_mailbox`):
+- OPEN through SAVE
+- the file table
+- "not ours" and the chain to the vector it replaced
+- the lazy bus scan
+- the KERNAL messages
+
+The TR+ build is untouched: its KERNAL patch and the fast LOAD/SAVE commands stay as they are, and `vdrive_vec.c` only adds commands 17 and 18.
+
+**Protocol.**
+- **The frame.** A vector call writes it into the window: Y, X, A, P, the low byte of the entry's return address (the `JSR` it came through), and ST, open files, DFLTN and DFLTO. Then `CMD` = `VV_C_VEC`. The agent waits on the STAT token with no time-out: while its code is visible, the handler that serves it is running, and RUN/STOP+RESTORE gets out of a hang.
+- **The answer** is a script in the window. Op codes are decoded by shifting:
+  - `GO`: load Y, P, A, X and `JMP (WIN+126)`. This is a return (to an `RTS` in the agent), a chain to the old vector, or a KERNAL error exit (`$F6FB`+3(n−1)).
+  - `POKE lo hi n data`: the data goes last byte first.
+  - `PEEK lo hi n`: copies memory into the window, then `VV_C_CONT`.
+  - `CONT`.
+- **A ROM call** is a POKE of the routine into the operand of `ctramp`'s `JSR`, then a GO to `ctramp`. Its second `JSR` sends the result back as a frame from an entry of its own.
+- **No zero page or RAM is used.** POKE, PEEK and ctramp patch their own operands, so the served page must keep the 6502's writes (GeoRAM does; the Teensy will have to).
+- **Size.** 246 bytes, linked at `$DE08`, which leaves `$DE00-$DE07` to SwiftLink. That means the mailbox registers have to leave IO1 on hardware (to IO2 `$DF00-$DF7F`, free without an REU). The window stays at `$DF80`.
+
+**Fast paths.** CHROUT, CHRIN and GETIN with DFLTO/DFLTN below 4 (screen, keyboard, tape, RS-232) jump straight through the old vectors held in the agent (`old_bsout` etc., which INSTALL writes). Printing and typing never wait for the Teensy. GETIN on a device of 4 or above uses the BASIN entry; stock runs the same serial code for both.
+
+**Entries.** INSTALL (the `SYS` address, `$DE14` = 56852 in the VICE build), OPEN, CLOSE, CHKIN, CKOUT, CLRCHN, BASIN, BSOUT, CLALL, LOAD, SAVE, IMAIN. The numbers and offsets are in `d64/vdrive_vec.h` and asserted in the source.
+
+**Engine.**
+- **Protothreads.** Each call gets a context. A handler that needs memory or a ROM routine yields (`PEEK`, `CALL`, `CONT` macros; resume points from `__COUNTER__`) and goes on at the next frame. The handlers are an `if` chain: a `switch` would capture the resume `case` labels.
+- **Nested calls.** A call that arrives while a context waits for a ROM routine's result (for example the CLRCHN of a KERNAL error exit) runs on a context above it.
+- **Leftover contexts.** A context waiting for anything else is left over from RUN/STOP+RESTORE and is dropped when the next call arrives. A frame nobody waits for gets a return with C set and A = 5.
+- **What the handlers do:**
+  - **OPEN** calls the old OPEN with the name length set to 0 (the stock code fills the table), then sends LISTEN/SECOND, the name in PEEKed pieces, and UNLISTEN.
+  - **CLOSE** sends the close, then sets bit 7 of the entry's SA so the stock CLOSE only drops it.
+  - **CHKIN/CHKOUT** sets `$B8-$BA` and `$99`/`$9A`.
+  - **LOAD** calls "SEARCHING FOR", opens byte by byte, calls "LOADING"/"VERIFYING", then streams 118-byte POKEs. VERIFY PEEKs the same pieces and compares them in C. At the end it sets `$AE/$AF` and ST, and returns X/Y.
+  - **SAVE** calls "SAVING" and streams PEEKs.
+  - **Bus scan.** The first OPEN/LOAD/SAVE of a run with an automatic unit runs the scan as ROM calls to the real `$FFB1`/`$FF93`/`$FFAE`.
+  - **IMAIN** re-hooks after a RESTOR, as `v_main` did (section 45).
+- **Names of any length work.** They are PEEKed in pieces; the 128-byte window limit of section 45 is gone.
+
+**Tests.**
+- `tests/test_vvec.py` (in `make test-d64`): a Python stand-in for the agent runs the engine's scripts against a 64 KB image. It covers INSTALL and its idempotence, the fast-path vectors, a wedge kept as the old vector, chaining with the registers intact, the IMAIN re-hook (and leaving a later wedge alone), a CLRCHN arriving during "SEARCHING FOR" followed by FILE NOT FOUND, a SAVE/LOAD/VERIFY round trip, and leftover contexts.
+- `make test-agent` (part of `make test`): `tools/vdrive_mock.py` scenarios `agent` and `agentscan` on the stock KERNAL. The agent sits in GeoRAM's first page (the stand-in for the served IO1 page) and the mock calls `vvec_poll`. They run the checks section 45 described, minus the dead-mailbox case. A 6000-byte LOAD takes 59 round trips; a small SAVE takes 7.
+
+**Not done yet.**
+- **Firmware:** the plain-TR gate (section 45), the served page in the IO1 handler (it must keep the 6502's writes), the registers moved to IO2, and the menu installing the agent at launch.
+- **Hardware:**
+  - the IO-execution soak test (section 45);
+  - the per-call latency, which decides whether BASIC loops doing GET#/PRINT# to a disk file feel slower than on the TR+ (each byte is one round trip there as well);
+  - the STOP key, which LOAD and SAVE do not check (the KERNAL patch's fast paths do not either).
