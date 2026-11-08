@@ -56,6 +56,7 @@ C_FSAVE_CLOSE = 13
 C_SCAN   = 14
 C_FREE   = 15
 C_MENU   = 16
+C_FLOAD_DMA = 17
 
 ; ---- fast LOAD / SAVE hooks: replace the `JSR $F3D5` (open serial file) --------
 .segment "P_F4C8"
@@ -305,7 +306,7 @@ hk_acptr:
 ; ---- fast LOAD ---------------------------------------------------------------
 ; Entered instead of `JSR $F3D5` in the serial LOAD path. Handles LOAD (not
 ; VERIFY) entirely through the mailbox for whatever devices the Teensy claims: the Teensy streams the
-; file in blocks of <=128 bytes through the IO2 window. Anything else (also a name too long for the window), or a
+; file in blocks of <=128 bytes through the IO2 window, or writes parts of it into RAM by DMA (docs/DESIGN.md 49). Anything else (also a name too long for the window), or a
 ; firmware without the fast commands, replays the displaced JSR and continues
 ; in the stock code ($F4CB).
 ; in: A = FLOAD_OPEN / FSAVE_OPEN. Copies the file name to the window and sends the command (out: as vcall).
@@ -370,7 +371,11 @@ fl_hook:
         lda $C4
         sta $AF
 @go:    jsr $F5D2               ; "LOADING"
-@blk:   lda #C_FLOAD_BLK
+@blk:   lda $AE                 ; where the next byte goes: ARG/LEN. The Teensy answers with a window block as FLOAD_BLK, or
+        sta $A7                 ; (DATA = 0) has written the next part straight into RAM by DMA and moved $AE/$AF on itself
+        lda $AF                 ; (VIO_FLOAD_DMA, d64/vdrive_io.h; never below $0200 or in $D000-$DFFF)
+        sta MBX_LEN
+        lda #C_FLOAD_DMA
         jsr vcall
         bcs fl_fail             ; time-out / not-mine in the middle of a load
         sta $A3                 ; byte count (0..WINSZ)

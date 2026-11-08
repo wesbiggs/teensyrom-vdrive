@@ -97,6 +97,56 @@ class VioTests(unittest.TestCase):
                 if len(data) == 1: self.assertEqual((rc, addr & 255), (0, data[0]))
                 else: self.assertEqual((rc, addr, got), (0, expect[0], expect[1]))
 
+    # ---- DMA LOAD (F_LOAD_DMA, docs/DESIGN.md 49) ----
+    def dma_io(self, fail_at=None):
+        mem = bytearray(0x10000); writes = []
+        def dma(addr, data):
+            writes.append((addr, len(data)))
+            if fail_at is not None and len(writes) == fail_at: return False
+            mem[addr:addr + len(data)] = data; return True
+        self.io.set_dma(dma)
+        return mem, writes
+
+    def test_dma_load_all_sizes_match_the_window_load(self):
+        for name, data in self.files.items():
+            if len(data) < 2: continue
+            with self.subTest(name=name):
+                mem, writes = self.dma_io()
+                rc, end = self.io.dma_load(8, name, mem)
+                addr = data[0] | data[1] << 8
+                body = data[2:]
+                self.assertEqual(rc, 0)
+                self.assertEqual(end, (addr + len(body)) & 0xFFFF)
+                got = bytes(mem[(addr + i) & 0xFFFF] for i in range(len(body)))
+                self.assertEqual(got, body)
+                for a, n in writes:                                          # never into the stack page or I/O
+                    if a != 0xAE: self.assertTrue(0x200 <= a and (a + n <= 0xD000 or a >= 0xE000), (hex(a), n))
+                    self.assertLessEqual(n, 2048)
+
+    def test_dma_load_wraps_and_skips_io_like_the_cpu(self):
+        body = self.files[b"HUGE"][2:]
+        for at in (0x0100, 0x8000, 0xCF80, 0xFFF0):
+            with self.subTest(at=hex(at)):
+                mem, writes = self.dma_io()
+                rc, end = self.io.dma_load(8, b"HUGE", mem, at=at)
+                self.assertEqual((rc, end), (0, (at + len(body)) & 0xFFFF))
+                keep = [i for i in range(len(body)) if (at + i) & 0xFFFF not in (0xAE, 0xAF)]   # a wrapped load runs over the pointer, as on a C64
+                self.assertEqual(bytes(mem[(at + i) & 0xFFFF] for i in keep), bytes(body[i] for i in keep))
+
+    def test_dma_load_failure_answers_notmine_and_closes(self):
+        mem, writes = self.dma_io(fail_at=3)
+        self.assertEqual(self.io.dma_load(8, b"BIG", mem)[0], "notmine")
+        mem, writes = self.dma_io()
+        self.assertEqual(self.io.dma_load(8, b"BIG", mem)[0], 0)              # the channel was closed: the next LOAD works
+        self.assertEqual(self.io.fast_load(8, b"BIG")[2], self.files[b"BIG"][2:])
+
+    def test_dma_load_without_dma_is_the_window_load(self):
+        self.io.set_dma(None)
+        mem = bytearray(0x10000)
+        rc, end = self.io.dma_load(8, b"BIG", mem)
+        data = self.files[b"BIG"]; addr = data[0] | data[1] << 8
+        self.assertEqual((rc, end, bytes(mem[addr:addr + len(data) - 2])), (0, addr + len(data) - 2, data[2:]))
+
     def test_fast_load_errors(self):
         self.assertEqual(self.io.fast_load(8, b"NOPE")[0], 4)
         self.assertEqual(self.io.fast_load(9, b"X")[0], 5)

@@ -563,7 +563,61 @@ Suspected cause: with a Kernal Replace / VDrive handler running, `kernal-fnet-po
 `loop()`, and a remote command's receive wait (`SerialAvailabeTimeout`) runs inside `loop()` without polling (`EthernetClient::available()`
 only peeks the socket). A payload that fits one TCP segment (`--chunk 1024`) has not failed.
 
-**Fix (0.9.0.51, in `kernal-fnet-poll.patch` and committed on the local PR #85 branch, not pushed):** `CmdInputPoll()` in `SerUSBIO.ino` calls
+**Fix (0.9.0.51, in `kernal-fnet-poll.patch` and on the PR #85 branch, pushed 2026-11-08):** `CmdInputPoll()` in `SerUSBIO.ino` calls
 `FnetLoopPollService()` in the three places a remote command waits for input (`SerialAvailabeTimeout`, `DiscardCmdInput`,
 `ReceiveSpanBytes`). The stock firmware never had the problem: its PIT ISR polls during those waits. Firmware builds; fw_host passes;
 **not on hardware**: check with a long 4 KB run (`tools/dmatest.py --rounds 300`, no `--chunk`) and no time-out.
+
+**Later runs (owner, 2026-11-08, on a C128 in C64 mode while the C64's power supply is out; host Mac -> WiFi -> Pi -> Ethernet -> TR):** 0.9.0.51
+still timed out once after 27 rounds. `dmatest.py` then got `--nodelay` (`TCP_NODELAY`) and timed each command apart (send / reply,
+`--slow`): with Nagle off the Mac hands a command over at once (`send 0 ms`) and the TR's reply took 0.5-3 s now and then, so the time is
+spent between the Mac's socket and the TR's answer, not in the DMA. FNET acknowledges data only on its 200 ms timer (`fnet_tcp.c`), the
+TR's receive ring has 4 buffers, and the TR gives up after 500 ms without a byte (`SerialTimoutMillis`); a lost frame costs a TCP
+retransmission (~200 ms, then doubling), and two in a row exceed the 500 ms. 300 rounds from the Mac with `--nodelay` passed (slowest round
+7.1 s); from the Pi on the wired side the rounds were a steady ~340 ms. Conclusion: the time-outs were WiFi loss on the host's path, not
+DMA, not the C128, and not shown to be the missing poll (0.9.0.51 is still right: without it a wait could not receive at all). For clients
+over WiFi: retry a `WriteC64Mem` that timed out (the same bytes to the same place again do no harm; a trlib change in teensyrom-rcp).
+
+## 49. DMA LOAD (0.9.0.52; host, glue and VICE tests, not on hardware)
+
+**Why.** The window LOAD (section 9, 32) moves 128 bytes per mailbox round trip and copies each byte with two reads (bus margin), about
+24 cycles a byte. DMATEST (48) showed the TR+ can write C64 RAM by DMA while our KERNAL is served, under BASIC and the KERNAL too, so a
+LOAD can skip the window: the Teensy reads the next part of the file and writes it into RAM itself while the 6502 waits on STAT.
+
+**Protocol.** One new command, `VIO_FLOAD_DMA` (17), sent by the KERNAL's LOAD loop in place of `VIO_FLOAD_BLK` with ARG/LEN = the address
+the next byte goes to (`$AE/$AF`). The Teensy answers either:
+- as `VIO_FLOAD_BLK` (DATA = 1-128 bytes in the window, which the KERNAL copies as before), or
+- with DATA = 0: it read up to `dma_max` bytes (`VD_DmaPart`, 2 KB) and wrote them by DMA, then wrote the new end address into `$AE/$AF`
+  (`VIO_DMA_PTR`), also by DMA. The KERNAL's loop already treats DATA = 0 as "nothing to copy" and goes on from `$AE/$AF`, so the 6502
+  side costs 9 bytes (`lda $AE / sta $A7 / lda $AF / sta MBX_LEN` and the command number; `P_F8E2` 676 of 683 bytes).
+ST is as for `VIO_FLOAD_BLK` (`$40` last part, `$42` a read error ended it). A failed DMA write (`PerformDMA` / `CloseDMA` false) closes the
+channel and answers NOTMINE: the KERNAL reports DEVICE NOT PRESENT instead of loading stale bytes, as for a failed window block.
+
+**Where DMA is used** (`vio_dma_ok`): only where a CPU store would reach the same RAM. Not `$0000-$01FF` (the CPU port at `$00/$01` is not RAM
+to a DMA write; zero page and the stack the KERNAL is running on change under it) and not `$D000-$DFFF` (I/O or the character ROM depending
+on `$01`; our own `$DE/$DF` registers). There the window path stores the bytes with the CPU, exactly as before. A DMA part stops at `$D000`
+and at `$FFFF`; the next request then gets the window. A load that wraps past `$FFFF` goes on at `$0000` with the window, as the stock loop.
+Under BASIC and the KERNAL a DMA write lands in RAM, as the CPU's store does.
+
+**Firmware.** `vio_t` gets `dma_write`, `dma_ctx`, `dma_buf`, `dma_max` (`vio_set_dma`; `vio_init` clears them, so no host = no DMA = the
+window path: host tests, the scan and variant VICE runs). The glue (`IOH_VDrive.c`) sets `VD_DmaWrite` (`PerformDMA(DMA_WRITE, ...)` and
+`CloseDMA()`) and a 2 KB `DMAMEM` buffer (`vdDmaBuf`, RAM2 outside the heap the REU sizes itself from). The read of a part is the window
+path's byte loop (`fload_read`, shared with `fload_blk`).
+
+**Costs and limits.**
+- The CPU is halted for each part, about 2.5 ms per 2 KB (badlines skipped): IRQs and NMIs wait that long. A SwiftLink receiving at high
+  speed during a LOAD may drop characters; nothing else runs during a KERNAL LOAD anyway. `VD_DmaPart` is the knob.
+- VERIFY and SAVE are unchanged (VERIFY takes the stock path; a DMA read for them is a separate question, see 48's crash note on DMA reads).
+- KERNAL and firmware must match: an older firmware answers command 17 NOTMINE, so every LOAD fails with DEVICE NOT PRESENT. The firmware
+  patches the C64's own KERNAL from its own table (40), so only a `/VDrive/kernal.bin` or a VDrive KERNAL in a ROM from another revision can
+  meet an older firmware. VDrive Config's block listing (47) still uses `VIO_FLOAD_BLK`.
+
+**Tests.** `tests/test_vio.py`: every file size loads the same bytes as the window LOAD, DMA never below `$0200` or in `$D000-$DFFF` and never
+more than 2 KB, loads at `$0100`, `$8000`, `$CF80`, `$FFF0` (window, DMA, wrap), a failed DMA answers not mine and closes the channel, no DMA
+host = the window. `tests/fw_host`: the glue's `PerformDMA` writes into a fake 64 KB, a 5000-byte file at `$0801` in three parts, across I/O
+from `$CE00`, from `$0100`, a failed DMA. VICE `basic` (`tools/vdrive_mock.py`): DMA on, each DMA write done as a monitor write while the CPU is
+stopped at the CMD checkpoint; the whole run (BASIC test programs, VDSUITE, the soak, the fault injection) passes and BIG (6000 bytes)
+comes in three DMA parts. `scan` and `variant` keep the window path with the new KERNAL.
+
+**On hardware, to check:** LOAD of a large program (time it against 0.9.0.51), a load under BASIC (`LOAD"X",8,1` to `$A000`) and one across
+`$D000`, `VDSUITE` "run all", the C64 as well as the C128, and VDrive+SwiftLink with CCGMS (the NMI hold).

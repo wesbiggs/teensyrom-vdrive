@@ -30,10 +30,16 @@ static const int kBannerTag = 0x1BB0;                 // where the tag sits in t
 static int banner(int unit) { return KernalFast[kBannerTag + 8 + unit]; }
 
 static uint8_t g_c64_kernal[8192];                    // what a DMA read of $E000-$FFFF returns
-static int g_dma_reads = 0; static bool g_dma_fail = false;
+static uint8_t g_c64_ram[65536];                      // where DMA writes go (the DMA LOAD, VIO_FLOAD_DMA)
+static int g_dma_reads = 0, g_dma_writes = 0; static bool g_dma_fail = false, g_dma_wfail = false;
 bool PerformDMA(DMA_Trans_RnW RnW, uint16_t StartAddr, uint8_t *Buffer, uint32_t Length, DMA_Addr_Mode FixC64Addr)
 {
-    if (g_dma_fail || RnW != DMA_READ || FixC64Addr != DMA_ADDR_INCREMENT || StartAddr < 0xE000 || StartAddr + Length > 0x10000) return false;
+    if (RnW == DMA_WRITE) {
+        if (g_dma_wfail || FixC64Addr != DMA_ADDR_INCREMENT || StartAddr + Length > 0x10000) return false;
+        memcpy(g_c64_ram + StartAddr, Buffer, Length); g_dma_writes++;
+        return true;
+    }
+    if (g_dma_fail || FixC64Addr != DMA_ADDR_INCREMENT || StartAddr < 0xE000 || StartAddr + Length > 0x10000) return false;
     memcpy(Buffer, g_c64_kernal + (StartAddr - 0xE000), Length); g_dma_reads++;
     return true;
 }
@@ -142,6 +148,27 @@ static std::string fast_load(int dev, const std::string &name, int *rc = nullptr
         if (st & 0x40) break;
     }
     return out;
+}
+
+// the patched KERNAL's LOAD loop with VIO_FLOAD_DMA: each request carries the address ($AE/$AF); a window block is stored by the
+// "CPU", a DMA answer (DATA 0) has written RAM and the pointer itself. at < 0: the file's own load address. Returns the end address
+// ($AE/$AF afterwards) or -1 (open failed, rc in *rc) / -2 (a part answered not mine).
+static int dma_load(int dev, const std::string &name, int at = -1, int *rc = nullptr)
+{
+    put_name(name);
+    int r = call(VIO_FLOAD_OPEN, dev, (uint8_t)name.size());
+    if (rc) *rc = r;
+    if (r) return -1;
+    unsigned p = at >= 0 ? (unsigned)at : (unsigned)(wr_(0) | wr_(1) << 8);
+    g_c64_ram[0xAE] = (uint8_t)p; g_c64_ram[0xAF] = (uint8_t)(p >> 8);
+    for (;;) {
+        uint8_t st; int n = call(VIO_FLOAD_DMA, (uint8_t)p, (uint8_t)(p >> 8), &st);
+        if (n & 0x100) return -2;
+        for (int i = 0; i < n; i++) g_c64_ram[(p + i) & 0xFFFF] = wr_((uint8_t)i);
+        if (n) { p += n; g_c64_ram[0xAE] = (uint8_t)p; g_c64_ram[0xAF] = (uint8_t)(p >> 8); }
+        else p = g_c64_ram[0xAE] | g_c64_ram[0xAF] << 8;
+        if (st & 0x40) return (int)p;
+    }
 }
 
 static int fast_save(int dev, const std::string &name, const std::string &data)
@@ -392,6 +419,33 @@ int main(int argc, char **argv)
     check("fast save ok", fast_save(8, "NEWFILE", payload) == 0);
     std::string back = fast_load(8, "NEWFILE", &rc);
     check("saved file reads back", rc == 0 && back.size() == payload.size() + 2 && back.substr(2) == payload);
+
+    // ---- DMA LOAD (VIO_FLOAD_DMA, docs/DESIGN.md 49): the same bytes, written into C64 RAM by DMA in parts ----
+    {
+        std::string big(5000, 0); for (size_t i = 0; i < big.size(); i++) big[i] = (char)(i * 7 + i / 251);
+        check("DMA LOAD: a 5000-byte file saved", fast_save(8, "DMAFILE", big) == 0);
+        memset(g_c64_ram, 0x55, sizeof g_c64_ram); g_dma_writes = 0;
+        int end = dma_load(8, "DMAFILE", -1, &rc);
+        check("DMA LOAD: $0801 + 5000, the end pointer written by DMA", rc == 0 && end == 0x0801 + 5000);
+        check("... every byte in RAM, nothing after it", memcmp(g_c64_ram + 0x0801, big.data(), big.size()) == 0 && g_c64_ram[0x0801 + 5000] == 0x55);
+        check("... in 2 KB parts: three data writes and three pointer writes", g_dma_writes == 6);
+        memset(g_c64_ram, 0x55, sizeof g_c64_ram); g_dma_writes = 0;
+        end = dma_load(8, "DMAFILE", 0xCE00, &rc);                     // over $D000-$DFFF: DMA up to $CFFF, the window there, DMA from $E000
+        bool same = true; for (size_t i = 0; i < big.size(); i++) same = same && g_c64_ram[0xCE00 + i] == (uint8_t)big[i];
+        check("... loaded at $CE00 across I/O: all bytes, end right", end == 0xCE00 + 5000 && same);
+        check("... DMA below $D000 and from $E000 only (2 parts + pointers)", g_dma_writes == 4);
+        memset(g_c64_ram, 0x55, sizeof g_c64_ram); g_dma_writes = 0;
+        end = dma_load(8, "DMAFILE", 0x0100, &rc);                     // the stack page: the window first, DMA from $0200
+        same = true; for (size_t i = 0; i < big.size(); i++) same = same && g_c64_ram[0x0100 + i] == (uint8_t)big[i];
+        check("... loaded at $0100: the window below $0200, then DMA", end == 0x0100 + 5000 && same && g_dma_writes == 6);
+        g_dma_wfail = true;
+        check("... a failed DMA answers not mine (the KERNAL reports an error)", dma_load(8, "DMAFILE", -1, &rc) == -2);
+        g_dma_wfail = false;
+        check("... and the channel is closed: the next LOAD works", dma_load(8, "DMAFILE", -1, &rc) == 0x0801 + 5000);
+        std::string w = fast_load(8, "DMAFILE", &rc);
+        check("... the window LOAD (VIO_FLOAD_BLK) is unchanged", rc == 0 && w.substr(2) == big);
+        cmd15("S:DMAFILE"); status15();
+    }
     g_ms += 1000; PollingHndlr_VDrive();                       // > VD_FlushIdleMs since last write
     check("dirty flag flushed", !vdUnit[0].dirty);
 

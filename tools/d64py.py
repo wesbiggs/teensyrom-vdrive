@@ -149,7 +149,9 @@ LIB.vio_io2_read.restype = ctypes.c_uint8
 LIB.vio_poll.restype = ctypes.c_int
 LIB.vdrive_active.restype = ctypes.c_int
 (R_CMD, R_ARG, R_DATA, R_STAT, R_ST, R_LEN, R_DEV0, R_DEV1) = range(8)
-(F_LOAD_OPEN, F_LOAD_BLK, F_SAVE_OPEN, F_SAVE_BLK, F_SAVE_CLOSE, F_SCAN, F_FREE, F_MENU) = range(9, 17)
+(F_LOAD_OPEN, F_LOAD_BLK, F_SAVE_OPEN, F_SAVE_BLK, F_SAVE_CLOSE, F_SCAN, F_FREE, F_MENU, F_LOAD_DMA) = range(9, 18)
+DMA_PTR = 0xAE                     # VIO_DMA_PTR
+DMA_WRITE_FN = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_uint16, ctypes.POINTER(ctypes.c_uint8), ctypes.c_uint16)
 BUSY, OK, NOTMINE, SCANREQ = 0x80, 0x5A, 0xA5, 0x3C
 WIN_SIZE = 128                                    # VIO_WIN: the IO2 window at $DF80 (d64/vdrive_io.h)
 
@@ -207,6 +209,33 @@ class VIO:
             data += self.win_read(n)
             if st & 0x40: break
         return 0, addr, data
+
+    def set_dma(self, fn, size=2048):
+        """fn(addr, bytes) -> bool: what the host's DMA write does (None: no DMA). The buffer and callback are kept alive here."""
+        if fn is None:
+            LIB.vio_set_dma(self.v, None, None, None, ctypes.c_uint16(0)); self._dma = None; return
+        cb = DMA_WRITE_FN(lambda ctx, addr, buf, n: 1 if fn(addr, ctypes.string_at(buf, n)) else 0)
+        self._dma = (cb, ctypes.create_string_buffer(size))
+        LIB.vio_set_dma(self.v, cb, None, self._dma[1], ctypes.c_uint16(size))
+
+    def dma_load(self, dev, name, mem, at=None):
+        """the patched KERNAL's LOAD loop with F_LOAD_DMA, into mem (a 64 KB bytearray the DMA callback also writes).
+        returns (rc, end address); rc "notmine" if a part was answered not mine"""
+        self.win_write(name)
+        nm, rc, _ = self.call(F_LOAD_OPEN, dev, len(name))
+        if nm: return "notmine", None
+        if rc: return rc, None
+        p = (self.win_r(0) | self.win_r(1) << 8) if at is None else at
+        mem[DMA_PTR], mem[DMA_PTR + 1] = p & 255, p >> 8
+        while True:
+            nm, n, st = self.call(F_LOAD_DMA, p & 255, p >> 8)
+            if nm: return "notmine", None
+            for i in range(n): mem[(p + i) & 0xFFFF] = self.win_r(i)
+            if n:
+                p = (p + n) & 0xFFFF; mem[DMA_PTR], mem[DMA_PTR + 1] = p & 255, p >> 8
+            else:
+                p = mem[DMA_PTR] | mem[DMA_PTR + 1] << 8
+            if st & 0x40: return 0, p
 
     def fast_save(self, dev, name, addr, data, block=WIN_SIZE):
         self.win_write(name)

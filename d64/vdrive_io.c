@@ -92,24 +92,59 @@ VD_COLD static void fload_open(vio_t *v)
     v->h->data = 0;
 }
 
-VD_COLD static void fload_blk(vio_t *v)
+/* The next bytes of the file being loaded, at most max, into buf. Returns the count; *st = the ST to answer ($40 last part, $42 a read
+ * error ended it, 0 more to come). At the end the channel is closed. */
+VD_COLD static unsigned fload_read(vio_t *v, uint8_t *buf, unsigned max, uint8_t *st_out)
 {
-    uint8_t n = 0, d;
-    v->h->data = 0; v->h->st = 0x40;                       /* default: EOI, empty */
-    if (!v->fl_active) return;
-    if (v->fl_eof) { close_chan(v, v->fl_dev, 0xE0); v->fl_active = 0; return; }
+    unsigned n = 0;
+    uint8_t d;
+    *st_out = 0x40;                                         /* default: EOI, empty */
+    if (!v->fl_active) return 0;
+    if (v->fl_eof) { close_chan(v, v->fl_dev, 0xE0); v->fl_active = 0; return 0; }
     int eof = 0, tmo = 0;
     bus(v, VD_TALK, v->fl_dev, 0); bus(v, VD_TKSA, 0x60, 0);
-    while (n < VIO_WIN) {
+    while (n < max) {
         int st = bus(v, VD_ACPTR, 0, &d);
         if (st & 0x02) { eof = 1; tmo = 1; break; }       /* a read error (bad sector): the load ends here, ST shows $42 */
-        v->h->window[n++] = d;
+        buf[n++] = d;
         if (st & 0x40) { eof = 1; break; }
     }
     bus(v, VD_UNTLK, 0, 0);
-    v->h->data = n;
-    v->h->st = (uint8_t)(eof ? (tmo ? 0x42 : 0x40) : 0);
+    *st_out = (uint8_t)(eof ? (tmo ? 0x42 : 0x40) : 0);
     if (eof) { close_chan(v, v->fl_dev, 0xE0); v->fl_active = 0; }
+    return n;
+}
+
+VD_COLD static void fload_blk(vio_t *v)
+{
+    uint8_t st;
+    v->h->data = (uint8_t)fload_read(v, v->h->window, VIO_WIN, &st);
+    v->h->st = st;
+}
+
+/* VIO_FLOAD_DMA: returns 1 (not mine) when a DMA write failed; the KERNAL then reports an error instead of loading stale bytes. */
+VD_COLD static int fload_dma(vio_t *v)
+{
+    uint32_t addr = (uint32_t)v->h->arg | (uint32_t)v->h->len << 8;
+    if (!v->dma_write || !v->dma_buf || !v->dma_max || !vio_dma_ok(addr)) { fload_blk(v); return 0; }
+    uint32_t room = (addr < 0xD000 ? 0xD000 : 0x10000) - addr;   /* stop at I/O and at the top of memory: the window takes over there */
+    uint8_t st;
+    unsigned n = fload_read(v, v->dma_buf, room < v->dma_max ? room : v->dma_max, &st);
+    v->h->data = 0; v->h->st = st;
+    if (n) {
+        uint32_t end = addr + n;
+        uint8_t ptr[2] = { (uint8_t)end, (uint8_t)(end >> 8) };
+        if (!v->dma_write(v->dma_ctx, (uint16_t)addr, v->dma_buf, (uint16_t)n) || !v->dma_write(v->dma_ctx, VIO_DMA_PTR, ptr, 2)) {
+            if (v->fl_active) { close_chan(v, v->fl_dev, 0xE0); v->fl_active = 0; }
+            return 1;
+        }
+    }
+    return 0;
+}
+
+VD_COLD void vio_set_dma(vio_t *v, int (*write)(void *ctx, uint16_t addr, const uint8_t *buf, uint16_t len), void *ctx, uint8_t *buf, uint16_t max)
+{
+    v->dma_write = write; v->dma_ctx = ctx; v->dma_buf = buf; v->dma_max = max;
 }
 
 VD_COLD static void fsave_open(vio_t *v)
@@ -193,6 +228,7 @@ VD_COLD int vio_poll(vio_t *v)
     } else switch (c) {
         case VIO_FLOAD_OPEN:  if (vdrive_unit_for(&v->vd, v->h->arg) >= 0) fload_open(v);  else notmine = 1; break;
         case VIO_FLOAD_BLK:   fload_blk(v); break;
+        case VIO_FLOAD_DMA:   notmine = (uint8_t)fload_dma(v); break;
         case VIO_FSAVE_OPEN:  if (vdrive_unit_for(&v->vd, v->h->arg) >= 0) fsave_open(v);  else notmine = 1; break;
         case VIO_FSAVE_BLK:   fsave_blk(v); break;
         case VIO_FSAVE_CLOSE: fsave_close(v); break;

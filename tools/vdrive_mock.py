@@ -226,7 +226,14 @@ def main(kernal, scenario="basic"):
         io.arm_scan()                              # the first IEC transaction triggers the bus scan, like on the TR+
         log = []
         last_devs = [None]
-        fault = {"at": 0, "n": 0}               # fault injection: answer NOT_MINE to the Nth FLOAD_BLK of a run
+        fault = {"at": 0, "n": 0}               # fault injection: answer NOT_MINE to the Nth FLOAD_BLK / FLOAD_DMA of a run
+        # DMA LOAD (VIO_FLOAD_DMA, docs/DESIGN.md 49) in the basic run: the CPU is stopped at the CMD checkpoint while the engine
+        # answers, so a monitor write is what the TR+'s DMA does. The scan and variant runs keep the window path.
+        dma = {"on": scenario == "basic", "pending": [], "writes": []}
+        if dma["on"]:
+            def dma_write(addr, data):
+                dma["pending"].append((addr, data)); dma["writes"].append((addr, len(data))); return True
+            io.set_dma(dma_write)
         menu = {"asked": 0}
 
         def service(timeout, limit=None):
@@ -239,16 +246,19 @@ def main(kernal, scenario="basic"):
                 if typ == 0x62:  # stopped
                     regs = m.read(MBX, 6)
                     c, a, ln = regs[0], regs[1], regs[5]
-                    if 1 <= c <= 16:
+                    if 1 <= c <= 17:
                         if c in (9, 11, 12):                    # commands that consume the window
                             io.win_write(bytes(m.read(WIN, WIN_SIZE)))
                         nm, d, st = io.call(c, a, ln, allow_scan=True)
-                        if c == 10 and fault["at"]:
+                        for addr, data in dma["pending"]:      # DMA: into RAM before the answer token
+                            m.write(addr, data)
+                        dma["pending"].clear()
+                        if c in (10, 17) and fault["at"]:
                             fault["n"] += 1
                             if fault["n"] == fault["at"]: nm = True
                         if c == 16: menu["asked"] += LIB.vio_take_menu(io.v)   # VIO_MENU: the Teensy would now reset into the TR menu
                         log.append((c, a, d, st, nm))
-                        if c in (9, 10):                        # commands that produce window data
+                        if c in (9, 10, 17):                    # commands that produce window data
                             m.write(WIN, io.win_read(WIN_SIZE))
                         m.write(DATA, [d]); m.write(ST, [st])
                         devs = (io.r(R_DEV0), io.r(R_DEV1))
@@ -436,10 +446,15 @@ def main(kernal, scenario="basic"):
         run('LOAD"X",9\r', "DEVICE NOT PRESENT")
         run('LOAD"BIG",8,1\r', "READY.")
         check("BIG (6000 bytes, multi-sector) loaded to $2000 intact", bytes(m.read(0x2000, len(big) - 2)) == big[2:])
-        n_blk = sum(1 for e in log if e[0] == 10)
+        n_blk = sum(1 for e in log if e[0] in (10, 17))
         n_acptr = sum(1 for e in log if e[0] == 6)
         check("LOAD used the fast path (%d block calls, %d byte-level ACPTR calls in the whole run so far)" % (n_blk, n_acptr),
-              n_blk >= 24 and n_acptr == 0)
+              n_blk >= (3 if dma["on"] else 24) and n_acptr == 0)
+        if dma["on"]:
+            big_parts = [w for w in dma["writes"] if 0x2000 <= w[0] < 0x2000 + len(big)]
+            check("... BIG came in by DMA: %d parts of at most 2 KB, none below $0200 or in $D000-$DFFF" % len(big_parts),
+                  len(big_parts) == 3 and all(n <= 2048 for _, n in big_parts)
+                  and all(a == 0xAE or (a >= 0x200 and (a + n <= 0xD000 or a >= 0xE000)) for a, n in dma["writes"]))
 
         # --- names and the 128-byte window: 127 characters still go the fast way, 128 and more fall back to the byte-level open ---
         n0 = len(log)

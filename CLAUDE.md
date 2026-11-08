@@ -8,7 +8,7 @@ real IEC code, so physical drives keep working. LOAD/SAVE have block-transfer fa
 second, the first free numbers from 8 up: the KERNAL probes the real bus on the first disk access of a run) or fixed from BASIC with
 `OPEN15,8,15,"U0>"+CHR$(n)` (kept in EEPROM, `CHR$(0)` = automatic, no reflash). Names and `CD` take paths: `LOAD"$/GAMES/G.D64",8`.
 
-Full design and per-milestone notes: `docs/DESIGN.md` (sections 1-48, in order of construction).
+Full design and per-milestone notes: `docs/DESIGN.md` (sections 1-49, in order of construction).
 Firmware integration and usage: `firmware/README.md`.
 
 ## Status (read this first)
@@ -128,9 +128,12 @@ Firmware integration and usage: `firmware/README.md`.
   `KernalCheck` asserts `/GAME` only on CPU reads). `DMATEST` on the test disk waits while `tools/dmatest.py -H <ip>` writes 28.4 KB a round with `WriteC64Mem` (needs teensyrom-rcp's `trlib.py`),
   then checks every byte (under ROM too), three guard pages and the served KERNAL's sum. py65 (`make test-dmatest`); **passes on a real C64 (owner, 2026-11-08)**:
   250 rounds, only the `--selftest` byte counted. A 4 KB `WriteC64Mem` once timed out *receiving* over TCP (no `fnet_poll()` in the remote command's wait while a VDrive handler runs; DESIGN 48).
-* 0.9.0.51: remote commands keep the Ethernet stack polled while they wait for input bytes (`CmdInputPoll()` in `SerUSBIO.ino`, added to `kernal-fnet-poll.patch` and to the local
-  PR #85 branch, not pushed): with the PIT masked (0.9.0.14 / #85) a payload longer than one TCP segment could stall until the time-out. Builds; fw_host passes; **not on hardware**
-  (check: `tools/dmatest.py --rounds 300` with 4 KB writes and no time-out).
+* 0.9.0.51: remote commands keep the Ethernet stack polled while they wait for input bytes (`CmdInputPoll()` in `SerUSBIO.ino`, added to `kernal-fnet-poll.patch` and to the
+  PR #85 branch, pushed 2026-11-08): with the PIT masked (0.9.0.14 / #85) a wait could not receive the rest of a payload. Builds; fw_host passes. The DMATEST time-outs it was
+  meant for turned out to be WiFi loss on the host's path (DESIGN 48: `--nodelay` 300 rounds passed from the Mac, steady from a wired Pi); not shown to fix anything seen.
+* 0.9.0.52: **DMA LOAD** (docs/DESIGN.md 49): the KERNAL's LOAD loop sends `VIO_FLOAD_DMA` (17) with the address in ARG/LEN; the Teensy writes up to 2 KB (`VD_DmaPart`) into RAM by
+  DMA and the new end into `$AE/$AF`, or answers a window block where DMA is not used (below `$0200`, `$D000-$DFFF`). A failed DMA: DEVICE NOT PRESENT. VERIFY / SAVE unchanged.
+  `test_vio`, `fw_host`, VICE `basic` with DMA on (monitor writes); **not on hardware**. Rebuild `kernal-tr.bin`; an older firmware fails every LOAD with this KERNAL.
 * Default device 8 for `LOAD`/`SAVE`/`VERIFY` without a number, as on the SX-64 (`P_E1DA` in `patches/vdrive.s`, docs/DESIGN.md 33). KERNAL only; VICE `basic` run; **not on hardware yet**. Rebuild `kernal-tr.bin`.
 * 0.9.0.32: bad sectors from the image's error table (the trailing error-info bytes): reads of a sector marked bad fail with its DOS code (`d64_t.errtab`, `D64_E_BADSEC`, `d64_t.bad`, `read_err()` in `vdrive.c`; the firmware keeps a RAM2 copy only when the table marks something bad; docs/DESIGN.md 35). Write errors (25/26/28) not emulated; a write does not repair a bad sector. Unit and glue host tests; VICE and hardware through VDSUITE `5` (reads only).
 * 0.9.0.34: SwiftLink Tx fix to upstream (was `firmware/swiftlink-tx-fix.patch`; merged upstream as PR #80 in `6518b966`, patch dropped). NativeEthernet's `client.write()` busy-waits for send-buffer space;
@@ -193,7 +196,7 @@ d64/            portable C99 library, also compiled as C++ by the firmware (keep
 util/            VDCOPY: vdcopy.s (all machine code, BASIC SYS stub at $0801, tables BSS at $2800; tools/make_util.py assembles it);
                 VDrive Config: vdconfig.s (all machine code, same stub/BSS scheme, BSS $2000-$4FFF; tools/make_util.py assembles it into build/util/"VDrive Config.prg")
 patches/        ca65 sources overlaid on the stock KERNAL by tools/build.py; segment name P_XXXX = load address
-  vdrive.s        serial entry hooks, fast LOAD ($F4C8) / SAVE ($F605), bus scan, code placed in reclaimed tape space $F8E2-$FB8D (667 of 683 bytes used; `irq_border` for the border flash and the mailbox gate `vd_here` included, the build asserts the limit);
+  vdrive.s        serial entry hooks, fast LOAD ($F4C8, window or DMA) / SAVE ($F605), bus scan, code placed in reclaimed tape space $F8E2-$FB8D (676 of 683 bytes used; `irq_border` for the border flash and the mailbox gate `vd_here` included, the build asserts the limit);
                   the cold-start hook `rst_hook` (`JMP` at $FCE2, code at $F875-$F8CF, 33 of 91 bytes: SYS64738 back to the TR menu)
   vdbanner.s      the drive numbers in the power-on banner (INITMS: `JSR` at $E42D, `JMP` at $E43D, banner string cut at $E49A; code in reclaimed tape routines $FB97-$FCD0, 312 of 314 bytes)
 bringup/banner.s  proof patch (`TRVDRIVE 64 BASIC V2`), only in `make build/kernal-banner.bin`

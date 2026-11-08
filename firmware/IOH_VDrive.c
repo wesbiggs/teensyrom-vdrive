@@ -77,6 +77,12 @@ struct stcVDUnit
 #ifndef VD_ALLOC_HEAP
 DMAMEM static vio_t vioStore;
 #endif
+// DMA LOAD (VIO_FLOAD_DMA, docs/DESIGN.md 49): one part of a file at a time, read here and then written into C64 RAM by DMA. 2 KB
+// halts the CPU for about 2.5 ms per part (IRQs and NMIs wait that long); RAM2, outside the malloc heap the REU sizes itself from.
+#ifndef VD_DmaPart
+#define VD_DmaPart 2048
+#endif
+DMAMEM static uint8_t vdDmaBuf[VD_DmaPart];
 static vio_hot_t  vioHot;           // registers + window: the ONLY memory the bus ISR touches. Plain static = RAM1/DTCM, fast
 static vio_t     *vio = NULL;       // everything else (main loop only, may live in slower RAM2)
 static volatile bool vioReady = false;
@@ -630,6 +636,12 @@ void VD_BannerRegs(bool on, bool settled);
 
 static bool vdNoMenuProbe = false;  // VD_KernalImage: the C64 keeps a KERNAL that is not this build's VDrive one (see there); one PreStart
 
+// vio's DMA write: the CPU waits in the KERNAL's mailbox loop meanwhile (vcall), and the bus ISR skips the snoop for the transfer.
+FLASHMEM static int VD_DmaWrite(void *, uint16_t addr, const uint8_t *buf, uint16_t len)
+{
+   return PerformDMA(DMA_WRITE, addr, (uint8_t *)buf, len, DMA_ADDR_INCREMENT) && CloseDMA();
+}
+
 FLASHMEM void VDrive_PreStart()
 {
 #ifdef VD_ALLOC_HEAP
@@ -640,6 +652,7 @@ FLASHMEM void VDrive_PreStart()
    if (vio == NULL) { Serial.println("VDrive: out of memory"); return; }
    vioReady = false;
    vio_init(vio, &vioHot);
+   vio_set_dma(vio, VD_DmaWrite, NULL, vdDmaBuf, sizeof vdDmaBuf);
 
    vd_host_t host;
    memset(&host, 0, sizeof host);
