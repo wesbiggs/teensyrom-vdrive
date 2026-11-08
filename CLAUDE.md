@@ -115,7 +115,7 @@ Firmware integration and usage: `firmware/README.md`.
   hooks leave ARG in `$A7` and `vcall` writes `MBX_ARG` after the check; `open_named` checks before filling the window/LEN. Reason beyond speed: under the TR menu's handler
   `$DE11`/`$DE15` are `rwRegMIDISettings`/`rwRegTimezone`, which a write stores in EEPROM. Firmware: `VD_KernalPatchPresent` (DMA image already holds every patch run) = this build's
   KERNAL resident: nothing served, menu probe kept; banner tag but other bytes = another revision: nothing served, no menu probe (`vdNoMenuProbe`); unknown ROM / failed DMA: no probe either.
-  py65 (`make test-gate`), `tests/fw_host`, VICE `basic` (no ID: no mailbox command); **not on hardware, not on a MEGA65**. Rebuild `kernal-tr.bin`.
+  py65 (`make test-gate`), `tests/fw_host`, VICE `basic` (no ID: no mailbox command); **works on a MEGA65 (Boris, reported 2026-11-08)**; not yet with an EPROM in a real C64. Rebuild `kernal-tr.bin`.
 * 0.9.0.49: the banner's drive numbers for a resident VDrive KERNAL (docs/DESIGN.md 46). Every launch (F2 too) runs `XferCopyRun` in `MainMenu.asm`: PreStart, our probe, then the KERNAL's
   init routines and INITMS called in place (no reset) under the menu's IO1 handler, which answers plain reads with `IO1[n]`. So `VD_BannerRegs` puts tag `$D6 $64` + the two `VDUNITS:` bytes
   in menu IO1 offsets 60-63 (`$DE3C-$DE3F`, unused between 52 and `StartSIDRegs`), updated when the probe ends and cleared by every other PreStart (`VDrive_ProbeStep`). `vd_head` copies the image bytes

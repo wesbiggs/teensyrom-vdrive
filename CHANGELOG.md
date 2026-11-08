@@ -26,7 +26,7 @@
 - **A VDrive KERNAL in the machine itself**: an EPROM in the KERNAL socket, or a MEGA65 C64 core with `kernal-tr.bin` as its KERNAL,
   works with the regular firmware; no separate build. The firmware sees that the C64's own KERNAL is already this build's, serves
   nothing and answers the drives; a resident VDrive KERNAL of another revision gets its drives too, but no bus probe in the menu.
-  `docs/DESIGN.md` section 45; py65, host and VICE tests; not on a MEGA65 or EPROM yet.
+  `docs/DESIGN.md` section 45; py65, host and VICE tests; works on a MEGA65 (Boris Schneider-Johne); not on an EPROM yet.
 
 ### Changed
 - The KERNAL touches the mailbox only while a VDrive Special IO answers (`$DE19` reads `$D6`). Without one (no TR, another Special
