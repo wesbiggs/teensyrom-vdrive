@@ -11,6 +11,8 @@ Needs trlib.py from teensyrom-rcp: $TRLIB_DIR, or ../teensyrom-rcp next to this 
 reply from the TR runs with interrupts off (CLAUDE.md, remote commands)."""
 import argparse
 import os
+import socket
+import struct
 import sys
 import time
 from pathlib import Path
@@ -46,6 +48,20 @@ def trlib():
     return t
 
 
+def write_timed(t, tr, addr, data, slow_ms, out):
+    """trlib's write_mem, one command at a time, timing the send (blocks while the TR is not taking bytes) and the
+    wait for its reply (the rest of the receive, then the DMA) apart; commands over slow_ms go to out"""
+    for off in range(0, len(data), t.MEM_CHUNK):
+        part = bytes(data[off:off + t.MEM_CHUNK])
+        t0 = time.monotonic()
+        tr.sock.sendall(struct.pack(">HHH", t.WRITE_MEM, addr + off, len(part)) + part)
+        t1 = time.monotonic()
+        tr._expect_ack(f"write ${addr + off:04x}")
+        t2 = time.monotonic()
+        if (t2 - t0) * 1000 > slow_ms:
+            out.append(f"    ${addr + off:04x}+{len(part)}: send {(t1 - t0) * 1000:.0f} ms, reply {(t2 - t1) * 1000:.0f} ms")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("-H", "--host", help="host[:port] or a serial device (else $TR_HOST)")
@@ -53,6 +69,10 @@ def main():
     ap.add_argument("--delay", type=float, default=2.0, help="seconds between rounds without --sync (the C64 needs about 1 s to check)")
     ap.add_argument("--sync", action="store_true", help="wait for the C64's acknowledgement (DMA reads of $03F2) and print its counts")
     ap.add_argument("--chunk", type=int, help="bytes per WriteC64Mem command (trlib's default is 4096)")
+    ap.add_argument("--nodelay", action="store_true", help="TCP_NODELAY on the Mac's socket (no Nagle): each command's tail goes out at once instead of "
+                    "waiting for the TR's delayed ACK (FNET acks on its 200 ms timer)")
+    ap.add_argument("--slow", type=int, default=300, metavar="MS",
+                    help="list each WriteC64Mem command slower than this, split into sending and waiting for the TR's reply (default 300)")
     ap.add_argument("--selftest", action="store_true", help="write one wrong byte at $E123 every round: E000-FEFF must count one per round")
     a = ap.parse_args()
     t = trlib()
@@ -60,17 +80,21 @@ def main():
         t.MEM_CHUNK = a.chunk
     total = sum(b - s for s, b in AREAS)
     with t.TR(*t.split_host(a.host)) as tr:
-        wtime = 0.0
+        if a.nodelay and isinstance(tr.sock, socket.socket):
+            tr.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        wtime, slow = 0.0, 0.0
         for rnd in range(1, a.rounds + 1):
             seed, rb = seed_for(rnd), round_byte(rnd)
             t0 = time.monotonic()
+            slowcmds = []
             for start, data in areas(seed):
                 if a.selftest and start == 0xE000:
                     data = bytearray(data); data[0x123] ^= 0xFF
-                tr.write_mem(start, data)
-            tr.write_mem(SEED_AT, bytes([seed, rb]))
+                write_timed(t, tr, start, data, a.slow, slowcmds)
+            write_timed(t, tr, SEED_AT, bytes([seed, rb]), a.slow, slowcmds)
             dt = time.monotonic() - t0
             wtime += dt
+            slow = max(slow, dt)
             print(f"round {rnd:3}: seed ${seed:02x}, {total} bytes in {dt * 1000:.0f} ms", end="", flush=True)
             if a.sync:
                 t1 = time.monotonic()
@@ -81,8 +105,11 @@ def main():
                 print(f", checked after {time.monotonic() - t1:.1f} s")
             else:
                 print()
+            for line in slowcmds:
+                print(line)
+            if not a.sync:
                 time.sleep(a.delay)
-        print(f"{a.rounds} rounds, {a.rounds * total} bytes written, {a.rounds * total / wtime / 1024:.0f} KB/s with the transport")
+        print(f"{a.rounds} rounds, {a.rounds * total} bytes written, {a.rounds * total / wtime / 1024:.0f} KB/s with the transport, slowest round {slow * 1000:.0f} ms")
         if a.sync:
             r = tr.read_mem(RESULTS_AT, 0x48)
             w = lambda o: r[o] | r[o + 1] << 8  # noqa: E731
