@@ -8,7 +8,7 @@ real IEC code, so physical drives keep working. LOAD/SAVE have block-transfer fa
 second, the first free numbers from 8 up: the KERNAL probes the real bus on the first disk access of a run) or fixed from BASIC with
 `OPEN15,8,15,"U0>"+CHR$(n)` (kept in EEPROM, `CHR$(0)` = automatic, no reflash). Names and `CD` take paths: `LOAD"$/GAMES/G.D64",8`.
 
-Full design and per-milestone notes: `docs/DESIGN.md` (sections 1-47, in order of construction).
+Full design and per-milestone notes: `docs/DESIGN.md` (sections 1-48, in order of construction).
 Firmware integration and usage: `firmware/README.md`.
 
 ## Status (read this first)
@@ -124,6 +124,10 @@ Firmware integration and usage: `firmware/README.md`.
 * 0.9.0.50: VDrive Config's browser lists folders in 128-byte blocks (`fopen`/`fget`/`mcall` in `util/vdconfig.s`: `FLOAD_OPEN` with the `$/path/` name in the window, then `FLOAD_BLK` until EOI;
   `rdb` picks `fget` or `CHRIN`), falling back to `OPEN` + `CHRIN` when not answered (`$A5`, `$3C`, time-out, a name of 128+). Reported slow by Boris (MEGA65, a full card; CBM FileBrowser, which uses `LOAD`, was fast).
   `tests/c64_sim.py` answers the two commands from the drive model (`fast=False`: not mine); `test_vdconfig.py` block/fallback/big-folder/error cases. PRG ends at `$1FA3` (BSS `$2000`). **Not on hardware.**
+* **DMATEST** (docs/DESIGN.md 48): can the TR+ DMA-write C64 RAM while our KERNAL is served (the question behind a DMA LOAD)? The source says yes (the ISR skips `fBusSnoop` during a transfer;
+  `KernalCheck` asserts `/GAME` only on CPU reads). `DMATEST` on the test disk waits while `tools/dmatest.py -H <ip>` writes 28.4 KB a round with `WriteC64Mem` (needs teensyrom-rcp's `trlib.py`),
+  then checks every byte (under ROM too), three guard pages and the served KERNAL's sum. py65 (`make test-dmatest`); **passes on a real C64 (owner, 2026-11-08)**:
+  250 rounds, only the `--selftest` byte counted. A 4 KB `WriteC64Mem` once timed out *receiving* over TCP (suspected: no `fnet_poll()` in the remote command's wait while a VDrive handler runs; DESIGN 48).
 * Default device 8 for `LOAD`/`SAVE`/`VERIFY` without a number, as on the SX-64 (`P_E1DA` in `patches/vdrive.s`, docs/DESIGN.md 33). KERNAL only; VICE `basic` run; **not on hardware yet**. Rebuild `kernal-tr.bin`.
 * 0.9.0.32: bad sectors from the image's error table (the trailing error-info bytes): reads of a sector marked bad fail with its DOS code (`d64_t.errtab`, `D64_E_BADSEC`, `d64_t.bad`, `read_err()` in `vdrive.c`; the firmware keeps a RAM2 copy only when the table marks something bad; docs/DESIGN.md 35). Write errors (25/26/28) not emulated; a write does not repair a bad sector. Unit and glue host tests; VICE and hardware through VDSUITE `5` (reads only).
 * 0.9.0.34: SwiftLink Tx fix to upstream (was `firmware/swiftlink-tx-fix.patch`; merged upstream as PR #80 in `6518b966`, patch dropped). NativeEthernet's `client.write()` busy-waits for send-buffer space;
@@ -196,7 +200,7 @@ tools/          build.py (patch overlay; `--table` writes the patches as `vd_kpa
                 d64py.py (ctypes wrappers incl. register-level VIO), xref.py (reference finder over a disassembly)
 tests/          test_d64*.py, test_vdrive.py, test_vio.py (unit), fw_host/ (glue vs host stubs), devcfg.c,
                 test_vdconfig.py + c64_sim.py (VDrive Config's PRG in py65, KERNAL calls answered in Python), test_vdcopy.py (VDCOPY in py65 against vdrive.c),
-                test_irq_border.py, test_banner.py, test_reset_hook.py, test_vcall_gate.py (py65),
+                test_irq_border.py, test_banner.py, test_reset_hook.py, test_vcall_gate.py, test_dmatest.py (py65),
                 menuprobe_vice.py (the menu's probe routine in VICE with true-drive 1541s), variants_vice.py (the patch on each whitelisted ROM in VICE)
 build/          generated, git-ignored (kernal images derived from the ROM, libd64.dylib, disassembly)
 ```
@@ -208,6 +212,7 @@ build/          generated, git-ignored (kernal images derived from the ROM, libd
 * `make test-reset` — the cold-start hook `rst_hook` (SYS64738 back to the menu) in py65 (skipped without py65; also part of `make test`).
 * `make test-variants` — the patch on every ROM in `VD_KnownKernals`, in VICE (mock `variant` scenario); the ROMs are looked up next to `STOCK`
   (VICE's `C64/` and `C128/` data folders), missing ones skipped. Part of `make test`. `make test-fw` passes `STOCK` so the glue's in-memory patch is compared with `kernal-tr.bin`.
+* `make test-dmatest` — DMATEST (`tests/asm/dmatest.s`, the TR+ DMA-write check run with `tools/dmatest.py`) in py65 (skipped without py65; also part of `make test`).
 * `make test-border` — the `irq_border` 6502 routine in py65 (skipped without `pip install py65`; also part of `make test`).
 * `make test-banner` — the banner's `vd_banner` in py65 with a fake serial bus (skipped without py65; also part of `make test`).
 * `make util` — `build/util/vdcopy.prg`, the file and whole-disk copy utility between any two units (also on the test disk), and `build/util/VDrive Config.prg`.

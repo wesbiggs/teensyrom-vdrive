@@ -526,3 +526,39 @@ Boris found VDrive Config's browser very slow on a card with many files, while C
 - **Fallback:** a name of 128 bytes or more, or a fast open that is not answered, takes the old `OPEN 1,dv,0` + `CHRIN` path. The firmware side is the one `LOAD"$/path/"` has used since section 18 (VDSUITE, VICE and hardware), so only the program changed: the PRG is now 6052 bytes and ends at `$1FA3`, under its BSS at `$2000`.
 
 Tested: `tests/c64_sim.py` answers `FLOAD_OPEN` / `FLOAD_BLK` from the drive model like `fload_open` / `fload_blk` (`fast=False` answers "not mine"); `tests/test_vdconfig.py`: the browser uses blocks and leaves no channel open, the fallback gives the same screens, a folder of 400 PRGs and 150 images in about one block per 128 bytes with the same screens either way, a folder gone between the listing and RETURN shows "Cannot list: file not found" on both paths. Not on hardware: the speed itself (expect roughly the speed of `LOAD"$/path/"`).
+
+## 48. DMATEST: can a DMA LOAD write C64 RAM while the KERNAL is served? (test program; py65, passes on a real C64)
+
+**Question.** A LOAD could skip the 128-byte window and the 6502 copy loop (about 24 cycles a byte, ~0.75 s for 30 KB): the Teensy
+writes the file into RAM by DMA (`PerformDMA(DMA_WRITE, ...)`, one byte a cycle, ~30 ms) while the 6502 waits on STAT, as c64cast's
+`WriteC64Mem` already does. The worry was Kernal Replace's `/GAME`: in Ultimax mode writes to `$1000-$7FFF` are lost and writes to
+`$E000+` go to the cartridge. The source says it cannot happen: the phi2 ISR (`ISRs.c`) runs `DMATransferISR()` and returns before
+`fBusSnoop` while `DMA_State == DMA_S_TransferExecuting`, `KernalCheck` asserts `/GAME` only for CPU *reads* of `$E000-$FFFF` and
+releases it in the same cycle, and `DMAControl.c` skips cycles with BA low (badlines, sprites). DMATEST checks it on the board.
+
+**Program** (`tests/asm/dmatest.s`, `DMATEST` on the test disk, no mailbox use). It waits in a `GETIN` loop (so DMA starts while the CPU
+runs the served KERNAL and its IRQ code); the host (`tools/dmatest.py`, `trlib.py` from teensyrom-rcp) writes a pattern
+(`((lo EOR seed) + hi * $3B) AND $FF`) into `$2000-$3FFF`, `$A000-$BFFF`, `$C000-$CFFF`, `$E000-$FEFF` (28.4 KB a round, in 4 KB
+`WriteC64Mem` commands), then seed and round at `$03F0/$03F1`. The program checks every byte (under ROM with `$01 = $34`, IRQs off one
+page at a time; the RAM NMI vector points at an `RTI`), three guard pages it filled itself (`$1F00`, `$4000`, `$9F00`: a write outside
+its range, as on some NTSC C128s), and a sum of `$E000-$FFFF` as the CPU reads it (the served KERNAL unchanged), then acknowledges at
+`$03F2`. Counts per area, the first wrong address with the byte read and expected, rounds dropped because the host wrote again during a
+check (`OVERRUN`), and whether the VDrive ID (`$DE19/$DE1A`) answers. Counters at `$0340-$0388` (`--sync` reads them back).
+
+**Use.** On the C64 `LOAD"DMATEST",8` and `RUN` under a VDrive Special IO (and, to compare, under plain Kernal Replace or none), then
+`tools/dmatest.py -H <tr-ip> --rounds 50` (TCP rather than USB: a USB reply runs with interrupts off). Clean: all counts `0000`.
+`--selftest` writes one wrong byte at `$E123` per round (`E000-FEFF` must count one per round); `--sync` paces by DMA-reading the
+acknowledgement instead of a fixed `--delay` (2 s; a check takes about 1.2 s); `--chunk` sets the bytes per command. The script prints
+the write time per round, a first figure for the transport-bound speed.
+
+**Tests.** `tests/test_dmatest.py` (py65, `make test-dmatest`): `$01` banking of the BASIC and KERNAL ROMs modelled, clean rounds, a lost
+write under the KERNAL (address, byte read and expected), a lost write in low RAM, a stray write into a guard, an overrun dropped, no ID,
+a key quits.
+
+**On a real C64 (owner, 2026-11-08, new TR+, a VDrive Special IO, over TCP):** 50 + 50 rounds clean, and 100 `--selftest` rounds with `--chunk 1024`
+counting exactly one wrong byte per round (`0064`) and nothing else. So DMA writes reach RAM in `$2000-$3FFF` and under BASIC and the KERNAL
+while our KERNAL is served, and the test catches a wrong byte on the board. One run stopped after 28 rounds on the Mac side:
+`write $3000: Timeout! Error receiving data!`, the TR timing out while it still *received* a 4 KB `WriteC64Mem` payload, before any DMA.
+Suspected cause: with a Kernal Replace / VDrive handler running, `kernal-fnet-poll.patch` masks the PIT and runs `fnet_poll()` only from
+`loop()`, and a remote command's receive wait (`SerialAvailabeTimeout`) runs inside `loop()` without polling (`EthernetClient::available()`
+only peeks the socket). A payload that fits one TCP segment (`--chunk 1024`) has not failed. Not confirmed; the fix would poll in that wait.

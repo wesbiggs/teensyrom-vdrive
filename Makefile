@@ -2,7 +2,7 @@
 STOCK ?= /opt/homebrew/Cellar/vice/3.10/share/vice/C64/kernal-901227-03.bin
 
 # util/ is also a directory: without .PHONY `make util` is always "up to date"
-.PHONY: test test-d64 test-devcfg test-fw test-vdconfig test-vdcopy test-border test-reset test-gate test-banner test-menuprobe test-variants test-hash shot testdisk util
+.PHONY: test test-d64 test-devcfg test-fw test-vdconfig test-vdcopy test-dmatest test-border test-reset test-gate test-banner test-menuprobe test-variants test-hash shot testdisk util
 
 # Hardware image: mailbox at IO1 ($DE10, above the SwiftLink ACIA at $DE00-$DE07)
 build/kernal-tr.bin: $(wildcard patches/*.s) tools/build.py
@@ -41,6 +41,9 @@ test-vdconfig:   # VDrive Config.prg (util/vdconfig.s) in py65 with its KERNAL c
 test-vdcopy: build/libd64.dylib   # VDCOPY (util/vdcopy.s) in py65 against the real drive code on both units: whole-disk and file copies (skipped without py65)
 	python3 -I tests/test_vdcopy.py
 
+test-dmatest:   # DMATEST (tests/asm/dmatest.s, the TR+ DMA-write check) in py65, the host's writes played by the test (skipped without py65)
+	python3 -I tests/test_dmatest.py
+
 test-border:   # the border-flash routine in a 6502 simulator (skipped without py65)
 	python3 -I tests/test_irq_border.py
 
@@ -59,7 +62,7 @@ test-menuprobe: build/libd64.dylib   # the TR menu's launch-time bus probe (firm
 test-variants: build/libd64.dylib   # the patch on each ROM the firmware patches in memory (VD_KnownKernals), in VICE; ROMs found next to STOCK
 	python3 -I tests/variants_vice.py $(STOCK)
 
-test: build/kernal-vd.bin build/libd64.dylib test-d64 test-devcfg test-fw test-border test-reset test-gate test-banner test-vdconfig test-vdcopy test-hash test-menuprobe test-variants
+test: build/kernal-vd.bin build/libd64.dylib test-d64 test-devcfg test-fw test-border test-reset test-gate test-banner test-vdconfig test-vdcopy test-dmatest test-hash test-menuprobe test-variants
 	python3 -I tools/vdrive_mock.py build/kernal-vd.bin
 	python3 -I tools/vdrive_mock.py build/kernal-vd.bin scan
 
