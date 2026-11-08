@@ -527,7 +527,7 @@ Boris found VDrive Config's browser very slow on a card with many files, while C
 
 Tested: `tests/c64_sim.py` answers `FLOAD_OPEN` / `FLOAD_BLK` from the drive model like `fload_open` / `fload_blk` (`fast=False` answers "not mine"); `tests/test_vdconfig.py`: the browser uses blocks and leaves no channel open, the fallback gives the same screens, a folder of 400 PRGs and 150 images in about one block per 128 bytes with the same screens either way, a folder gone between the listing and RETURN shows "Cannot list: file not found" on both paths. Not on hardware: the speed itself (expect roughly the speed of `LOAD"$/path/"`).
 
-## 48. DMATEST: can a DMA LOAD write C64 RAM while the KERNAL is served? (test program; py65, passes on a real C64)
+## 48. DMATEST: can a DMA LOAD write C64 RAM while the KERNAL is served? (test program; py65, passes on a C128 in C64 mode)
 
 **Question.** A LOAD could skip the 128-byte window and the 6502 copy loop (about 24 cycles a byte, ~0.75 s for 30 KB): the Teensy
 writes the file into RAM by DMA (`PerformDMA(DMA_WRITE, ...)`, one byte a cycle, ~30 ms) while the 6502 waits on STAT, as c64cast's
@@ -555,7 +555,7 @@ the write time per round, a first figure for the transport-bound speed.
 write under the KERNAL (address, byte read and expected), a lost write in low RAM, a stray write into a guard, an overrun dropped, no ID,
 a key quits.
 
-**On a real C64 (owner, 2026-11-08, new TR+, a VDrive Special IO, over TCP):** 50 + 50 rounds clean, and 100 `--selftest` rounds with `--chunk 1024`
+**On a C128 in C64 mode (owner, 2026-11-08, new TR+, a VDrive Special IO, over TCP; every DMATEST run so far, none on a C64 yet):** 50 + 50 rounds clean, and 100 `--selftest` rounds with `--chunk 1024`
 counting exactly one wrong byte per round (`0064`) and nothing else. So DMA writes reach RAM in `$2000-$3FFF` and under BASIC and the KERNAL
 while our KERNAL is served, and the test catches a wrong byte on the board. One run stopped after 28 rounds on the Mac side:
 `write $3000: Timeout! Error receiving data!`, the TR timing out while it still *received* a 4 KB `WriteC64Mem` payload, before any DMA.
@@ -568,7 +568,7 @@ only peeks the socket). A payload that fits one TCP segment (`--chunk 1024`) has
 `ReceiveSpanBytes`). The stock firmware never had the problem: its PIT ISR polls during those waits. Firmware builds; fw_host passes;
 **not on hardware**: check with a long 4 KB run (`tools/dmatest.py --rounds 300`, no `--chunk`) and no time-out.
 
-**Later runs (owner, 2026-11-08, on a C128 in C64 mode while the C64's power supply is out; host Mac -> WiFi -> Pi -> Ethernet -> TR):** 0.9.0.51
+**Later runs (owner, 2026-11-08, the same C128; host Mac -> WiFi -> Pi -> Ethernet -> TR):** 0.9.0.51
 still timed out once after 27 rounds. `dmatest.py` then got `--nodelay` (`TCP_NODELAY`) and timed each command apart (send / reply,
 `--slow`): with Nagle off the Mac hands a command over at once (`send 0 ms`) and the TR's reply took 0.5-3 s now and then, so the time is
 spent between the Mac's socket and the TR's answer, not in the DMA. FNET acknowledges data only on its 200 ms timer (`fnet_tcp.c`), the
@@ -603,6 +603,13 @@ Under BASIC and the KERNAL a DMA write lands in RAM, as the CPU's store does.
 window path: host tests, the scan and variant VICE runs). The glue (`IOH_VDrive.c`) sets `VD_DmaWrite` (`PerformDMA(DMA_WRITE, ...)` and
 `CloseDMA()`) and a 2 KB `DMAMEM` buffer (`vdDmaBuf`, RAM2 outside the heap the REU sizes itself from). The read of a part is the window
 path's byte loop (`fload_read`, shared with `fload_blk`).
+
+**Build flag.** The DMA is compiled in only with `Fab04_VDriveDMALoad` (`Common_Defs.h`, next to `Fab04_VDrive`; needs
+`Fab04_FullDMACapable`), which `tools/make_tr_patch.sh` defines for our builds. Without it the glue sets no DMA hook and the drive answers
+every `VIO_FLOAD_DMA` with a window block, so the same KERNAL works with either firmware. The flag stays out of the upstream TeensyROM PRs
+(Travis, 2026-11-08: no DMA in the first VDrive firmware upstream); whether those PRs carry the 9 KERNAL bytes and the engine's command 17
+(harmless without the flag) or the plain `VIO_FLOAD_BLK` loop is still to be decided. `tests/fw_host/run.py` builds and runs the glue both
+ways (`VD_TEST_NO_DMA`).
 
 **Costs and limits.**
 - The CPU is halted for each part, about 2.5 ms per 2 KB (badlines skipped): IRQs and NMIs wait that long. A SwiftLink receiving at high

@@ -126,7 +126,7 @@ Firmware integration and usage: `firmware/README.md`.
   `tests/c64_sim.py` answers the two commands from the drive model (`fast=False`: not mine); `test_vdconfig.py` block/fallback/big-folder/error cases. PRG ends at `$1FA3` (BSS `$2000`). **Not on hardware.**
 * **DMATEST** (docs/DESIGN.md 48): can the TR+ DMA-write C64 RAM while our KERNAL is served (the question behind a DMA LOAD)? The source says yes (the ISR skips `fBusSnoop` during a transfer;
   `KernalCheck` asserts `/GAME` only on CPU reads). `DMATEST` on the test disk waits while `tools/dmatest.py -H <ip>` writes 28.4 KB a round with `WriteC64Mem` (needs teensyrom-rcp's `trlib.py`),
-  then checks every byte (under ROM too), three guard pages and the served KERNAL's sum. py65 (`make test-dmatest`); **passes on a real C64 (owner, 2026-11-08)**:
+  then checks every byte (under ROM too), three guard pages and the served KERNAL's sum. py65 (`make test-dmatest`); **passes on a C128 in C64 mode (owner, 2026-11-08; not yet on a C64)**:
   250 rounds, only the `--selftest` byte counted. A 4 KB `WriteC64Mem` once timed out *receiving* over TCP (no `fnet_poll()` in the remote command's wait while a VDrive handler runs; DESIGN 48).
 * 0.9.0.51: remote commands keep the Ethernet stack polled while they wait for input bytes (`CmdInputPoll()` in `SerUSBIO.ino`, added to `kernal-fnet-poll.patch` and to the
   PR #85 branch, pushed 2026-11-08): with the PIT masked (0.9.0.14 / #85) a wait could not receive the rest of a payload. Builds; fw_host passes. The DMATEST time-outs it was
@@ -134,6 +134,7 @@ Firmware integration and usage: `firmware/README.md`.
 * 0.9.0.52: **DMA LOAD** (docs/DESIGN.md 49): the KERNAL's LOAD loop sends `VIO_FLOAD_DMA` (17) with the address in ARG/LEN; the Teensy writes up to 2 KB (`VD_DmaPart`) into RAM by
   DMA and the new end into `$AE/$AF`, or answers a window block where DMA is not used (below `$0200`, `$D000-$DFFF`). A failed DMA: DEVICE NOT PRESENT. VERIFY / SAVE unchanged.
   `test_vio`, `fw_host`, VICE `basic` with DMA on (monitor writes); **not on hardware**. Rebuild `kernal-tr.bin`; an older firmware fails every LOAD with this KERNAL.
+  Compiled in only with `Fab04_VDriveDMALoad` (defined by `make_tr_patch.sh`; without it: window blocks, same KERNAL). **Keep it out of upstream TeensyROM PRs** (Travis wants no DMA in the first VDrive firmware).
 * Default device 8 for `LOAD`/`SAVE`/`VERIFY` without a number, as on the SX-64 (`P_E1DA` in `patches/vdrive.s`, docs/DESIGN.md 33). KERNAL only; VICE `basic` run; **not on hardware yet**. Rebuild `kernal-tr.bin`.
 * 0.9.0.32: bad sectors from the image's error table (the trailing error-info bytes): reads of a sector marked bad fail with its DOS code (`d64_t.errtab`, `D64_E_BADSEC`, `d64_t.bad`, `read_err()` in `vdrive.c`; the firmware keeps a RAM2 copy only when the table marks something bad; docs/DESIGN.md 35). Write errors (25/26/28) not emulated; a write does not repair a bad sector. Unit and glue host tests; VICE and hardware through VDSUITE `5` (reads only).
 * 0.9.0.34: SwiftLink Tx fix to upstream (was `firmware/swiftlink-tx-fix.patch`; merged upstream as PR #80 in `6518b966`, patch dropped). NativeEthernet's `client.write()` busy-waits for send-buffer space;

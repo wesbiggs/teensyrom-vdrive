@@ -27,7 +27,8 @@ def edit(path, old, new):
 edit(f"{C}/Common_Defs.h",
      "   #define Fab04_KernalReplace        //include Kernal Replacement support\n",
      "   #define Fab04_KernalReplace        //include Kernal Replacement support\n"
-     "   #define Fab04_VDrive               //virtual IEC drive for the replacement KERNAL (needs Fab04_KernalReplace)\n")
+     "   #define Fab04_VDrive               //virtual IEC drive for the replacement KERNAL (needs Fab04_KernalReplace)\n"
+     "   #define Fab04_VDriveDMALoad        //VDrive LOAD writes C64 RAM by DMA (needs Fab04_FullDMACapable); off: the 128-byte window only\n")
 # #85's loop poll and AT-command PIT unmask also for the VDrive Special IOs (all serve the replaced KERNAL; VDrive+SwiftLink runs AT commands)
 edit("Source/Teensy/Teensy.ino",
      "   bool want = FnetPollHold || (CurrentIOHandler == IOH_KernalReplace)\n",

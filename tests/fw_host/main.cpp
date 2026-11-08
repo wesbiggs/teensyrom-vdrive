@@ -424,6 +424,12 @@ int main(int argc, char **argv)
     {
         std::string big(5000, 0); for (size_t i = 0; i < big.size(); i++) big[i] = (char)(i * 7 + i / 251);
         check("DMA LOAD: a 5000-byte file saved", fast_save(8, "DMAFILE", big) == 0);
+#ifndef Fab04_VDriveDMALoad
+        memset(g_c64_ram, 0x55, sizeof g_c64_ram); g_dma_writes = 0;
+        int end0 = dma_load(8, "DMAFILE", -1, &rc);
+        check("DMA LOAD off (no Fab04_VDriveDMALoad): the KERNAL's FLOAD_DMA requests get window blocks, no DMA",
+              rc == 0 && end0 == 0x0801 + 5000 && memcmp(g_c64_ram + 0x0801, big.data(), big.size()) == 0 && g_dma_writes == 0);
+#else
         memset(g_c64_ram, 0x55, sizeof g_c64_ram); g_dma_writes = 0;
         int end = dma_load(8, "DMAFILE", -1, &rc);
         check("DMA LOAD: $0801 + 5000, the end pointer written by DMA", rc == 0 && end == 0x0801 + 5000);
@@ -444,6 +450,7 @@ int main(int argc, char **argv)
         check("... and the channel is closed: the next LOAD works", dma_load(8, "DMAFILE", -1, &rc) == 0x0801 + 5000);
         std::string w = fast_load(8, "DMAFILE", &rc);
         check("... the window LOAD (VIO_FLOAD_BLK) is unchanged", rc == 0 && w.substr(2) == big);
+#endif
         cmd15("S:DMAFILE"); status15();
     }
     g_ms += 1000; PollingHndlr_VDrive();                       // > VD_FlushIdleMs since last write

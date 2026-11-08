@@ -118,6 +118,9 @@ struct EEPROMStub { uint8_t m[8192]; uint8_t read(int a) { return m[a]; } void w
 extern EEPROMStub EEPROM;
 enum { eepAdVDriveDevs = 4235, eepAdNextIOHndlr = 6 };
 #define Fab04_REU
+#ifndef VD_TEST_NO_DMA                                // run.py also builds the glue without it: the window LOAD only (no DMA hook)
+#define Fab04_VDriveDMALoad
+#endif
 enum { IOH_None = 0, IOH_Swiftlink, IOH_REU, IOH_VDrive, IOH_VDriveSwift, IOH_VDriveSwiftREU, IOH_VDriveREU, IOH_Other };   // only the order within the real enum is irrelevant here
 extern bool (*fBusSnoop)(uint16_t Address, bool R_Wn);
 bool KernalCheck(uint16_t Address, bool R_Wn);

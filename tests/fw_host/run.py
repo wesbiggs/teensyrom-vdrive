@@ -71,9 +71,25 @@ try:
     (lf / "shortnam^one.prg").write_bytes(b"\x01\x08real")
     expect = tmp / "hello.bin"; expect.write_bytes(hello)
 
+    sd2, usb2 = tmp / "sdroot_nodma", tmp / "usbroot_nodma"            # the same cards for the build without the DMA LOAD
+    shutil.copytree(sd, sd2); shutil.copytree(usb, usb2)
+
     r = subprocess.run([str(exe), str(sd), str(usb), str(expect), str(kstock), str(kpatched)], capture_output=True, text=True)
     print(r.stdout, end="")
     ok = r.returncode == 0
+
+    # without Fab04_VDriveDMALoad (the upstream build): no DMA hook, every LOAD part through the window, all other checks the same
+    exe2 = tmp / "fwhost_nodma"
+    r = subprocess.run(["c++", "-std=gnu++17", "-Wall", "-Wextra", "-Wno-unused-parameter", "-Werror", "-DVD_TEST_NO_DMA", "-I", str(tmp / "vdrive"),
+                        "-o", str(exe2), str(tmp / "main.cpp")], capture_output=True, text=True)
+    if r.returncode:
+        print(r.stdout + r.stderr); sys.exit(1)
+    r = subprocess.run([str(exe2), str(sd2), str(usb2), str(expect), str(kstock), str(kpatched)], capture_output=True, text=True)
+    lines = r.stdout.splitlines()
+    for ln in lines:
+        if ln.startswith("FAIL") or "DMA LOAD off" in ln: print("  [no DMA]", ln)
+    print(("PASS" if r.returncode == 0 else "FAIL"), "glue without Fab04_VDriveDMALoad: %d checks pass" % sum(1 for ln in lines if ln.startswith("PASS")))
+    ok = ok and r.returncode == 0
 
     out = subprocess.run(["c1541", "-attach", str(sd / "GAME.D64"), "-list"], capture_output=True, text=True, encoding="latin1").stdout.lower()
     good = '"newfile"' in out
