@@ -561,4 +561,9 @@ while our KERNAL is served, and the test catches a wrong byte on the board. One 
 `write $3000: Timeout! Error receiving data!`, the TR timing out while it still *received* a 4 KB `WriteC64Mem` payload, before any DMA.
 Suspected cause: with a Kernal Replace / VDrive handler running, `kernal-fnet-poll.patch` masks the PIT and runs `fnet_poll()` only from
 `loop()`, and a remote command's receive wait (`SerialAvailabeTimeout`) runs inside `loop()` without polling (`EthernetClient::available()`
-only peeks the socket). A payload that fits one TCP segment (`--chunk 1024`) has not failed. Not confirmed; the fix would poll in that wait.
+only peeks the socket). A payload that fits one TCP segment (`--chunk 1024`) has not failed.
+
+**Fix (0.9.0.51, in `kernal-fnet-poll.patch` and committed on the local PR #85 branch, not pushed):** `CmdInputPoll()` in `SerUSBIO.ino` calls
+`FnetLoopPollService()` in the three places a remote command waits for input (`SerialAvailabeTimeout`, `DiscardCmdInput`,
+`ReceiveSpanBytes`). The stock firmware never had the problem: its PIT ISR polls during those waits. Firmware builds; fw_host passes;
+**not on hardware**: check with a long 4 KB run (`tools/dmatest.py --rounds 300`, no `--chunk`) and no time-out.
