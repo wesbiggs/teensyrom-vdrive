@@ -16,6 +16,12 @@ test-hash: build/kernal-tr.bin README.md
 build/kernal-vd.bin: $(wildcard patches/*.s) tools/build.py
 	python3 -I tools/build.py $(STOCK) $@ -D 'MBX=$$C800' -D 'WIN=$$CA00'
 
+# without the DMA LOAD request (VD_DMA_LOAD=0: window blocks only, the upstream TeensyROM build; docs/DESIGN.md 49). The VICE scan run uses it.
+build/kernal-tr-nodma.bin: $(wildcard patches/*.s) tools/build.py
+	python3 -I tools/build.py $(STOCK) $@ -D VD_DMA_LOAD=0
+build/kernal-vd-nodma.bin: $(wildcard patches/*.s) tools/build.py
+	python3 -I tools/build.py $(STOCK) $@ -D 'MBX=$$C800' -D 'WIN=$$CA00' -D VD_DMA_LOAD=0
+
 D64SRC = d64/d64.c d64/vdrive.c d64/vdrive_io.c
 build/libd64.dylib: $(D64SRC) $(wildcard d64/*.h)
 	cc -std=c99 -Wall -Wextra -Werror -fPIC -shared -o $@ $(D64SRC)
@@ -62,9 +68,9 @@ test-menuprobe: build/libd64.dylib   # the TR menu's launch-time bus probe (firm
 test-variants: build/libd64.dylib   # the patch on each ROM the firmware patches in memory (VD_KnownKernals), in VICE; ROMs found next to STOCK
 	python3 -I tests/variants_vice.py $(STOCK)
 
-test: build/kernal-vd.bin build/libd64.dylib test-d64 test-devcfg test-fw test-border test-reset test-gate test-banner test-vdconfig test-vdcopy test-dmatest test-hash test-menuprobe test-variants
+test: build/kernal-vd.bin build/kernal-vd-nodma.bin build/kernal-tr-nodma.bin build/libd64.dylib test-d64 test-devcfg test-fw test-border test-reset test-gate test-banner test-vdconfig test-vdcopy test-dmatest test-hash test-menuprobe test-variants
 	python3 -I tools/vdrive_mock.py build/kernal-vd.bin
-	python3 -I tools/vdrive_mock.py build/kernal-vd.bin scan
+	python3 -I tools/vdrive_mock.py build/kernal-vd-nodma.bin scan
 
 shot: build/kernal-tr.bin
 	x64sc -warp -kernal $(CURDIR)/build/kernal-tr.bin -limitcycles 5000000 -exitscreenshot $(CURDIR)/build/banner.png

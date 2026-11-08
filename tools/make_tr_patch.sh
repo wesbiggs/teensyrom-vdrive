@@ -1,7 +1,10 @@
 #!/bin/sh
 # Generate firmware/teensyrom-vdrive.patch against a TeensyROM checkout.
 # usage: tools/make_tr_patch.sh /path/to/TeensyROM
+#        VD_DMA_LOAD=0 tools/make_tr_patch.sh /path/to/TeensyROM   -> build/teensyrom-vdrive-nodma.patch: no DMA LOAD, neither the firmware's
+#        Fab04_VDriveDMALoad nor the KERNAL's request (the upstream TeensyROM build, docs/DESIGN.md 49); firmware/ is left alone
 set -e
+VD_DMA_LOAD="${VD_DMA_LOAD:-1}"; export VD_DMA_LOAD
 TR="$1"; [ -d "$TR/Source/Teensy/MinimalBoot/Common" ] || { echo "usage: $0 /path/to/TeensyROM"; exit 1; }
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 C=Source/Teensy/MinimalBoot/Common
@@ -18,7 +21,7 @@ git apply "$HERE/firmware/kernal-fnet-poll.patch"
 git apply "$HERE/firmware/kernalreplace-fixes.patch"
 
 python3 -I - "$C" "$HERE/firmware/REV" "$HERE/firmware/vdrive_remote.inc" "$HERE/firmware/vdrive_probe.asm" <<'PY'
-import sys
+import os, sys
 C = sys.argv[1]
 def edit(path, old, new):
     s = open(path).read()
@@ -28,7 +31,8 @@ edit(f"{C}/Common_Defs.h",
      "   #define Fab04_KernalReplace        //include Kernal Replacement support\n",
      "   #define Fab04_KernalReplace        //include Kernal Replacement support\n"
      "   #define Fab04_VDrive               //virtual IEC drive for the replacement KERNAL (needs Fab04_KernalReplace)\n"
-     "   #define Fab04_VDriveDMALoad        //VDrive LOAD writes C64 RAM by DMA (needs Fab04_FullDMACapable); off: the 128-byte window only\n")
+     + ("   #define Fab04_VDriveDMALoad        //VDrive LOAD writes C64 RAM by DMA (needs Fab04_FullDMACapable); off: the 128-byte window only\n"
+        if os.environ["VD_DMA_LOAD"] != "0" else ""))
 # #85's loop poll and AT-command PIT unmask also for the VDrive Special IOs (all serve the replaced KERNAL; VDrive+SwiftLink runs AT commands)
 edit("Source/Teensy/Teensy.ino",
      "   bool want = FnetPollHold || (CurrentIOHandler == IOH_KernalReplace)\n",
@@ -194,7 +198,8 @@ mkdir -p "$C/vdrive"
 cp "$HERE"/d64/d64.c "$HERE"/d64/d64.h "$HERE"/d64/vdrive.c "$HERE"/d64/vdrive.h \
    "$HERE"/d64/vdrive_io.c "$HERE"/d64/vdrive_io.h "$HERE"/d64/vd_cfg.h "$C/vdrive/"
 # the KERNAL patches as a table for VD_KernalPatchApply (our bytes only; the firmware lays them over the C64's own ROM)
-python3 -I "$HERE/tools/build.py" --table "$C/vdrive/vd_kpatch.h"
+python3 -I "$HERE/tools/build.py" --table "$C/vdrive/vd_kpatch.h" -D "VD_DMA_LOAD=$VD_DMA_LOAD"
 git add -A -N
-git diff --no-color > "$HERE/firmware/teensyrom-vdrive.patch"
-echo "wrote firmware/teensyrom-vdrive.patch ($(grep -c '^+++ ' "$HERE/firmware/teensyrom-vdrive.patch") files)"
+if [ "$VD_DMA_LOAD" = 0 ]; then OUT="$HERE/build/teensyrom-vdrive-nodma.patch"; mkdir -p "$HERE/build"; else OUT="$HERE/firmware/teensyrom-vdrive.patch"; fi
+git diff --no-color > "$OUT"
+echo "wrote ${OUT#$HERE/} ($(grep -c '^+++ ' "$OUT") files)"

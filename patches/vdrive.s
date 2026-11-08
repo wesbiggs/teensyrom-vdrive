@@ -20,6 +20,9 @@
 .ifndef MBX
 MBX = $DE10
 .endif
+.ifndef VD_DMA_LOAD
+VD_DMA_LOAD = 1             ; 0: the LOAD loop asks for window blocks only (FLOAD_BLK), as in the upstream TeensyROM build (docs/DESIGN.md 49)
+.endif
 .ifndef WIN
 WIN = $DF80                 ; 128-byte IO2 window: file names and data blocks ($DF00-$DF7F: REU registers in "VDrive+Swift+REU")
 .endif
@@ -371,11 +374,15 @@ fl_hook:
         lda $C4
         sta $AF
 @go:    jsr $F5D2               ; "LOADING"
+.if VD_DMA_LOAD
 @blk:   lda $AE                 ; where the next byte goes: ARG/LEN. The Teensy answers with a window block as FLOAD_BLK, or
         sta $A7                 ; (DATA = 0) has written the next part straight into RAM by DMA and moved $AE/$AF on itself
         lda $AF                 ; (VIO_FLOAD_DMA, d64/vdrive_io.h; never below $0200 or in $D000-$DFFF)
         sta MBX_LEN
         lda #C_FLOAD_DMA
+.else
+@blk:   lda #C_FLOAD_BLK
+.endif
         jsr vcall
         bcs fl_fail             ; time-out / not-mine in the middle of a load
         sta $A3                 ; byte count (0..WINSZ)

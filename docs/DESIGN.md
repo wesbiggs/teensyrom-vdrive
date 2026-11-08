@@ -607,9 +607,13 @@ path's byte loop (`fload_read`, shared with `fload_blk`).
 **Build flag.** The DMA is compiled in only with `Fab04_VDriveDMALoad` (`Common_Defs.h`, next to `Fab04_VDrive`; needs
 `Fab04_FullDMACapable`), which `tools/make_tr_patch.sh` defines for our builds. Without it the glue sets no DMA hook and the drive answers
 every `VIO_FLOAD_DMA` with a window block, so the same KERNAL works with either firmware. The flag stays out of the upstream TeensyROM PRs
-(Travis, 2026-11-08: no DMA in the first VDrive firmware upstream); whether those PRs carry the 9 KERNAL bytes and the engine's command 17
-(harmless without the flag) or the plain `VIO_FLOAD_BLK` loop is still to be decided. `tests/fw_host/run.py` builds and runs the glue both
-ways (`VD_TEST_NO_DMA`).
+(Travis, 2026-11-08: no DMA in the first VDrive firmware upstream). The KERNAL's request is a build option as well, `VD_DMA_LOAD`
+(`patches/vdrive.s`, default 1; 0 = the plain `VIO_FLOAD_BLK` loop, byte-identical to the 0.9.0.51 `kernal-tr.bin`). Upstream's KERNAL is the
+firmware's own patch table (40), so it leaves the request out too (owner, 2026-11-08: not until DMA is wanted there).
+`VD_DMA_LOAD=0 tools/make_tr_patch.sh <tree>` does both: no `Fab04_VDriveDMALoad`, the table built with `VD_DMA_LOAD=0`, written to
+`build/teensyrom-vdrive-nodma.patch` (`firmware/` left alone); it differs from ours only in the define and the table. The engine keeps
+command 17 (portable code, unused there). Tests: `tests/fw_host/run.py` builds and runs the glue both ways (`VD_TEST_NO_DMA`); `make test`
+builds `kernal-tr-nodma.bin` / `kernal-vd-nodma.bin`, and the VICE `scan` run uses the latter.
 
 **Costs and limits.**
 - The CPU is halted for each part, about 2.5 ms per 2 KB (badlines skipped): IRQs and NMIs wait that long. A SwiftLink receiving at high

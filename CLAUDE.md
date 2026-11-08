@@ -134,7 +134,8 @@ Firmware integration and usage: `firmware/README.md`.
 * 0.9.0.52: **DMA LOAD** (docs/DESIGN.md 49): the KERNAL's LOAD loop sends `VIO_FLOAD_DMA` (17) with the address in ARG/LEN; the Teensy writes up to 2 KB (`VD_DmaPart`) into RAM by
   DMA and the new end into `$AE/$AF`, or answers a window block where DMA is not used (below `$0200`, `$D000-$DFFF`). A failed DMA: DEVICE NOT PRESENT. VERIFY / SAVE unchanged.
   `test_vio`, `fw_host`, VICE `basic` with DMA on (monitor writes); **not on hardware**. Rebuild `kernal-tr.bin`; an older firmware fails every LOAD with this KERNAL.
-  Compiled in only with `Fab04_VDriveDMALoad` (defined by `make_tr_patch.sh`; without it: window blocks, same KERNAL). **Keep it out of upstream TeensyROM PRs** (Travis wants no DMA in the first VDrive firmware).
+  Compiled in only with `Fab04_VDriveDMALoad` (defined by `make_tr_patch.sh`; without it: window blocks). The KERNAL's request is `VD_DMA_LOAD` in `patches/vdrive.s` (0 = the 0.9.0.51 loop, byte-identical).
+  **Keep both out of upstream TeensyROM PRs** (Travis: no DMA in the first VDrive firmware): `VD_DMA_LOAD=0 tools/make_tr_patch.sh <tree>` writes `build/teensyrom-vdrive-nodma.patch` without either.
 * Default device 8 for `LOAD`/`SAVE`/`VERIFY` without a number, as on the SX-64 (`P_E1DA` in `patches/vdrive.s`, docs/DESIGN.md 33). KERNAL only; VICE `basic` run; **not on hardware yet**. Rebuild `kernal-tr.bin`.
 * 0.9.0.32: bad sectors from the image's error table (the trailing error-info bytes): reads of a sector marked bad fail with its DOS code (`d64_t.errtab`, `D64_E_BADSEC`, `d64_t.bad`, `read_err()` in `vdrive.c`; the firmware keeps a RAM2 copy only when the table marks something bad; docs/DESIGN.md 35). Write errors (25/26/28) not emulated; a write does not repair a bad sector. Unit and glue host tests; VICE and hardware through VDSUITE `5` (reads only).
 * 0.9.0.34: SwiftLink Tx fix to upstream (was `firmware/swiftlink-tx-fix.patch`; merged upstream as PR #80 in `6518b966`, patch dropped). NativeEthernet's `client.write()` busy-waits for send-buffer space;
@@ -226,7 +227,7 @@ build/          generated, git-ignored (kernal images derived from the ROM, libd
 * `make test-vdconfig` — VDrive Config's PRG in py65 against a drive model (skipped without py65; also part of `make test`).
 * `make test-vdcopy` — VDCOPY's PRG in py65 against the real drive code on both units (skipped without py65; also part of `make test`).
 * `make test-menuprobe` — the TR menu's bus probe routine in VICE, 1541s at 8 and 10 (skipped without `acme`; also part of `make test`).
-* `make build/kernal-tr.bin STOCK=/path/to/kernal-901227-03.bin` — hardware image (mailbox `$DE10`, window `$DF80`).
+* `make build/kernal-tr.bin STOCK=/path/to/kernal-901227-03.bin` — hardware image (mailbox `$DE10`, window `$DF80`). `build/kernal-tr-nodma.bin`: the same without the DMA LOAD request (upstream's).
   `STOCK` defaults to VICE's bundled ROM under Homebrew. `make build/kernal-banner.bin`, `build/kernal-stock.bin` are bring-up images.
 * `tools/make_tr_patch.sh /path/to/TeensyROM` — regenerate `firmware/teensyrom-vdrive.patch` after changing `firmware/IOH_VDrive.c`
   or anything in `d64/` (the patch embeds copies of those files). Always re-run it, then `git apply --check` on a clean checkout. Run it against a *pristine* upstream tree (`git archive HEAD` of the TeensyROM checkout), not the owner's already-patched one: its edits assert on unpatched text. It also reads `firmware/vdrive_remote.inc` (the remote-control dispatcher inserted into `SerUSBIO.ino`) and `firmware/vdrive_probe.asm`, and rebuilds the menu header with the TR's own `tools/build-c64.mjs` (needs `acme` 0.97 and `node`).
