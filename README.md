@@ -275,8 +275,7 @@ RAM vectors (`$0314-$0333`) instead of patching the serial routines. The drive i
 | Drive numbers in the power-on banner | Yes | No |
 | SHIFT+RUN/STOP types `LOAD"*",8,1` and `RUN` | Yes | No: the stock `LOAD` and `RUN` from tape |
 | `SYS64738` back to the TR menu | Yes | No: a normal reset |
-| Disk switching with the Alt button | Yes | Yes, on boards with the button (the switch is done by the Teensy) |
-| Border flash after an Alt-button switch | Yes (KERNAL IRQ routine) | Not as built: needs a hook in the IRQ vector `$0314` (lost on `RESTOR`, like the others) or a DMA write to `$D020` from the Teensy (lands in RAM while a program has I/O banked out) |
+| Disk switching with the Alt button, with a border flash | Yes | No: the TR (rev 0.2 and 0.3) has no Alt button. Change disks with `trvdrive` over serial or Ethernet instead |
 | `LOAD` / `SAVE` / `VERIFY` without a device number | Device 8 | Tape (device 1). Device 8 is possible, but then the tape is blocked; the tape is kept |
 | Tape (device 1) | No: its code space holds the patch | Yes |
 
