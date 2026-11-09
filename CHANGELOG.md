@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.9.0.52
+
+### Added
+- **DMA LOAD**: the TR+ writes `LOAD` data straight into C64 RAM by DMA, up to 2 KB at a time, instead of the C64 copying it out of the
+  128-byte IO2 window. A 48 KB program loads in about 0.23 s instead of 1.4 s (owner, C128 in C64 mode). The KERNAL's LOAD loop sends
+  the load address with each request; below `$0200` and in `$D000-$DFFF` the window path is still used. A failed DMA ends the LOAD with
+  DEVICE NOT PRESENT. `VERIFY` and `SAVE` are unchanged. `docs/DESIGN.md` section 49; host, glue and VICE tests; timed on hardware,
+  the other hardware checks (loads under ROM and across I/O, VDSUITE, SwiftLink) not done yet.
+  **Rebuild `kernal-tr.bin`**: an older firmware fails every LOAD with this KERNAL.
+- Build switches: the firmware's DMA LOAD is compiled in only with `Fab04_VDriveDMALoad`, and the KERNAL's request only with
+  `VD_DMA_LOAD` (on by default). `VD_DMA_LOAD=0 tools/make_tr_patch.sh <tree>` writes a patch without either (for upstream
+  TeensyROM pull requests); `make build/kernal-tr-nodma.bin` builds the matching KERNAL, byte for byte the 0.9.0.51 loop.
+
+## v0.9.0.51
+
+### Fixed
+- Remote commands that receive a payload (`WriteC64Mem` and the like) keep the Ethernet stack polled while they wait for its bytes.
+  With the timer interrupt masked while a Kernal Replace or VDrive handler runs, a wait could not receive the rest of a payload.
+  Also part of upstream TeensyROM PR 85. Not shown to fix anything seen: the `DMATEST` time-outs it was meant for turned out to be
+  WiFi loss on the host's path (`docs/DESIGN.md` section 48).
+
+### Added
+- `tools/dmatest.py`: `--nodelay` (TCP_NODELAY), `--slow MS` (list slow commands with send and reply times) and the slowest round in
+  the summary. `DMATEST` passed 300 rounds over a wired link (C128 in C64 mode).
+
 ## v0.9.0.50
 
 ### Changed
