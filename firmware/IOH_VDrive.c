@@ -78,10 +78,11 @@ struct stcVDUnit
 #ifndef VD_ALLOC_HEAP
 static vio_t vioStore;
 #endif
-// DMA LOAD (VIO_FLOAD_DMA, docs/DESIGN.md 49), only with Fab04_VDriveDMALoad (Common_Defs.h; needs Fab04_FullDMACapable): one part of a
-// file at a time, read here and then written into C64 RAM by DMA. 2 KB halts the CPU for about 2.5 ms per part (IRQs and NMIs wait that
-// long); RAM1, like the rest (see vioStore). Without the flag no DMA hook is set and the drive answers every LOAD
-// part through the 128-byte window, the same KERNAL included.
+// DMA LOAD (VIO_FLOAD_DMA, docs/DESIGN.md 49), SAVE and VERIFY (VIO_FSAVE_DMA, VIO_FVERIFY_OPEN, 51), only with Fab04_VDriveDMALoad
+// (Common_Defs.h; needs Fab04_FullDMACapable): one part of a file at a time, read here and then written into C64 RAM by DMA (or read
+// from C64 RAM by DMA, then saved or compared). 2 KB halts the CPU for about 2.5 ms per part (IRQs and NMIs wait that long); RAM1, like
+// the rest (see vioStore). Without the flag no DMA hook is set: the drive answers every LOAD part through the 128-byte window, SAVE goes
+// by window blocks and VERIFY the KERNAL's stock way, the same KERNAL included.
 #ifdef Fab04_VDriveDMALoad
 #ifndef VD_DmaPart
 #define VD_DmaPart 2048
@@ -647,6 +648,12 @@ FLASHMEM static int VD_DmaWrite(void *, uint16_t addr, const uint8_t *buf, uint1
 {
    return PerformDMA(DMA_WRITE, addr, (uint8_t *)buf, len, DMA_ADDR_INCREMENT) && CloseDMA();
 }
+// vio's DMA read (SAVE, VERIFY, and the KERNAL's pointers in zero page): only $0000-$CFFF is asked for (vio_dma_rd_ok and the
+// VIO_DMA_* zero-page bytes), where a DMA read sees what the CPU sees; never the served KERNAL's $E000-$FFFF.
+FLASHMEM static int VD_DmaRead(void *, uint16_t addr, uint8_t *buf, uint16_t len)
+{
+   return PerformDMA(DMA_READ, addr, buf, len, DMA_ADDR_INCREMENT) && CloseDMA();
+}
 #endif
 
 FLASHMEM void VDrive_PreStart()
@@ -660,7 +667,7 @@ FLASHMEM void VDrive_PreStart()
    vioReady = false;
    vio_init(vio, &vioHot);
 #ifdef Fab04_VDriveDMALoad
-   vio_set_dma(vio, VD_DmaWrite, NULL, vdDmaBuf, sizeof vdDmaBuf);
+   vio_set_dma(vio, VD_DmaWrite, VD_DmaRead, NULL, vdDmaBuf, sizeof vdDmaBuf);
 #endif
 
    vd_host_t host;

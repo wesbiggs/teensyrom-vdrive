@@ -8,7 +8,7 @@ real IEC code, so physical drives keep working. LOAD/SAVE have block-transfer fa
 second, the first free numbers from 8 up: the KERNAL probes the real bus on the first disk access of a run) or fixed from BASIC with
 `OPEN15,8,15,"U0>"+CHR$(n)` (kept in EEPROM, `CHR$(0)` = automatic, no reflash). Names and `CD` take paths: `LOAD"$/GAMES/G.D64",8`.
 
-Full design and per-milestone notes: `docs/DESIGN.md` (sections 1-49, in order of construction).
+Full design and per-milestone notes: `docs/DESIGN.md` (sections 1-51, in order of construction).
 Firmware integration and usage: `firmware/README.md`.
 
 ## Status (read this first)
@@ -141,6 +141,12 @@ Firmware integration and usage: `firmware/README.md`.
   `test_vio`, `fw_host`, VICE `basic` with DMA on (monitor writes); **on hardware (owner, 2026-11-08, C128 in C64 mode): a 48 KB LOAD in 13-14 jiffies against 85 on 0.9.0.51** (about 6-8x); the other checks of DESIGN 49 not done yet. Rebuild `kernal-tr.bin`; an older firmware fails every LOAD with this KERNAL.
   Compiled in only with `Fab04_VDriveDMALoad` (defined by `make_tr_patch.sh`; without it: window blocks). The KERNAL's request is `VD_DMA_LOAD` in `patches/vdrive.s` (0 = the 0.9.0.51 loop, byte-identical).
   **Keep both out of upstream TeensyROM PRs** (Travis: no DMA in the first VDrive firmware): `VD_DMA_LOAD=0 tools/make_tr_patch.sh <tree>` writes `build/teensyrom-vdrive-nodma.patch` without either.
+* 0.9.0.57: **DMA SAVE and VERIFY** (docs/DESIGN.md 51). SAVE: the loop sends `VIO_FSAVE_DMA` (18) first; the Teensy
+  DMA-reads `$AC-$AF`, then up to 2 KB from `$AC`, writes the new `$AC/$AD` and appends to the file (DATA 0 = ask again, DATA 1 / not mine = the window block as before).
+  VERIFY: `fl_hook` opens with `VIO_FVERIFY_OPEN` (19), taken only with DMA reads and the whole file in `$0200-$CFFF` (`vio_dma_rd_ok`; the length by a read-through, SA from `$A4`, `$C3/$C4`),
+  else not mine = the stock VERIFY; then each `VIO_FLOAD_DMA` compares (ST `$10`), DATA always 0. KERNAL: 9 bytes, 7 won back from the error exits (`P_F8E2` 678 of 683), all under `VD_DMA_LOAD`
+  (`kernal-tr-nodma.bin` still byte-identical). Glue: `VD_DmaRead`, under `Fab04_VDriveDMALoad` as the write. `test_vio`, `fw_host` (both builds; run it as a non-root user: as root the
+  read-only `S:` check fails and stops the run, before this change too), VICE `basic` (monitor reads). **Not on hardware**: DMA reads of a running program are the open risk (remote-read note below).
 * Default device 8 for `LOAD`/`SAVE`/`VERIFY` without a number, as on the SX-64 (`P_E1DA` in `patches/vdrive.s`, docs/DESIGN.md 33). KERNAL only; VICE `basic` run; **not on hardware yet**. Rebuild `kernal-tr.bin`.
 * 0.9.0.32: bad sectors from the image's error table (the trailing error-info bytes): reads of a sector marked bad fail with its DOS code (`d64_t.errtab`, `D64_E_BADSEC`, `d64_t.bad`, `read_err()` in `vdrive.c`; the firmware keeps a RAM2 copy only when the table marks something bad; docs/DESIGN.md 35). Write errors (25/26/28) not emulated; a write does not repair a bad sector. Unit and glue host tests; VICE and hardware through VDSUITE `5` (reads only).
 * 0.9.0.34: SwiftLink Tx fix to upstream (was `firmware/swiftlink-tx-fix.patch`; merged upstream as PR #80 in `6518b966`, patch dropped). NativeEthernet's `client.write()` busy-waits for send-buffer space;
@@ -203,7 +209,7 @@ d64/            portable C99 library, also compiled as C++ by the firmware (keep
 util/            VDCOPY: vdcopy.s (all machine code, BASIC SYS stub at $0801, tables BSS at $2800; tools/make_util.py assembles it);
                 VDrive Config: vdconfig.s (all machine code, same stub/BSS scheme, BSS $2000-$4FFF; tools/make_util.py assembles it into build/util/"VDrive Config.prg")
 patches/        ca65 sources overlaid on the stock KERNAL by tools/build.py; segment name P_XXXX = load address
-  vdrive.s        serial entry hooks, fast LOAD ($F4C8, window or DMA) / SAVE ($F605), bus scan, code placed in reclaimed tape space $F8E2-$FB8D (676 of 683 bytes used; `irq_border` for the border flash and the mailbox gate `vd_here` included, the build asserts the limit);
+  vdrive.s        serial entry hooks, fast LOAD / VERIFY ($F4C8, window or DMA) / SAVE ($F605, window or DMA), bus scan, code placed in reclaimed tape space $F8E2-$FB8D (678 of 683 bytes used; `irq_border` for the border flash and the mailbox gate `vd_here` included, the build asserts the limit);
                   the cold-start hook `rst_hook` (`JMP` at $FCE2, code at $F875-$F8CF, 33 of 91 bytes: SYS64738 back to the TR menu)
   vdbanner.s      the drive numbers in the power-on banner (INITMS: `JSR` at $E42D, `JMP` at $E43D, banner string cut at $E49A; code in reclaimed tape routines $FB97-$FCD0, 312 of 314 bytes)
 bringup/banner.s  proof patch (`TRVDRIVE 64 BASIC V2`), only in `make build/kernal-banner.bin`
@@ -232,7 +238,7 @@ build/          generated, git-ignored (kernal images derived from the ROM, libd
 * `make test-vdconfig` — VDrive Config's PRG in py65 against a drive model (skipped without py65; also part of `make test`).
 * `make test-vdcopy` — VDCOPY's PRG in py65 against the real drive code on both units (skipped without py65; also part of `make test`).
 * `make test-menuprobe` — the TR menu's bus probe routine in VICE, 1541s at 8 and 10 (skipped without `acme`; also part of `make test`).
-* `make build/kernal-tr.bin STOCK=/path/to/kernal-901227-03.bin` — hardware image (mailbox `$DE10`, window `$DF80`). `build/kernal-tr-nodma.bin`: the same without the DMA LOAD request (upstream's).
+* `make build/kernal-tr.bin STOCK=/path/to/kernal-901227-03.bin` — hardware image (mailbox `$DE10`, window `$DF80`). `build/kernal-tr-nodma.bin`: the same without the DMA LOAD, SAVE and VERIFY requests (upstream's).
   `STOCK` defaults to VICE's bundled ROM under Homebrew. `make build/kernal-banner.bin`, `build/kernal-stock.bin` are bring-up images.
 * `tools/build_firmware.sh tr|tr-plus|tr-plus-dma [outdir] [--install-toolchain]` — release hex: fetches the TeensyROM commit in `firmware/UPSTREAM`, applies
   `firmware/teensyrom-vdrive.patch`, commits it (clean tree) and runs TeensyROM's `tools/build-firmware.mjs` (node >= 24). `tr`/`tr-plus` are built without DMA LOAD

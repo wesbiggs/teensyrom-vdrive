@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.9.0.57
+
+### Added
+- **DMA SAVE and VERIFY** (TR+ `-DMA` build): `SAVE` takes the program out of C64 RAM by DMA, up to 2 KB at a time,
+  instead of the C64 copying it into the 128-byte window; `VERIFY` is compared by the TR+ (file against RAM read by DMA) instead of one
+  mailbox round trip per byte, and `?VERIFY ERROR` comes out as before. Only `$0200-$CFFF` is read by DMA: a SAVE goes on through the window
+  above `$D000`, and a VERIFY of a file that reaches outside that range uses the stock byte path. A firmware without DMA (or an older one)
+  gets window SAVEs and the stock VERIFY from the same KERNAL. `docs/DESIGN.md` section 51; host, glue and VICE tests; **not on hardware**
+  (DMA reads of a running machine are new: see the remote-read note in `CLAUDE.md`). **Rebuild `kernal-tr.bin`** for `/VDrive/kernal.bin`
+  (new SHA-256 in the README); `kernal-tr-nodma.bin` is unchanged.
+
 ## v0.9.0.56
 
 ### Fixed

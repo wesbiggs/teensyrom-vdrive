@@ -618,7 +618,7 @@ builds `kernal-tr-nodma.bin` / `kernal-vd-nodma.bin`, and the VICE `scan` run us
 **Costs and limits.**
 - The CPU is halted for each part, about 2.5 ms per 2 KB (badlines skipped): IRQs and NMIs wait that long. A SwiftLink receiving at high
   speed during a LOAD may drop characters; nothing else runs during a KERNAL LOAD anyway. `VD_DmaPart` is the knob.
-- VERIFY and SAVE are unchanged (VERIFY takes the stock path; a DMA read for them is a separate question, see 48's crash note on DMA reads).
+- VERIFY and SAVE were unchanged in 0.9.0.52; section 51 (0.9.0.57) does them by DMA reads.
 - KERNAL and firmware must match: an older firmware answers command 17 NOTMINE, so every LOAD fails with DEVICE NOT PRESENT. The firmware
   patches the C64's own KERNAL from its own table (40), so only a `/VDrive/kernal.bin` or a VDrive KERNAL in a ROM from another revision can
   meet an older firmware. VDrive Config's block listing (47) still uses `VIO_FLOAD_BLK`.
@@ -690,3 +690,77 @@ output worked and its disk calls went to the real bus. `REUTEST` never touches t
 `KernalFastOnly` when it frees the buffer (cleared at the start of every PreStart), and the re-hook takes `KernalBin != NULL ||
 KernalFastOnly` as loaded (`make_tr_patch.sh`; the plain Kernal Replace is unchanged). Lesson: before freeing a buffer, grep for tests
 of its pointer that mean something else. **0.9.0.56 on hardware (owner, 2026-11-09):** VDrive Config launches from the TR menu again.
+
+## 51. DMA SAVE and VERIFY (0.9.0.57; host, glue and VICE tests; not on hardware)
+
+**Why.** With DMA LOAD (49) a LOAD runs at ~200 KB/s, but SAVE still copies every byte into the 128-byte window (read back once,
+~24 cycles a byte) and VERIFY still goes the stock byte-level way (one mailbox round trip per byte). The TR+ can read C64 RAM by DMA as
+well, so the Teensy can take a SAVE's bytes straight out of RAM and compare a VERIFY's file with RAM itself.
+
+**KERNAL space.** The reclaimed tape space had 7 bytes left (`P_F8E2`, 676 of 683). The two requests cost 9; 7 came back from the
+error exits: `fl_hook`'s DEVICE NOT PRESENT branches to `fl_fail` (`JMP $F707`) instead of its own `JMP`, and `fs_hook` tests the open's
+result with one `TAX` and shares its `@ff` (`JMP $F707`) for the open's DEVICE NOT PRESENT. Now 678 of 683. These changes are made only with
+`VD_DMA_LOAD` (which now switches all three DMA requests), so `kernal-tr-nodma.bin` stays byte-identical to the 0.9.0.51 image.
+
+**SAVE: `VIO_FSAVE_DMA` (18).** At the top of the SAVE loop (after the 2-byte header block) the KERNAL sends command 18 with no
+arguments: `LDA #18 / JSR vcall / BEQ loop` (7 bytes). The Teensy reads the KERNAL's `$AC-$AF` (current pointer, end) by DMA, then up to
+`dma_max` (2 KB) bytes from `$AC`, sets `$AC/$AD` to the new pointer by DMA and appends the bytes to the open file. It answers:
+- DATA = 0: a part was saved; the KERNAL asks again at once.
+- DATA = 1: nothing done (no DMA reads in this build, nothing left, the address is not one a DMA read may take, or a DMA read failed).
+  The KERNAL goes on with its window block as before, then asks again; at the end its own `end - current = 0` test sends the close.
+- NOTMINE (an older firmware that does not know 18): `vcall` returns `A = $A7`, the device number (never 0), so the window block is sent too.
+  So a new KERNAL saves with any firmware, DMA or not.
+- NOTMINE from this firmware only when the pointer write failed after the bytes were read: the Teensy cannot tell whether `$AC/$AD`
+  moved, so it closes the file (what came before stays in it, as after a save cut short) and answers NOTMINE to this and to the next
+  `VIO_FSAVE_BLK` / `VIO_FSAVE_CLOSE`: the window block that follows fails and the KERNAL reports DEVICE NOT PRESENT. (If the pointer did reach
+  the end in spite of the failure, the KERNAL's close is answered NOTMINE and ignored: the SAVE looks done but the file is short. A
+  pointer write that fails is not known to happen.)
+The pointer is written before the bytes go to the file so that a failed write never leaves bytes the KERNAL will send again.
+
+**VERIFY: `VIO_FVERIFY_OPEN` (19).** `fl_hook` used to send VERIFY (`$93` not 0) to the stock path at once. Now it opens with command 19
+instead of `VIO_FLOAD_OPEN` (2 more bytes). The Teensy takes it only when it can compare the whole file by DMA:
+- it needs the DMA read hook (else NOTMINE: the KERNAL's stock VERIFY, as before, so an older firmware or a build without DMA keeps
+  verifying the old way);
+- it reads the original secondary address (`$A4`, where `fl_hook` keeps it) and the caller's address (`$C3/$C4`) by DMA, opens the file,
+  reads it through once for its length and opens it again; the start is the file's own address or, with secondary address 0, `$C3/$C4`;
+- the whole range must lie in `$0200-$CFFF` (`vio_dma_rd_ok`), else NOTMINE and the stock VERIFY.
+Then it answers as `VIO_FLOAD_OPEN` (not found / no device are reported as for a LOAD) and the KERNAL runs its LOAD loop unchanged: every
+`VIO_FLOAD_DMA` is now a compare. The Teensy reads the next part of the file (up to 2 KB), reads the same range of RAM by DMA (256 bytes at a
+time), ORs `$10` into ST on any difference (vcall ORs ST into `$90`, so BASIC prints `?VERIFY ERROR` as with the stock loop, which also goes
+on to the end), writes the new end into `$AE/$AF` and answers DATA = 0: the KERNAL never gets a window block it would store. A failed DMA
+mid-way answers NOTMINE and closes the channel (DEVICE NOT PRESENT rather than a result that was not checked). The file is read twice, which
+costs Teensy time only (inside `vcall`'s ~1.6 s wait for any file a C64 can hold).
+
+**Where DMA reads are used** (`vio_dma_rd_ok`, `$0200-$CFFF`): only where a DMA read sees what the KERNAL's own `LDA ($AC),Y` sees. Not
+`$0000-$01FF` (the CPU port at `$00/$01`; zero page and the stack change under the KERNAL), not `$D000-$DFFF` (an I/O read has side effects;
+our own IO1/IO2 registers do not answer during a DMA), and not `$E000-$FFFF` (with the KERNAL running HIRAM is set, so the CPU sees the
+served KERNAL there and a DMA read sees the machine's own ROM chip). Under BASIC (`$A000-$BFFF`) both see what `$01` maps. A SAVE part
+stops at `$D000` and the window takes over from there; a VERIFY touching any of those ranges is the stock VERIFY. The zero-page reads
+(`$A4`, `$AC-$AF`, `$C3/$C4`) and the pointer writes are a handful of bytes per part.
+
+**Firmware.** `vio_set_dma` takes a read hook as well; the glue's `VD_DmaRead` is `PerformDMA(DMA_READ, ...)` + `CloseDMA()`, set only with
+`Fab04_VDriveDMALoad`, like the write (the name stays; it now covers all three). Without the flag: SAVE by window blocks, VERIFY the stock
+way, with the same KERNAL. `VD_DMA_LOAD=0` leaves both requests out of the KERNAL.
+
+**Risk on hardware.** The DMA reads are new on a running program. CLAUDE.md records that remote memory reads by DMA (`ReadC64MemToken`,
+`trmon`) crashed or corrupted some programs, cause not found; here the CPU only waits in `vcall`'s loop in the KERNAL during the reads, as it
+does for the DMA LOAD's writes, which work on hardware. Check this first on a real machine.
+
+**Tests.** `tests/test_vio.py`: DMA SAVE of 0-40000 bytes is the same file as a window SAVE, all bytes by DMA, reads only in
+`$0200-$CFFF`, writes only to `$AC/$AD`; SAVE from `$0100`, across `$D000`, from `$E000` (window there); no read hook / no DMA = the window
+SAVE; a failed read falls back to the window; a failed pointer write abandons the save once (NOTMINE to the block and the close), the drive
+works after it; a refused open needs no DMA. VERIFY: equal and one byte different (`$10`), secondary address 0 at `$C3/$C4`, ranges outside
+`$0200-$CFFF` (and right up to `$CFFF`) refused to the stock VERIFY with the channel closed, no read hook refused, not found / no device,
+a failed read at open (stock VERIFY), a failed pointer write mid-way (an error), a LOAD after a VERIFY stores again. `tests/fw_host`: the
+glue's `PerformDMA` reads from the fake 64 KB (refused at `$D000` and up), a 5000-byte SAVE in three parts, across `$D000`, failing reads,
+a failing pointer write, VERIFY equal / different / at `$C3/$C4` / refused ranges / not found / failing write; without
+`Fab04_VDriveDMALoad` every `VIO_FSAVE_DMA` answers 1 and `VIO_FVERIFY_OPEN` NOTMINE. VICE `basic` (DMA reads as monitor reads while the CPU
+is stopped): the BASIC `VERIFY` of `SAVEME` goes through command 19 with DMA parts only, its corrupted copy gives `?VERIFY  ERROR`, the
+6000-byte `SAVE"BIG2"` from `$2000` comes in three DMA reads and loads back intact, `VERIFY"BIG2",8,1` passes and fails with the last
+byte changed; the rest of the run (VDSUITE, the BASIC test programs, `VERIFY` without a device number) passes with the new paths. `variant`
+(the five ROMs, no DMA host): `SAVE` by window blocks after DATA 1, and `VERIFY` refused at command 19 and done the stock byte-level way.
+
+**On hardware, to check:** a SAVE of a large program and a `VERIFY` of it (and of a changed copy) on a C64 and a C128 in C64 mode; a SAVE
+from under BASIC (`$A000-$BFFF` with `$01` set to RAM, by a machine-code SAVE); timing against 0.9.0.52 (`TI` before and after); VDSUITE
+"run all"; VDrive+SwiftLink with a terminal open.
+

@@ -21,7 +21,8 @@
 MBX = $DE10
 .endif
 .ifndef VD_DMA_LOAD
-VD_DMA_LOAD = 1             ; 0: the LOAD loop asks for window blocks only (FLOAD_BLK), as in the upstream TeensyROM build (docs/DESIGN.md 49)
+VD_DMA_LOAD = 1             ; 0: no DMA requests: LOAD asks for window blocks only (FLOAD_BLK), SAVE sends window blocks only, VERIFY takes
+                            ; the stock path, as in the upstream TeensyROM build (docs/DESIGN.md 49, 51)
 .endif
 .ifndef WIN
 WIN = $DF80                 ; 128-byte IO2 window: file names and data blocks ($DF00-$DF7F: REU registers in "VDrive+Swift+REU")
@@ -60,6 +61,8 @@ C_SCAN   = 14
 C_FREE   = 15
 C_MENU   = 16
 C_FLOAD_DMA = 17
+C_FSAVE_DMA = 18
+C_FVERIFY_OPEN = 19
 
 ; ---- fast LOAD / SAVE hooks: replace the `JSR $F3D5` (open serial file) --------
 .segment "P_F4C8"
@@ -307,9 +310,11 @@ hk_acptr:
         jmp $EE16               ; the STA $A5 (not $EE17, its operand: that ran LDA $20 / STA $EE, in the screen line-link table)
 
 ; ---- fast LOAD ---------------------------------------------------------------
-; Entered instead of `JSR $F3D5` in the serial LOAD path. Handles LOAD (not
-; VERIFY) entirely through the mailbox for whatever devices the Teensy claims: the Teensy streams the
-; file in blocks of <=128 bytes through the IO2 window, or writes parts of it into RAM by DMA (docs/DESIGN.md 49). Anything else (also a name too long for the window), or a
+; Entered instead of `JSR $F3D5` in the serial LOAD path. Handles LOAD entirely through the mailbox for whatever devices the Teensy
+; claims: the Teensy streams the file in blocks of <=128 bytes through the IO2 window, or writes parts of it into RAM by DMA
+; (docs/DESIGN.md 49). VERIFY (with VD_DMA_LOAD) opens with FVERIFY_OPEN: only a Teensy that can compare the whole file with RAM by
+; DMA takes it, and then every part is a DMA one (DATA = 0, never a window block to store); the Teensy ORs $10 into ST on a
+; difference, as the stock loop does (docs/DESIGN.md 51). Anything else (also a name too long for the window), or a
 ; firmware without the fast commands, replays the displaced JSR and continues
 ; in the stock code ($F4CB).
 ; in: A = FLOAD_OPEN / FSAVE_OPEN. Copies the file name to the window and sends the command (out: as vcall).
@@ -338,27 +343,42 @@ open_named:
         rts
 
 fl_fail:
-        jmp $F707               ; an answer failed mid-transfer: report an error instead of using stale data
+        jmp $F707               ; DEVICE NOT PRESENT; also when an answer failed mid-transfer: an error instead of stale data
 fl_slowx:
         ldx $A4                 ; restore X (original SA) for the stock path
 fl_slow:
         jsr $F3D5
         jmp $F4CB
+.if VD_DMA_LOAD
+fl_hook:
+        stx $A4                 ; original SA: 0 = load to caller's address (the Teensy reads it by DMA for a VERIFY)
+        lda #C_FLOAD_OPEN
+        ldy $93
+        beq @open
+        lda #C_FVERIFY_OPEN     ; VERIFY: answered not mine (the stock path) unless the Teensy compares it all by DMA
+@open:  jsr open_named
+.else
 fl_hook:
         lda $93
         bne fl_slow               ; VERIFY
         stx $A4                 ; original SA: 0 = load to caller's address
         lda #C_FLOAD_OPEN
         jsr open_named
+.endif
         bcs fl_slowx
         tay                     ; keep the result while X is reloaded
         ldx $A4
         tya
         beq @ok
         cmp #5
+.if VD_DMA_LOAD                 ; (bytes saved for the DMA requests; VD_DMA_LOAD=0 stays byte-identical to the 0.9.0.51 image)
+        beq fl_fail             ; DEVICE NOT PRESENT
+        jmp $F704               ; FILE NOT FOUND
+.else
         beq @nodev
         jmp $F704               ; FILE NOT FOUND
 @nodev: jmp $F707               ; DEVICE NOT PRESENT
+.endif
 @ok:    lda WIN                 ; load address: double reads
         cmp WIN
         bne @ok
@@ -418,10 +438,15 @@ fs_hook:
         jsr $F68F               ; "SAVING name"
         lda $A4
         cmp #5
+.if VD_DMA_LOAD
+        beq @ff                 ; DEVICE NOT PRESENT
+        tax
+.else
         bne @nodevok
         jmp $F707               ; DEVICE NOT PRESENT
 @nodevok:
         lda $A4
+.endif
         bne @done               ; drive refused (exists / full): stock KERNAL stays silent too
         lda $C1                 ; load address header
         sta WIN
@@ -433,7 +458,13 @@ fs_hook:
         sta MBX_LEN
         lda #C_FSAVE_BLK
         jsr vcall
-@loop:  lda $AE                 ; remaining = end - current
+@loop:
+.if VD_DMA_LOAD
+        lda #C_FSAVE_DMA        ; DATA = 0: the Teensy read the next part from RAM by DMA ($AC-$AF), saved it and moved $AC/$AD on:
+        jsr vcall               ; ask again. Anything else (DATA 1: not by DMA here; not mine from an older firmware, A = $A7 = the
+        beq @loop               ; device) sends the next window block (docs/DESIGN.md 51)
+.endif
+        lda $AE                 ; remaining = end - current
         sec
         sbc $AC
         sta $A3

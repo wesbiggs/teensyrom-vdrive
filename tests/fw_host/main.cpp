@@ -30,8 +30,8 @@ static const int kBannerTag = 0x1BB0;                 // where the tag sits in t
 static int banner(int unit) { return KernalFast[kBannerTag + 8 + unit]; }
 
 static uint8_t g_c64_kernal[8192];                    // what a DMA read of $E000-$FFFF returns
-static uint8_t g_c64_ram[65536];                      // where DMA writes go (the DMA LOAD, VIO_FLOAD_DMA)
-static int g_dma_reads = 0, g_dma_writes = 0; static bool g_dma_fail = false, g_dma_wfail = false;
+static uint8_t g_c64_ram[65536];                      // where DMA writes go (the DMA LOAD, VIO_FLOAD_DMA) and reads below $E000 come from
+static int g_dma_reads = 0, g_dma_writes = 0, g_dma_ram_reads = 0; static bool g_dma_fail = false, g_dma_wfail = false, g_dma_rfail = false;
 bool PerformDMA(DMA_Trans_RnW RnW, uint16_t StartAddr, uint8_t *Buffer, uint32_t Length, DMA_Addr_Mode FixC64Addr)
 {
     if (RnW == DMA_WRITE) {
@@ -39,7 +39,12 @@ bool PerformDMA(DMA_Trans_RnW RnW, uint16_t StartAddr, uint8_t *Buffer, uint32_t
         memcpy(g_c64_ram + StartAddr, Buffer, Length); g_dma_writes++;
         return true;
     }
-    if (g_dma_fail || FixC64Addr != DMA_ADDR_INCREMENT || StartAddr < 0xE000 || StartAddr + Length > 0x10000) return false;
+    if (StartAddr < 0xE000) {                         // DMA SAVE / VERIFY (VIO_FSAVE_DMA, VIO_FVERIFY_OPEN): never the KERNAL's range
+        if (g_dma_rfail || FixC64Addr != DMA_ADDR_INCREMENT || StartAddr + Length > 0xD000) return false;
+        memcpy(Buffer, g_c64_ram + StartAddr, Length); g_dma_ram_reads++;
+        return true;
+    }
+    if (g_dma_fail || FixC64Addr != DMA_ADDR_INCREMENT || StartAddr + Length > 0x10000) return false;
     memcpy(Buffer, g_c64_kernal + (StartAddr - 0xE000), Length); g_dma_reads++;
     return true;
 }
@@ -172,6 +177,53 @@ static int dma_load(int dev, const std::string &name, int at = -1, int *rc = nul
     }
 }
 
+// the patched KERNAL's SAVE loop with VIO_FSAVE_DMA: g_c64_ram[start, end) with the pointers at $AC-$AF. DATA 0 = a DMA part (ask
+// again), else a window block from the pointer. Returns the close's DATA, or -2 (a block answered not mine: DEVICE NOT PRESENT).
+static int dma_save(int dev, const std::string &name, unsigned start, unsigned end, int *dma_parts = nullptr)
+{
+    put_name(name);
+    int r = call(VIO_FSAVE_OPEN, dev, (uint8_t)name.size());
+    if (r) return r & 0x100 ? -2 : r;
+    uint8_t *z = g_c64_ram + 0xAC;
+    z[0] = (uint8_t)start; z[1] = (uint8_t)(start >> 8); z[2] = (uint8_t)end; z[3] = (uint8_t)(end >> 8);
+    ww(0, z[0]); ww(1, z[1]); call(VIO_FSAVE_BLK, 0, 2);
+    if (dma_parts) *dma_parts = 0;
+    for (;;) {
+        if (call(VIO_FSAVE_DMA, (uint8_t)dev) == 0) { if (dma_parts) ++*dma_parts; continue; }
+        unsigned cur = z[0] | z[1] << 8, e = z[2] | z[3] << 8;
+        if (e <= cur) break;
+        unsigned n = e - cur < VIO_WIN ? e - cur : VIO_WIN;
+        for (unsigned i = 0; i < n; i++) ww((uint8_t)i, g_c64_ram[cur + i]);
+        if (call(VIO_FSAVE_BLK, 0, (uint8_t)n) & 0x100) return -2;
+        cur += n; z[0] = (uint8_t)cur; z[1] = (uint8_t)(cur >> 8);
+    }
+    return call(VIO_FSAVE_CLOSE) & 0xFF;
+}
+
+// the patched KERNAL's VERIFY: VIO_FVERIFY_OPEN, then the LOAD loop, whose parts must all be DMA ones (DATA 0). at < 0: the file's own
+// address (secondary address 1), else $C3/$C4 with SA 0. Returns the end address, -1 (open failed, *rc), -3 (open not mine: the stock
+// VERIFY), -2 (a part not mine) or -4 (a window block: the KERNAL would have stored it); *sts = the ST bits ORed together.
+static int dma_verify(int dev, const std::string &name, int at, int *rc, int *sts)
+{
+    g_c64_ram[0xA4] = at < 0 ? 1 : 0;
+    if (at >= 0) { g_c64_ram[0xC3] = (uint8_t)at; g_c64_ram[0xC4] = (uint8_t)(at >> 8); }
+    put_name(name);
+    int r = call(VIO_FVERIFY_OPEN, dev, (uint8_t)name.size());
+    *rc = r; *sts = 0;
+    if (r & 0x100) return -3;
+    if (r) return -1;
+    unsigned p = at >= 0 ? (unsigned)at : (unsigned)(wr_(0) | wr_(1) << 8);
+    g_c64_ram[0xAE] = (uint8_t)p; g_c64_ram[0xAF] = (uint8_t)(p >> 8);
+    for (;;) {
+        uint8_t st; int n = call(VIO_FLOAD_DMA, (uint8_t)p, (uint8_t)(p >> 8), &st);
+        if (n & 0x100) return -2;
+        if (n) return -4;
+        *sts |= st;
+        p = g_c64_ram[0xAE] | g_c64_ram[0xAF] << 8;
+        if (st & 0x40) return (int)p;
+    }
+}
+
 static int fast_save(int dev, const std::string &name, const std::string &data)
 {
     put_name(name);
@@ -204,6 +256,7 @@ static std::string status15()
 
 int main(int argc, char **argv)
 {
+    setvbuf(stdout, NULL, _IOLBF, 0);         // line by line: a crash still shows the last check
     if (argc < 4) { puts("usage: fwhost SD_ROOT USB_ROOT EXPECT_HELLO_FILE"); return 2; }
     SD.root = argv[1]; firstPartition.root = argv[2];
     std::string hello_expect;
@@ -430,6 +483,14 @@ int main(int argc, char **argv)
         int end0 = dma_load(8, "DMAFILE", -1, &rc);
         check("DMA LOAD off (no Fab04_VDriveDMALoad): the KERNAL's FLOAD_DMA requests get window blocks, no DMA",
               rc == 0 && end0 == 0x0801 + 5000 && memcmp(g_c64_ram + 0x0801, big.data(), big.size()) == 0 && g_dma_writes == 0);
+        g_dma_ram_reads = 0; int parts = -1, sts;
+        memcpy(g_c64_ram + 0x3000, big.data(), big.size());
+        check("DMA SAVE off: every VIO_FSAVE_DMA answered 1 (window blocks), the file right, no DMA",
+              dma_save(8, "DMASAVE", 0x3000, 0x3000 + 5000, &parts) == 0 && parts == 0 && g_dma_ram_reads == 0 && g_dma_writes == 0
+              && fast_load(8, "DMASAVE", &rc).substr(2) == big);
+        check("DMA VERIFY off: VIO_FVERIFY_OPEN not mine (the KERNAL's stock VERIFY)", dma_verify(8, "DMAFILE", -1, &rc, &sts) == -3);
+        check("... and the drive still answers", fast_load(8, "DMAFILE", &rc).substr(2) == big);
+        cmd15("S:DMASAVE"); status15();
 #else
         memset(g_c64_ram, 0x55, sizeof g_c64_ram); g_dma_writes = 0;
         int end = dma_load(8, "DMAFILE", -1, &rc);
@@ -451,6 +512,47 @@ int main(int argc, char **argv)
         check("... and the channel is closed: the next LOAD works", dma_load(8, "DMAFILE", -1, &rc) == 0x0801 + 5000);
         std::string w = fast_load(8, "DMAFILE", &rc);
         check("... the window LOAD (VIO_FLOAD_BLK) is unchanged", rc == 0 && w.substr(2) == big);
+
+        // ---- DMA SAVE and VERIFY (VIO_FSAVE_DMA, VIO_FVERIFY_OPEN, docs/DESIGN.md 51): PerformDMA reads of C64 RAM ----
+        int parts = -1, sts = 0;
+        memset(g_c64_ram, 0x55, sizeof g_c64_ram); memcpy(g_c64_ram + 0x3000, big.data(), big.size());
+        g_dma_ram_reads = 0; g_dma_writes = 0;
+        check("DMA SAVE: $3000 + 5000 saved", dma_save(8, "DMASAVE", 0x3000, 0x3000 + 5000, &parts) == 0);
+        check("... in three 2 KB DMA parts, each reading the pointers and the bytes and writing $AC/$AD",
+              parts == 3 && g_dma_ram_reads == 3 * 2 + 1 && g_dma_writes == 3);
+        std::string s = fast_load(8, "DMASAVE", &rc);
+        check("... the file reads back (address and bytes)", rc == 0 && s.size() == 5002 && s[0] == 0x00 && s[1] == 0x30 && s.substr(2) == big);
+        memcpy(g_c64_ram + 0xCE00, big.data(), 0x200);
+        check("DMA SAVE from $CE00 over $D000: DMA below, the window from $D000",
+              dma_save(8, "DMASAVE2", 0xCE00, 0xD100, &parts) == 0 && parts == 1);
+        cmd15("S:DMASAVE2"); status15();
+        g_dma_rfail = true;
+        check("DMA SAVE with failing DMA reads: the window instead, the file right",
+              dma_save(8, "DMASAVE3", 0x3000, 0x3000 + 5000, &parts) == 0 && parts == 0 && fast_load(8, "DMASAVE3", &rc).substr(2) == big);
+        g_dma_rfail = false;
+        cmd15("S:DMASAVE3"); status15();
+        g_dma_wfail = true;
+        check("DMA SAVE whose pointer write fails: abandoned, not mine (DEVICE NOT PRESENT)", dma_save(8, "DMASAVE4", 0x3000, 0x3000 + 5000) == -2);
+        g_dma_wfail = false;
+        check("... and the next SAVE works", dma_save(8, "DMASAVE5", 0x3000, 0x3000 + 5000) == 0 && fast_load(8, "DMASAVE5", &rc).substr(2) == big);
+        cmd15("S:DMASAVE4,DMASAVE5"); status15();
+
+        g_dma_writes = 0;
+        check("DMA VERIFY: same bytes, end right, no VERIFY ERROR", dma_verify(8, "DMASAVE", -1, &rc, &sts) == 0x3000 + 5000 && !(sts & 0x10));
+        check("... RAM is not written, only the pointer ($AE/$AF) per part", g_dma_writes == 3 && memcmp(g_c64_ram + 0x3000, big.data(), big.size()) == 0);
+        g_c64_ram[0x3000 + 4321] ^= 0x80;
+        check("... one byte changed: ST $10 (VERIFY ERROR), still to the end", dma_verify(8, "DMASAVE", -1, &rc, &sts) == 0x3000 + 5000 && (sts & 0x10));
+        g_c64_ram[0x3000 + 4321] ^= 0x80;
+        memcpy(g_c64_ram + 0x5000, big.data(), big.size());
+        check("... secondary address 0: compared at $C3/$C4", dma_verify(8, "DMASAVE", 0x5000, &rc, &sts) == 0x5000 + 5000 && !(sts & 0x10));
+        check("... a file reaching $D000 or more: not mine (the stock VERIFY)", dma_verify(8, "DMASAVE", 0xD000 - 4999, &rc, &sts) == -3);
+        check("... from $0100: not mine", dma_verify(8, "DMASAVE", 0x0100, &rc, &sts) == -3);
+        check("... not found: 4 (FILE NOT FOUND, as for a LOAD)", dma_verify(8, "NOFILE", -1, &rc, &sts) == -1 && rc == 4);
+        g_dma_wfail = true;
+        check("... a failed pointer write: not mine mid-way (the KERNAL reports an error)", dma_verify(8, "DMASAVE", -1, &rc, &sts) == -2);
+        g_dma_wfail = false;
+        check("... and LOAD afterwards stores again", dma_load(8, "DMASAVE", 0x7000, &rc) == 0x7000 + 5000 && memcmp(g_c64_ram + 0x7000, big.data(), big.size()) == 0);
+        cmd15("S:DMASAVE"); status15();
 #endif
         cmd15("S:DMAFILE"); status15();
     }

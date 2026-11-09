@@ -1,6 +1,6 @@
 import ctypes, pathlib, random, shutil, subprocess, sys, tempfile, unittest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / 'tools'))
-from d64py import (LIB, Disk, VIO, VDrive, WIN_SIZE, F_LOAD_OPEN, F_LOAD_BLK, F_SAVE_OPEN, F_SAVE_BLK, F_SAVE_CLOSE,
+from d64py import (LIB, Disk, VIO, VDrive, WIN_SIZE, F_SAVE_DMA, F_VERIFY_OPEN, F_LOAD_OPEN, F_LOAD_BLK, F_SAVE_OPEN, F_SAVE_BLK, F_SAVE_CLOSE,
                    R_STAT, R_DEV0, R_DEV1, F_SCAN, F_FREE, F_MENU, BUSY, OK, NOTMINE, SCANREQ)
 
 LISTEN, TALK, SECOND, TKSA, CIOUT, ACPTR, UNLSN, UNTLK = range(1, 9)
@@ -146,6 +146,148 @@ class VioTests(unittest.TestCase):
         rc, end = self.io.dma_load(8, b"BIG", mem)
         data = self.files[b"BIG"]; addr = data[0] | data[1] << 8
         self.assertEqual((rc, end, bytes(mem[addr:addr + len(data) - 2])), (0, addr + len(data) - 2, data[2:]))
+
+    # ---- DMA SAVE and VERIFY (F_SAVE_DMA, F_VERIFY_OPEN, docs/DESIGN.md 51) ----
+    def dma_rw(self, wfail_at=None, rfail=False):
+        """64 KB of "C64 RAM" both DMA directions use; returns (mem, writes, reads)"""
+        mem = bytearray(0x10000); writes = []; reads = []
+        def w(addr, data):
+            writes.append((addr, len(data)))
+            if wfail_at is not None and len(writes) == wfail_at: return False
+            mem[addr:addr + len(data)] = data; return True
+        def r(addr, n):
+            reads.append((addr, n))
+            return None if rfail else bytes(mem[addr:addr + n])
+        self.io.set_dma(w, read=r)
+        return mem, writes, reads
+
+    def saved(self, name):
+        rc, addr, data = self.io.fast_load(8, name)
+        self.assertEqual(rc, 0)
+        return addr, data
+
+    def test_dma_save_matches_the_window_save(self):
+        for n in (0, 1, 127, 128, 129, 2047, 2048, 2049, 5000, 40000):
+            with self.subTest(n=n):
+                mem, writes, reads = self.dma_rw()
+                body = self.data(n)
+                mem[0x0801:0x0801 + n] = body
+                name = b"DS%d" % n
+                self.assertEqual(self.io.dma_save(8, name, mem, 0x0801, 0x0801 + n), 0)
+                self.assertEqual(self.saved(name), (0x0801, body))
+                data_reads = [x for x in reads if x[0] != 0xAC]
+                self.assertEqual(sum(k for _, k in data_reads), n)                  # every byte by DMA: no window blocks below $D000
+                for a, k in data_reads: self.assertTrue(0x200 <= a and a + k <= 0xD000 and k <= 2048, (hex(a), k))
+                self.assertTrue(all(a == 0xAC and k == 2 for a, k in writes))       # DMA writes only move the KERNAL's pointer
+        self.valid()
+
+    def test_dma_save_leaves_the_stack_page_io_and_kernal_to_the_window(self):
+        for start, end in ((0x0100, 0x0400), (0xCE00, 0xD100), (0xCF00, 0xFFFF), (0xE000, 0xE100), (0xC000, 0xD000)):
+            with self.subTest(start=hex(start)):
+                mem, writes, reads = self.dma_rw()
+                body = self.data(end - start); mem[start:end] = body
+                self.assertEqual(self.io.dma_save(8, b"RANGE", mem, start, end), 0)
+                self.assertEqual(self.saved(b"RANGE"), (start, body))
+                for a, k in reads:
+                    if a != 0xAC: self.assertTrue(0x200 <= a and a + k <= 0xD000, (hex(a), k))
+                self.disk_cmd(b"S:RANGE")
+
+    def disk_cmd(self, cmd):
+        self.io.call(LISTEN, 8); self.io.call(SECOND, 0x6F)
+        for b in cmd: self.io.call(CIOUT, b)
+        self.io.call(UNLSN)
+
+    def test_dma_save_without_dma_reads_is_the_window_save(self):
+        mem = bytearray(0x10000)
+        for fn in (None, lambda a, d: True):                                    # no DMA at all; DMA writes only (no read hook)
+            with self.subTest(dma=fn is not None):
+                self.io.set_dma(fn)
+                body = self.data(3000); mem[0x2000:0x2000 + 3000] = body
+                self.assertEqual(self.io.dma_save(8, b"NOREAD", mem, 0x2000, 0x2000 + 3000), 0)
+                self.assertEqual(self.saved(b"NOREAD"), (0x2000, body))
+                self.disk_cmd(b"S:NOREAD")
+
+    def test_dma_save_failed_read_falls_back_to_the_window(self):
+        mem, writes, reads = self.dma_rw(rfail=True)
+        body = self.data(3000); mem[0x2000:0x2000 + 3000] = body
+        self.assertEqual(self.io.dma_save(8, b"RFAIL", mem, 0x2000, 0x2000 + 3000), 0)
+        self.assertEqual(self.saved(b"RFAIL"), (0x2000, body))
+        self.assertEqual(writes, [])
+
+    def test_dma_save_failed_pointer_write_abandons_the_save(self):
+        mem, writes, reads = self.dma_rw(wfail_at=2)
+        body = self.data(5000); mem[0x2000:0x2000 + 5000] = body
+        self.assertEqual(self.io.dma_save(8, b"WFAIL", mem, 0x2000, 0x2000 + 5000), "notmine")   # the KERNAL: DEVICE NOT PRESENT
+        self.assertEqual(self.io.call(F_SAVE_CLOSE)[0], True)                   # a close of that save is not mine either
+        self.assertEqual(self.io.call(F_SAVE_CLOSE)[:2], (False, 0))            # once: then nothing is open
+        self.assertEqual(self.io.fast_load(8, b"WFAIL")[0], 0)                  # what came before the failure is in the file, closed
+        mem, writes, reads = self.dma_rw(); mem[0x2000:0x2000 + 5000] = body
+        self.assertEqual(self.io.dma_save(8, b"AFTER", mem, 0x2000, 0x2000 + 5000), 0)
+        self.assertEqual(self.saved(b"AFTER"), (0x2000, body))
+        self.valid()
+
+    def test_dma_save_refused_open_needs_no_dma(self):
+        mem, writes, reads = self.dma_rw()
+        self.assertEqual(self.io.dma_save(8, b"BIG", mem, 0x2000, 0x2100), 63)   # FILE EXISTS
+        self.assertEqual(self.io.call(F_SAVE_DMA, 8)[:2], (False, 1))          # no save open: nothing done, "send a window block"
+        self.assertEqual(reads, [])
+
+    def test_dma_verify_same_and_different(self):
+        for name in (b"TWO", b"THREE", b"S254", b"S256", b"BIG", b"HUGE"):
+            data = self.files[name]; addr = data[0] | data[1] << 8; body = data[2:]
+            if not (0x200 <= addr and addr + len(body) <= 0xD000): continue
+            with self.subTest(name=name):
+                mem, writes, reads = self.dma_rw()
+                mem[addr:addr + len(body)] = body
+                rc, end, st = self.io.dma_verify(8, name, mem)
+                self.assertEqual((rc, end, st & 0x10), (0, addr + len(body), 0))
+                self.assertTrue(all(a == 0xAE and k == 2 for a, k in writes))  # nothing but the pointer is written
+                if body:
+                    mem[addr + len(body) - 1] ^= 1                              # the last byte differs
+                    rc, end, st = self.io.dma_verify(8, name, mem)
+                    self.assertEqual((rc, end, st & 0x10), (0, addr + len(body), 0x10))
+
+    def test_dma_verify_at_the_callers_address(self):
+        body = self.files[b"BIG"][2:]
+        mem, writes, reads = self.dma_rw()
+        mem[0x4000:0x4000 + len(body)] = body
+        self.assertEqual(self.io.dma_verify(8, b"BIG", mem, at=0x4000), (0, 0x4000 + len(body), 0x40))
+        self.assertEqual(self.io.dma_verify(8, b"BIG", mem, at=0x4001)[2] & 0x10, 0x10)
+
+    def test_dma_verify_outside_dma_reach_is_the_stock_verify(self):
+        n = len(self.files[b"BIG"]) - 2
+        for at in (0x0100, 0xD000 - n + 1, 0xC000, 0xE000):
+            with self.subTest(at=hex(at)):
+                mem, writes, reads = self.dma_rw()
+                self.assertEqual(self.io.dma_verify(8, b"BIG", mem, at=at)[0], "notmine")
+                self.assertEqual(self.io.fast_load(8, b"BIG")[2], self.files[b"BIG"][2:])   # the channel was closed
+        mem, writes, reads = self.dma_rw()
+        self.assertEqual(self.io.dma_verify(8, b"BIG", mem, at=0xD000 - n)[0], 0)          # right up to $CFFF is fine
+
+    def test_dma_verify_needs_dma_reads(self):
+        self.io.set_dma(None)
+        self.assertEqual(self.io.dma_verify(8, b"BIG", bytearray(0x10000))[0], "notmine")
+        self.io.set_dma(lambda a, d: True)
+        self.assertEqual(self.io.dma_verify(8, b"BIG", bytearray(0x10000))[0], "notmine")
+        self.assertEqual(self.io.fast_load(8, b"BIG")[2], self.files[b"BIG"][2:])
+
+    def test_dma_verify_errors_and_failures(self):
+        mem, writes, reads = self.dma_rw()
+        self.assertEqual(self.io.dma_verify(8, b"NOPE", mem)[0], 4)
+        self.assertEqual(self.io.dma_verify(11, b"X", mem)[0], "notmine")
+        mem, writes, reads = self.dma_rw(rfail=True)
+        self.assertEqual(self.io.dma_verify(8, b"BIG", mem)[0], "notmine")       # can't read $A4: the stock VERIFY
+        mem, writes, reads = self.dma_rw(wfail_at=1)
+        data = self.files[b"BIG"]; addr = data[0] | data[1] << 8
+        mem[addr:addr + len(data) - 2] = data[2:]
+        self.assertEqual(self.io.dma_verify(8, b"BIG", mem)[0], "failed")        # a pointer write failed mid-way: an error
+        mem, writes, reads = self.dma_rw()
+        mem[addr:addr + len(data) - 2] = data[2:]
+        self.assertEqual(self.io.dma_verify(8, b"BIG", mem)[:2], (0, addr + len(data) - 2))
+        mem2 = bytearray(0x10000)                                                # and a LOAD after a VERIFY stores again
+        self.io.set_dma(lambda a, d: mem2.__setitem__(slice(a, a + len(d)), d) or True, read=lambda a, n: bytes(mem2[a:a + n]))
+        self.assertEqual(self.io.dma_load(8, b"BIG", mem2)[0], 0)
+        self.assertEqual(bytes(mem2[addr:addr + len(data) - 2]), data[2:])
 
     def test_fast_load_errors(self):
         self.assertEqual(self.io.fast_load(8, b"NOPE")[0], 4)

@@ -66,7 +66,7 @@ The C64's ability to read the 8 KB of RAM under KERNAL ROM ($E000-$FFFF) is used
    | File | SHA-256 |
    |---|---|
    | stock `kernal-901227-03.bin` (input) | `83c60d47047d7beab8e5b7bf6f67f80daa088b7a6a27de0d7e016f6484042721` |
-   | `kernal-tr.bin` from this revision | `c4e9d2276241202f450648e2aedba910d8f1380fb9e730b6d42bf9014d7a5207` |
+   | `kernal-tr.bin` from this revision | `ea5518f31a90881143b2f6460c46bece554663a5b36fec7adb8e2b3a419cc8eb` |
    | `kernal-tr.bin` last run on a real C64 (0.9.0.45, commit `02c6490`) | `62704caed1a4f02c795fd5f73bf8e1a428d776cf70fd63c0c739c2aa7719f5cc` |
 
    A different stock hash means a different ROM dump; the patches may not fit it. The "this revision" row is checked by `make test`.
@@ -228,8 +228,9 @@ With the TR menu showing (no program running) the same commands show and change 
 ### Supported
 | Feature | Notes |
 |---|---|
-| `LOAD` / `SAVE` | Fast path, ~255 B per mailbox transaction |
-| `VERIFY`, `OPEN` / `PRINT#` / `INPUT#` | Byte path |
+| `LOAD` / `SAVE` | Fast path, 128 B per mailbox transaction; on the TR+ `-DMA` firmware up to 2 KB at a time by DMA (`SAVE` from `$0200-$CFFF`) |
+| `VERIFY` | On the TR+ `-DMA` firmware compared by the TR+ (DMA reads) when the whole file lies in `$0200-$CFFF`; otherwise the byte path |
+| `OPEN` / `PRINT#` / `INPUT#` | Byte path |
 | File types | PRG, SEQ, USR, REL |
 | Wildcards | |
 | `@0:` replace | |

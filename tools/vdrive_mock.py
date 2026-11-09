@@ -229,11 +229,14 @@ def main(kernal, scenario="basic"):
         fault = {"at": 0, "n": 0}               # fault injection: answer NOT_MINE to the Nth FLOAD_BLK / FLOAD_DMA of a run
         # DMA LOAD (VIO_FLOAD_DMA, docs/DESIGN.md 49) in the basic run: the CPU is stopped at the CMD checkpoint while the engine
         # answers, so a monitor write is what the TR+'s DMA does. The scan and variant runs keep the window path.
-        dma = {"on": scenario == "basic", "pending": [], "writes": []}
+        # DMA SAVE and VERIFY (VIO_FSAVE_DMA, VIO_FVERIFY_OPEN, docs/DESIGN.md 51): a monitor read is the TR+'s DMA read.
+        dma = {"on": scenario == "basic", "pending": [], "writes": [], "reads": []}
         if dma["on"]:
             def dma_write(addr, data):
                 dma["pending"].append((addr, data)); dma["writes"].append((addr, len(data))); return True
-            io.set_dma(dma_write)
+            def dma_read(addr, n):                          # (an engine call reads before it writes: nothing pending can overlap)
+                dma["reads"].append((addr, n)); return bytes(m.read(addr, n))
+            io.set_dma(dma_write, read=dma_read)
         menu = {"asked": 0}
 
         def service(timeout, limit=None):
@@ -246,8 +249,8 @@ def main(kernal, scenario="basic"):
                 if typ == 0x62:  # stopped
                     regs = m.read(MBX, 6)
                     c, a, ln = regs[0], regs[1], regs[5]
-                    if 1 <= c <= 17:
-                        if c in (9, 11, 12):                    # commands that consume the window
+                    if 1 <= c <= 19:
+                        if c in (9, 11, 12, 19):                # commands that consume the window
                             io.win_write(bytes(m.read(WIN, WIN_SIZE)))
                         nm, d, st = io.call(c, a, ln, allow_scan=True)
                         for addr, data in dma["pending"]:      # DMA: into RAM before the answer token
@@ -258,7 +261,7 @@ def main(kernal, scenario="basic"):
                             if fault["n"] == fault["at"]: nm = True
                         if c == 16: menu["asked"] += LIB.vio_take_menu(io.v)   # VIO_MENU: the Teensy would now reset into the TR menu
                         log.append((c, a, d, st, nm))
-                        if c in (9, 10, 17):                    # commands that produce window data
+                        if c in (9, 10, 17, 19):                # commands that produce window data
                             m.write(WIN, io.win_read(WIN_SIZE))
                         m.write(DATA, [d]); m.write(ST, [st])
                         devs = (io.r(R_DEV0), io.r(R_DEV1))
@@ -418,6 +421,11 @@ def main(kernal, scenario="basic"):
             run('LOAD"$",8\r', "SEARCHING FOR $"); run('LIST\r', '0 "MOCKDISK')
             run('NEW\r'); run('10 PRINT"VARIANT"\r'); run('SAVE"VARIANT",8\r', "SAVING VARIANT")
             run('NEW\r'); run('LOAD"VARIANT",8\r', "READY."); run('RUN\r', "VARIANT")
+            n0 = len(log)
+            run('VERIFY"VARIANT",8\r', "OK")       # no DMA host here: FVERIFY_OPEN is not mine, the stock byte-level VERIFY (docs/DESIGN.md 51)
+            cs = [e for e in log[n0:]]
+            check("VERIFY without DMA: the stock path (FVERIFY_OPEN not mine, then byte-level ACPTR)",
+                  any(e[0] == 6 for e in cs) and any(e[0] == 19 and e[4] for e in cs))
             run('OPEN15,8,15,"S:VARIANT":CLOSE15\r')
             shift_run()
             n0 = len(log)
@@ -520,7 +528,12 @@ def main(kernal, scenario="basic"):
         run('NEW\r')
         run('LOAD"SAVEME",8\r', "READY.")
         run('RUN\r', "SAVED")
-        run('VERIFY"SAVEME",8\r', "OK")                           # VERIFY takes the stock byte-level path
+        n0 = len(log)
+        run('VERIFY"SAVEME",8\r', "OK")                           # with DMA: compared by the Teensy (FVERIFY_OPEN), else the stock byte-level path
+        if dma["on"]:
+            check("... VERIFY went the DMA way: FVERIFY_OPEN taken, parts as FLOAD_DMA with no window data, no byte-level ACPTR",
+                  any(e[0] == 19 and not e[4] for e in log[n0:]) and all(e[2] == 0 for e in log[n0:] if e[0] == 17)
+                  and not any(e[0] == 6 for e in log[n0:]))
         run('POKE 2049,0:POKE 2050,0\r')                           # corrupt the program in RAM
         run('VERIFY"SAVEME",8\r', "VERIFY  ERROR")
         run('NEW\r')
@@ -554,7 +567,19 @@ def main(kernal, scenario="basic"):
         ram = bytes(rnd.randrange(256) for _ in range(6000))
         m.write(0x2000, ram)
         run('NEW\r')
+        r0 = len(dma["reads"])
         run('POKE43,0:POKE44,32:POKE45,112:POKE46,55:SAVE"BIG2",8\r', "SAVING BIG2")
+        if dma["on"]:
+            parts = [r for r in dma["reads"][r0:] if r[0] != 0xAC]
+            check("... BIG2 went by DMA: %d reads of RAM, 6000 bytes in all, none outside $0200-$CFFF" % len(parts),
+                  len(parts) == 3 and sum(n for _, n in parts) == 6000 and all(0x200 <= a and a + n <= 0xD000 for a, n in parts))
+        run('VERIFY"BIG2",8,1\r', "OK")
+        m.write(0x2000 + 5999, [ram[5999] ^ 0xFF])                 # the last byte differs
+        run('\x93VERIFY"BIG2",8,1\r', "VERIFY  ERROR")
+        run('POKE43,1:POKE44,8:NEW\r')                              # BASIC back at $0801: after a LOAD it relinks the program at 43/44
+        m.write(0x2000, bytes(6000))
+        run('\x93LOAD"BIG2",8,1\r', "READY.")
+        check("BIG2 (6000 bytes saved from $2000) loads back intact", bytes(m.read(0x2000, 6000)) == ram)
         run('NEW\r')
         run('OPEN15,8,15,"S:SAVEME":CLOSE15\r')
         run('LOAD"SAVEME",8\r', "FILE NOT FOUND")
@@ -667,7 +692,9 @@ def main(kernal, scenario="basic"):
         check("BAM written by the drive equals what c1541 validate computes",
               img.read_bytes()[357 * 256 + 4: 357 * 256 + 0x90] == before)
         n_save = sum(1 for e in log if e[0] == 12)
-        check("SAVE used the fast path (%d block writes)" % n_save, n_save >= 24)
+        n_dma = sum(1 for e in log if e[0] == 18 and e[2] == 0 and not e[4])      # VIO_FSAVE_DMA parts (docs/DESIGN.md 51)
+        check("SAVE used the fast path (%d block writes, %d DMA parts)" % (n_save, n_dma),
+              n_save + n_dma >= (6 if dma["on"] else 24) and (n_dma >= 3) == dma["on"])
         print("mailbox calls:", len(log))
         return 0 if ok else 1
     finally:

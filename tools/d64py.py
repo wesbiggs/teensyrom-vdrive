@@ -149,9 +149,14 @@ LIB.vio_io2_read.restype = ctypes.c_uint8
 LIB.vio_poll.restype = ctypes.c_int
 LIB.vdrive_active.restype = ctypes.c_int
 (R_CMD, R_ARG, R_DATA, R_STAT, R_ST, R_LEN, R_DEV0, R_DEV1) = range(8)
-(F_LOAD_OPEN, F_LOAD_BLK, F_SAVE_OPEN, F_SAVE_BLK, F_SAVE_CLOSE, F_SCAN, F_FREE, F_MENU, F_LOAD_DMA) = range(9, 18)
+(F_LOAD_OPEN, F_LOAD_BLK, F_SAVE_OPEN, F_SAVE_BLK, F_SAVE_CLOSE, F_SCAN, F_FREE, F_MENU, F_LOAD_DMA,
+ F_SAVE_DMA, F_VERIFY_OPEN) = range(9, 20)
 DMA_PTR = 0xAE                     # VIO_DMA_PTR
+DMA_SAVE = 0xAC                    # VIO_DMA_SAVE: the SAVE pointer $AC/$AD and end $AE/$AF
+DMA_SA = 0xA4                      # VIO_DMA_SA: the original secondary address of a LOAD / VERIFY
+DMA_ADDR = 0xC3                    # VIO_DMA_ADDR: the caller's load address
 DMA_WRITE_FN = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_uint16, ctypes.POINTER(ctypes.c_uint8), ctypes.c_uint16)
+DMA_READ_FN = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_uint16, ctypes.POINTER(ctypes.c_uint8), ctypes.c_uint16)
 BUSY, OK, NOTMINE, SCANREQ = 0x80, 0x5A, 0xA5, 0x3C
 WIN_SIZE = 128                                    # VIO_WIN: the IO2 window at $DF80 (d64/vdrive_io.h)
 
@@ -210,13 +215,62 @@ class VIO:
             if st & 0x40: break
         return 0, addr, data
 
-    def set_dma(self, fn, size=2048):
-        """fn(addr, bytes) -> bool: what the host's DMA write does (None: no DMA). The buffer and callback are kept alive here."""
+    def set_dma(self, fn, size=2048, read=None):
+        """fn(addr, bytes) -> bool: what the host's DMA write does (None: no DMA). read(addr, n) -> bytes, or None for a failed read:
+        the host's DMA read (None: no DMA reads, so SAVE by window and VERIFY the stock way). Buffers and callbacks are kept alive here."""
         if fn is None:
-            LIB.vio_set_dma(self.v, None, None, None, ctypes.c_uint16(0)); self._dma = None; return
+            LIB.vio_set_dma(self.v, None, None, None, None, ctypes.c_uint16(0)); self._dma = None; return
         cb = DMA_WRITE_FN(lambda ctx, addr, buf, n: 1 if fn(addr, ctypes.string_at(buf, n)) else 0)
-        self._dma = (cb, ctypes.create_string_buffer(size))
-        LIB.vio_set_dma(self.v, cb, None, self._dma[1], ctypes.c_uint16(size))
+        def rd(ctx, addr, buf, n):
+            got = read(addr, n)
+            if got is None: return 0
+            ctypes.memmove(buf, bytes(got), n); return 1
+        rcb = DMA_READ_FN(rd) if read else None
+        self._dma = (cb, rcb, ctypes.create_string_buffer(size))
+        LIB.vio_set_dma(self.v, cb, rcb, None, self._dma[2], ctypes.c_uint16(size))
+
+    def dma_save(self, dev, name, mem, start, end):
+        """the patched KERNAL's SAVE loop with F_SAVE_DMA: mem[start:end] (mem: the 64 KB the DMA callbacks read and write; $AC-$AF
+        hold the pointers there). Returns the close's DATA, or "notmine" (open refused, or a block answered not mine)"""
+        self.win_write(name)
+        nm, rc, _ = self.call(F_SAVE_OPEN, dev, len(name))
+        if nm: return "notmine"
+        if rc: return rc
+        mem[DMA_SAVE:DMA_SAVE + 4] = bytes([start & 255, start >> 8, end & 255, end >> 8])
+        self.win_write(bytes([start & 255, start >> 8]))
+        self.call(F_SAVE_BLK, 0, 2)
+        while True:
+            nm, d, _ = self.call(F_SAVE_DMA, dev)
+            if not nm and d == 0: continue                 # a part went by DMA: ask again
+            cur, e = mem[DMA_SAVE] | mem[DMA_SAVE + 1] << 8, mem[DMA_SAVE + 2] | mem[DMA_SAVE + 3] << 8
+            if e <= cur: break
+            n = min(WIN_SIZE, e - cur)
+            self.win_write(bytes(mem[cur:cur + n]))
+            if self.call(F_SAVE_BLK, 0, n)[0]: return "notmine"
+            cur += n; mem[DMA_SAVE], mem[DMA_SAVE + 1] = cur & 255, cur >> 8
+        nm, rc, _ = self.call(F_SAVE_CLOSE)
+        return "notmine" if nm else rc
+
+    def dma_verify(self, dev, name, mem, at=None):
+        """the patched KERNAL's VERIFY: F_VERIFY_OPEN, then the LOAD loop (F_LOAD_DMA), which must never get a window block to store.
+        at: the caller's address with secondary address 0 (None: the file's own, SA 1). Returns (rc, end, ST bits ORed together);
+        rc "notmine" when the open was refused (the KERNAL then verifies the stock way) or a part was answered not mine ("failed")"""
+        mem[DMA_SA] = 0 if at is not None else 1
+        if at is not None: mem[DMA_ADDR], mem[DMA_ADDR + 1] = at & 255, at >> 8
+        self.win_write(name)
+        nm, rc, _ = self.call(F_VERIFY_OPEN, dev, len(name))
+        if nm: return "notmine", None, 0
+        if rc: return rc, None, 0
+        p = (self.win_r(0) | self.win_r(1) << 8) if at is None else at
+        mem[DMA_PTR], mem[DMA_PTR + 1] = p & 255, p >> 8
+        sts = 0
+        while True:
+            nm, n, st = self.call(F_LOAD_DMA, p & 255, p >> 8)
+            if nm: return "failed", None, sts
+            assert n == 0, "a VERIFY part came as a window block: the KERNAL would store it"
+            sts |= st
+            p = mem[DMA_PTR] | mem[DMA_PTR + 1] << 8
+            if st & 0x40: return 0, p, sts
 
     def dma_load(self, dev, name, mem, at=None):
         """the patched KERNAL's LOAD loop with F_LOAD_DMA, into mem (a 64 KB bytearray the DMA callback also writes).

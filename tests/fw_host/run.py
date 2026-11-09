@@ -86,6 +86,8 @@ try:
         print(r.stdout + r.stderr); sys.exit(1)
     r = subprocess.run([str(exe2), str(sd2), str(usb2), str(expect), str(kstock), str(kpatched)], capture_output=True, text=True)
     lines = r.stdout.splitlines()
+    if r.returncode and not any(ln.startswith("FAIL") for ln in lines):
+        print("  [no DMA] exit %d after: %s" % (r.returncode, lines[-1] if lines else "(no output)"))
     for ln in lines:
         if ln.startswith("FAIL") or "DMA LOAD off" in ln: print("  [no DMA]", ln)
     print(("PASS" if r.returncode == 0 else "FAIL"), "glue without Fab04_VDriveDMALoad: %d checks pass" % sum(1 for ln in lines if ln.startswith("PASS")))
