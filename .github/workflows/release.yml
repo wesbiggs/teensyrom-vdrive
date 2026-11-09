@@ -1,0 +1,93 @@
+# Firmware for a release: builds TeensyROM (tr) and TeensyROM+ (tr-plus) hex files with tools/build_firmware.sh (the TeensyROM commit in
+# firmware/UPSTREAM + firmware/teensyrom-vdrive.patch, TeensyROM's own build script) and attaches both to the GitHub release.
+# A manual run (Actions tab) or a push that changes the firmware builds both and keeps them as a workflow artifact, without touching any release
+# (so a patch that no longer builds shows up before a release is cut).
+# The plain TR hex has no VDrive yet (VDrive sits under Fab04_KernalReplace, TR+ only); it is built so the release carries both boards' files.
+name: release firmware
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+  push:
+    paths:
+      - 'firmware/**'
+      - 'd64/**'
+      - 'tools/build_firmware.sh'
+      - '.github/workflows/release.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'release' }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [tr, tr-plus]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'   # TeensyROM's package.json: "node": ">=24"
+
+      - name: Cache Arduino core and library
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.arduino15
+            ~/Arduino/libraries
+          key: arduino-teensy-1.61.0-crc32-2.0.1
+
+      - name: Build ${{ matrix.target }}
+        run: tools/build_firmware.sh ${{ matrix.target }} build/release --install-toolchain
+
+      # The hex name carries the firmware version (TeensyROM+_0.9.0.45_full.hex); a release tag v<version> must match it,
+      # so a tag made before firmware/REV was bumped (or on the wrong commit) does not ship a mislabelled file.
+      - name: Check the version against the tag
+        if: github.event_name == 'release'
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          hex=$(ls build/release/*.hex)
+          ver=$(basename "$hex" | sed -E 's/^TeensyROM\+?_(.*)_full\.hex$/\1/')
+          echo "hex $hex, version $ver, tag $TAG"
+          case "$TAG" in
+            v[0-9]*) [ "$TAG" = "v$ver" ] || { echo "::error::tag $TAG does not match the firmware version $ver (firmware/REV)"; exit 1; } ;;
+            *) echo "::warning::tag $TAG is not v<version>; not compared with $ver" ;;
+          esac
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firmware-${{ matrix.target }}
+          path: build/release/*.hex
+          if-no-files-found: error
+
+  attach:
+    needs: build
+    if: github.event_name == 'release'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: firmware-*
+          merge-multiple: true
+          path: hex
+
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          ls -l hex
+          [ "$(ls hex/*.hex | wc -l)" = 2 ] || { echo "::error::expected two hex files"; exit 1; }
+          gh release upload "$TAG" hex/*.hex --clobber --repo "$GITHUB_REPOSITORY"
