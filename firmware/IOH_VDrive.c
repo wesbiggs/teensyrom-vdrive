@@ -1197,7 +1197,10 @@ FLASHMEM int VDrive_RemoteIdleSet(int unit, const char *path, char *msg, size_t 
 // stick that is missing, an unreadable list or no usable image in it flashes red quickly for 2 s. An image that has disappeared is
 // skipped. With nothing mounted (or an image that is not in the list) the first usable image is picked.
 // Wired to the TR's Alt button only when its setting (TR menu, settings) is "None": a chosen action is never taken over.
-// The border change itself is done by the KERNAL's IRQ routine (patches/vdrive.s, irq_border), driven by the BORDER register.
+// The plain TR has no Alt button: there the agent's hook block (vector/vdhooks.s) sends CTRL+C=+F1 (SD) and CTRL+C=+F3 (USB)
+// through the KEY register instead (docs/DESIGN.md 53); the TR+'s "VDrive Agent" takes both.
+// The border change itself is done by the KERNAL's IRQ routine (patches/vdrive.s, irq_border), driven by the BORDER register,
+// or with the agent by the hook block's CINV hook, which does the same.
 #define VD_CfgBufSize    2048
 #define VD_CfgMaxEntries 32
 #define VD_TapWindowMs   1000
@@ -1382,7 +1385,18 @@ FLASHMEM void SpecialBtn_VDrive(bool Up_nDn)
 FLASHMEM void VD_AltPoll()
 {
    VD_FlashPoll();
-   if (vdTaps == 0 || vdSwitching) return;
+   if (vdSwitching) return;
+   // the plain TR's keyboard hook (vector/vdhooks.s): CTRL+C=+F1 = one tap (SD), CTRL+C=+F3 = two taps (USB), at once
+   int key = vio ? vio_take_key(vio) : 0;
+   if (key == VIO_KEY_SD || key == VIO_KEY_USB)
+   {
+      vdTaps = 0;
+      vdSwitching = true;
+      VD_SwitchNext(key == VIO_KEY_SD ? 0 : 1);
+      vdSwitching = false;
+      return;
+   }
+   if (vdTaps == 0) return;
    if (vdTaps < 2 && millis() - vdTapFirstMs < VD_TapWindowMs) return;     // a second tap may still come
    int unit = vdTaps >= 2 ? 1 : 0;
    vdTaps = 0;

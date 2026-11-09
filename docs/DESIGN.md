@@ -823,3 +823,29 @@ On the plain TR, RAM1 variables include the served page (256 bytes), the registe
 - the RAM-budget numbers against stock.
 
 The NativeEthernet late-ISR fix (the `loop()` poll, PR #85) is TR+ only: on a plain TR with Ethernet initialized, late phi2 interrupts could hit the agent's opcode fetches.
+
+## 53. Disk switching on the plain TeensyROM: CTRL+C=+F1 / F3 (0.9.0.54; py65, host tests and VICE; not on hardware)
+
+The plain TR has no Alt button (section 22 is TR+ only), so its disk switching comes from the keyboard instead: **CTRL+C=+F1** picks the next image of the SD card's `/vdrive-config.txt`, **CTRL+C=+F3** the USB stick's. The list format, the skipping of missing images, the quiet-moment wait and the border flash (the entry's colour and count; red for 2 s on an error) are section 22's.
+
+**The hook block.** The agent (section 51) had 2 bytes left in IO1, so the hooks are a block of their own, `vector/vdhooks.s` (63 bytes), served from IO2 at `$DF10` (the registers + `$10`). Without an REU, `$DF0C-$DF7F` were open bus. It holds:
+- `old_irq` and `old_keylog`: the vectors it chains to (INSTALL writes them).
+- `f_sei`: `SEI` / `RTS`.
+- `saved`: the border colour a SAVE request remembered. The KERNAL build keeps it in `$9C`; here the block keeps it itself, since the Teensy keeps the 6502's writes, as in the agent's page.
+- `f_irq` on **CINV** (`$0314`): the KERNAL build's `irq_border` (BORDER register read twice, exact request values only), then `JMP (old_irq)`.
+- `f_key` on **KEYLOG** (`$028F`, which the keyboard scan jumps through to pick its key table, and only while a key is down): when `SHFLAG` (`$028D`) is exactly 6 (CTRL+C=) and the key of this scan (`SFDX` `$CB`) is not the key of the last scan (`LSTX` `$C5`), its matrix code goes to the new **KEY** register (`$DF0B`, `VIO_KEY` = 11). Then `JMP (old_keylog)`. The stock scan goes on unchanged: the CTRL table holds `$FF` for F1 and F3, so no character reaches the keyboard buffer, and LSTX becomes the key, so a held key is sent once.
+
+**Install.** `vvec_set_hooks()` tells the engine where the block is (the firmware: `$DF10`; 0 = no block, the default and the previous behaviour). INSTALL and IMAIN's re-hook then also PEEK KEYLOG and point both vectors at the block, the old value first. Both vectors are used from the IRQ, so a half-written one must not be seen. Before writing them, the engine CALLs `f_sei` through ctramp. The script after the CALL's result runs with I set, and the final return or chain loads the caller's own P. RUN/STOP+RESTORE resets both vectors (RESTOR and CINT); IMAIN's existing re-hook (when ILOAD is the ROM's again) restores them with the others. A program that calls CINT alone loses the keys until the next RUN/STOP+RESTORE or `SYS`.
+
+**Firmware.** `vio_hot_t` gains `key` after `id1` (`VIO_NREGS` 12; in the KERNAL build `$DE1B` now answers too, harmless). `vio_take_key()` returns the last write once and clears it. `VD_AltPoll()` turns `VIO_KEY_SD` (4, F1) and `VIO_KEY_USB` (5, F3) into `VD_SwitchNext(0 / 1)` at once, without the double-tap wait, and ignores other codes. `InitHndlr_VDriveAgent()` refreshes the block, clears KEY, calls `vvec_set_hooks` and `VD_AltButtonInit()` (the flash sequencer; on the TR+ the "VDrive Agent" also takes the Alt button when its setting is "None", as the KERNAL handlers do). `IO2Hndlr_VDriveAgent` answers `$DF10-$DF7F` from a RAM1 array right after the window test. `tools/build_agent.py` writes `VD_HooksBase` / `VD_Hooks[]` into `vd_agent.h`.
+
+**Limits.**
+- The hotkey works only while the KERNAL scans the keyboard: BASIC and programs that keep the stock IRQ and read keys through it. Most games scan the keyboard themselves and never reach KEYLOG. For those, use `trvdrive` over serial or Ethernet (section 20).
+- The border flash needs CINV, so a program with its own IRQ routine shows no flash, unless that routine chains to the old CINV value.
+- The block runs from IO2 on every IRQ (about 15 instructions while BORDER idles), so its opcode fetches carry section 50's IO-execution risk 50-60 times a second, not only during disk access. The soak test of section 50 should run code from IO2 as well as IO1.
+
+**Tests.**
+- `tests/test_hooks.py` (py65, in `make test-agent`): `f_key` for F1/F3, once per press, other modifiers ignored. `f_irq` set/save/restore/idle/garbage/disagreeing reads, and the chain to any old CINV. `f_sei`.
+- `tests/test_vvec.py`: INSTALL with the block (the SEI CALL first, both vectors and old values, idempotent, the caller's I flag back), without the block (nothing touched), IMAIN after RUN/STOP+RESTORE, a refused launch INSTALL.
+- `tests/fw_host/plain.cpp`: the block served at `$DF10` with writes kept and refreshed, `$DF0C-$DF0F` open, KEY read back and cleared, F1 switching at once with the entry's flash, another key ignored, F3 without a stick flashing red.
+- VICE (`make test-agent`, the block in RAM at `$C810` with the mailbox at `$C800`): `SYS` hooks CINV/KEYLOG with interrupts on again, the border flash through the IRQ (BORDER is RAM there), RUN/STOP+RESTORE re-hooks, a reset unhooks and `SYS` hooks again. A key press with CTRL+C= cannot be made through VICE's binary monitor (it feeds the keyboard buffer, not the matrix), so the key path is py65 and host only.

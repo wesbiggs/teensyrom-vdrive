@@ -28,6 +28,7 @@ uint8_t vio_io1_read(const vio_hot_t *h, uint8_t off)
     case VIO_BORDER: return h->border;
     case VIO_ID0:  return h->id0;
     case VIO_ID1:  return h->id1;
+    case VIO_KEY:  return h->key;
     default:       return 0;
     }
 }
@@ -37,6 +38,7 @@ void vio_io1_write(vio_hot_t *h, uint8_t off, uint8_t val)
     switch (off) {
     case VIO_ARG: h->arg = val; break;
     case VIO_LEN: h->len = val; break;
+    case VIO_KEY: h->key = val; break;
     case VIO_CMD:
         h->cmd = val;
         h->stat = VIO_BUSY;          /* visible to the 6502 before it can read STAT */
@@ -201,6 +203,13 @@ VD_COLD int vio_probe_free(vio_t *v, uint8_t dev)
     int left = vdrive_scan_free(&v->vd, dev);
     vio_publish_devices(v);
     return left;
+}
+
+VD_COLD int vio_take_key(vio_t *v)
+{
+    uint8_t k = v->h->key;
+    if (k) v->h->key = 0;      /* a write between the read and the clear is lost: it was a second key press within microseconds */
+    return k;
 }
 
 VD_COLD int vio_take_menu(vio_t *v)

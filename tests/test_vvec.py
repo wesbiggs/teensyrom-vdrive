@@ -10,6 +10,8 @@ C_VEC, C_CONT = 18, 19
 OK = 0x5A
 E = dict(INSTALL=0, OPEN=1, CLOSE=2, CHKIN=3, CKOUT=4, CLRCH=5, BASIN=6, BSOUT=7, CLALL=8, LOAD=9, SAVE=10, MAIN=11)
 RTS, CTRAMP, ENTRIES, F_BSOUT, F_BASIN, F_GETIN, OLD = BASE + 241, BASE, BASE + 12, BASE + 48, BASE + 59, BASE + 70, BASE + 6
+HOOKS = 0xDF10                                                        # vector/vdhooks.s on hardware (MBX + $10)
+H_OLD_IRQ, H_OLD_KEYLOG, H_SEI, H_IRQ, H_KEY = HOOKS, HOOKS + 2, HOOKS + 4, HOOKS + 7, HOOKS + 44
 STOCK = {0x0302: 0xA483, 0x031A: 0xF34A, 0x031C: 0xF291, 0x031E: 0xF20E, 0x0320: 0xF250, 0x0322: 0xF333, 0x0324: 0xF157,
          0x0326: 0xF1CA, 0x032A: 0xF13E, 0x032C: 0xF32F, 0x0330: 0xF4A5, 0x0332: 0xF5ED}
 
@@ -23,6 +25,8 @@ class Agent:
             self.mem[a:a + 2] = struct.pack("<H", v)
             if a >= 0x0314: self.mem[0xFD30 + a - 0x0314:0xFD32 + a - 0x0314] = struct.pack("<H", v)   # RESTOR's table
         self.mem[0xE449:0xE44B] = struct.pack("<H", STOCK[0x0302])                                   # INITV's ($E447 = $0300)
+        self.mem[0x0314:0x0316] = struct.pack("<H", 0xEA31)                                         # CINV, as RESTOR sets it
+        self.mem[0x028F:0x0291] = struct.pack("<H", 0xEB48)                                         # KEYLOG, as CINT sets it
         self.zp = dict(st=0, nfiles=0, dfltn=0, dflto=3)
 
     def w16(self, a): return self.mem[a] | self.mem[a + 1] << 8
@@ -187,6 +191,57 @@ class VVecTest(unittest.TestCase):
         self.assertEqual(m.call("BASIN")[0], 0xF157, "a new call is answered (keyboard: chained)")
         t = m.run(m.send(C_CONT))                                    # a CONT nobody waits for: back to the caller, C set
         self.assertEqual((t[0], t[1], t[4] & 1), (RTS, 5, 1))
+
+    def hooked(self):
+        """INSTALL with the hook block: KEYLOG is PEEKed, the block's SEI is CALLed, then everything is written and the caller's P comes back"""
+        m = self.ag
+        t = m.call("INSTALL", a=1, x=2, y=3, p=0x20)
+        self.assertEqual((t[0], m.w16(CTRAMP + 1)), (CTRAMP, H_SEI), "a CALL of the hook block's SEI first")
+        t = m.result(a=1, x=2, y=3, p=0x24)                           # back from SEI: I set
+        self.assertEqual(t[:4], (RTS, 1, 2, 3))
+        self.assertEqual(t[4] & 0x05, 0, "I and C clear again: the caller's own P")
+        return t
+
+    def test_hooks_install(self):
+        self.vv.set_hooks(HOOKS)
+        m = self.ag
+        m.mem[0x0314:0x0316] = struct.pack("<H", 0xC000)             # a program's own IRQ routine before us: chained to
+        self.hooked()
+        self.assertEqual((m.w16(0x0314), m.w16(0x028F)), (H_IRQ, H_KEY))
+        self.assertEqual((m.w16(H_OLD_IRQ), m.w16(H_OLD_KEYLOG)), (0xC000, 0xEB48))
+        self.assertEqual(m.w16(0x0330), ENTRIES + 3 * E["LOAD"], "and the other vectors as before")
+        self.hooked()                                                 # again: the old values stay (not our own hooks)
+        self.assertEqual((m.w16(H_OLD_IRQ), m.w16(H_OLD_KEYLOG)), (0xC000, 0xEB48))
+
+    def test_hooks_without_block(self):
+        """no hook block (the default): neither vector is touched and INSTALL needs no CALL"""
+        self.install()
+        self.assertEqual((self.ag.w16(0x0314), self.ag.w16(0x028F)), (0xEA31, 0xEB48))
+
+    def test_hooks_main_rehooks_after_run_stop_restore(self):
+        self.vv.set_hooks(HOOKS)
+        m = self.ag
+        self.hooked()
+        for a, v in STOCK.items():                                    # RESTOR (CINV too) and CINT (KEYLOG)
+            if a != 0x0302: m.mem[a:a + 2] = struct.pack("<H", v)
+        m.mem[0x0314:0x0316] = struct.pack("<H", 0xEA31); m.mem[0x028F:0x0291] = struct.pack("<H", 0xEB48)
+        t = m.call("MAIN", p=0x20)
+        self.assertEqual((t[0], m.w16(CTRAMP + 1)), (CTRAMP, H_SEI))
+        t = m.result(p=0x24)
+        self.assertEqual((t[0], t[4] & 0x04), (0xA483, 0), "chained to BASIC's loop with the caller's I flag")
+        self.assertEqual((m.w16(0x0314), m.w16(0x028F), m.w16(0x0330)), (H_IRQ, H_KEY, ENTRIES + 3 * E["LOAD"]))
+        self.assertEqual((m.w16(H_OLD_IRQ), m.w16(H_OLD_KEYLOG)), (0xEA31, 0xEB48))
+        self.assertEqual(m.call("MAIN")[0], 0xA483, "nothing to do: no CALL")
+
+    def test_launch_install_refused_keeps_hooks_off(self):
+        self.vv.set_hooks(HOOKS)
+        m = self.ag
+        m.mem[0x0326:0x0328] = struct.pack("<H", 0x02A7)            # an autostart PRG's vector: refused
+        t = m.call("INSTALL", a=0xA5, p=0x20)
+        self.assertEqual(t[0], CTRAMP)
+        t = m.result(a=0xA5, p=0x24)
+        self.assertEqual((t[0], t[4] & 0x05), (RTS, 1), "refused (C set), I clear again")
+        self.assertEqual((m.w16(0x0314), m.w16(0x028F)), (0xEA31, 0xEB48))
 
 
 if __name__ == "__main__":

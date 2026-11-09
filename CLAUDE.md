@@ -8,7 +8,7 @@ real IEC code, so physical drives keep working. LOAD/SAVE have block-transfer fa
 second, the first free numbers from 8 up: the KERNAL probes the real bus on the first disk access of a run) or fixed from BASIC with
 `OPEN15,8,15,"U0>"+CHR$(n)` (kept in EEPROM, `CHR$(0)` = automatic, no reflash). Names and `CD` take paths: `LOAD"$/GAMES/G.D64",8`.
 
-Full design and per-milestone notes: `docs/DESIGN.md` (sections 1-52, in order of construction).
+Full design and per-milestone notes: `docs/DESIGN.md` (sections 1-53, in order of construction).
 Firmware integration and usage: `firmware/README.md`.
 
 ## Status (read this first)
@@ -149,6 +149,10 @@ Firmware integration and usage: `firmware/README.md`.
   TR+ 79868 -> 65820. **Nothing on hardware**; the menu loader change is not run anywhere. On the TR+ the new list entry shifts Kernal Replace / Debug by one.
   The owner's TeensyROM checkout carries the teensyrom-snoop edits (`0.9-sn3`): generate the patch from a pristine tree (DESIGN 52 says how 0.9.0.53's was made).
   The owner's TR+ shorted out on 2026-11-05 and was replaced on 2026-11-08: hardware runs are possible again.
+  **0.9.0.54: CTRL+C=+F1 / F3 = the Alt button's disk switch on the plain TR** (docs/DESIGN.md 53): a 63-byte hook block (`vector/vdhooks.s`) served from IO2 `$DF10`
+  (writes kept), on KEYLOG `$028F` (CTRL+C= + a new key -> the new write-only KEY register `$DF0B`, `VIO_KEY`) and CINV `$0314` (the border flash, `irq_border`'s logic).
+  The engine hooks both with INSTALL / IMAIN when `vvec_set_hooks()` named the block, after CALLing its `SEI` (IRQ vectors); `VD_AltPoll` takes F1 (4) / F3 (5).
+  Only while the KERNAL scans the keyboard (BASIC, stock-IRQ programs); games with their own keyboard code: `trvdrive`. py65 (`tests/test_hooks.py`), `test_vvec`, fw_host `plain.cpp`, VICE `agent` (hooks, border flash; no key press possible there). **Not on hardware.**
 * Default device 8 for `LOAD`/`SAVE`/`VERIFY` without a number, as on the SX-64 (`P_E1DA` in `patches/vdrive.s`, docs/DESIGN.md 33). KERNAL only; VICE `basic` run; **not on hardware yet**. Rebuild `kernal-tr.bin`.
 * 0.9.0.32: bad sectors from the image's error table (the trailing error-info bytes): reads of a sector marked bad fail with its DOS code (`d64_t.errtab`, `D64_E_BADSEC`, `d64_t.bad`, `read_err()` in `vdrive.c`; the firmware keeps a RAM2 copy only when the table marks something bad; docs/DESIGN.md 35). Write errors (25/26/28) not emulated; a write does not repair a bad sector. Unit and glue host tests; VICE and hardware through VDSUITE `5` (reads only).
 * 0.9.0.34: SwiftLink Tx fix to upstream (was `firmware/swiftlink-tx-fix.patch`; merged upstream as PR #80 in `6518b966`, patch dropped). NativeEthernet's `client.write()` busy-waits for send-buffer space;
@@ -211,7 +215,7 @@ d64/            portable C99 library, also compiled as C++ by the firmware (keep
   vd_cfg.h        build knobs: VD_COLD (FLASHMEM), VD_NSLOT, VD_DEV0/VD_DEV1 defaults
 util/            VDCOPY: vdcopy.s (all machine code, BASIC SYS stub at $0801, tables BSS at $2800; tools/make_util.py assembles it);
                 VDrive Config: vdconfig.s (all machine code, same stub/BSS scheme, BSS $2000-$4FFF; tools/make_util.py assembles it into build/util/"VDrive Config.prg")
-vector/         the plain-TeensyROM agent: vdagent.s (6502, docs/DESIGN.md 51), agent.cfg (PRG at ld65 -S; VICE build at $DE08 in GeoRAM)
+vector/         the plain-TeensyROM agent: vdagent.s (6502, docs/DESIGN.md 51), vdhooks.s (KEYLOG / CINV hooks at IO2 $DF10, 53), agent.cfg (PRG at ld65 -S; VICE build at $DE08 in GeoRAM, hooks at $C810)
 patches/        ca65 sources overlaid on the stock KERNAL by tools/build.py; segment name P_XXXX = load address
   vdrive.s        serial entry hooks, fast LOAD ($F4C8, window or DMA) / SAVE ($F605), bus scan, code placed in reclaimed tape space $F8E2-$FB8D (676 of 683 bytes used; `irq_border` for the border flash and the mailbox gate `vd_here` included, the build asserts the limit);
                   the cold-start hook `rst_hook` (`JMP` at $FCE2, code at $F875-$F8CF, 33 of 91 bytes: SYS64738 back to the TR menu)
@@ -224,7 +228,7 @@ tools/          build.py (patch overlay; `--table` writes the patches as `vd_kpa
                 d64py.py (ctypes wrappers incl. register-level VIO), xref.py (reference finder over a disassembly)
 tests/          test_d64*.py, test_vdrive.py, test_vio.py, test_vvec.py (unit), fw_host/ (glue vs host stubs; plain.cpp = the plain-TR build), devcfg.c,
                 test_vdconfig.py + c64_sim.py (VDrive Config's PRG in py65, KERNAL calls answered in Python), test_vdcopy.py (VDCOPY in py65 against vdrive.c),
-                test_irq_border.py, test_banner.py, test_reset_hook.py, test_vcall_gate.py, test_dmatest.py (py65),
+                test_irq_border.py, test_banner.py, test_reset_hook.py, test_vcall_gate.py, test_dmatest.py, test_hooks.py (py65),
                 menuprobe_vice.py (the menu's probe routine in VICE with true-drive 1541s), variants_vice.py (the patch on each whitelisted ROM in VICE)
 build/          generated, git-ignored (kernal images derived from the ROM, libd64.dylib, disassembly)
 ```
@@ -233,7 +237,7 @@ build/          generated, git-ignored (kernal images derived from the ROM, libd
 * `make test` — everything (rebuilds `build/libd64.dylib`, runs unit tests, device-number check, firmware host test, VDrive Config in py65, three VICE runs: `basic`,
   `scan` (true-drive 1541s at 8 and 10, with two VDCOPY whole-disk runs over tracks 17-19, about 2 minutes of it) and the menu's bus probe; about 13 minutes in all on the owner's Mac, measured 2026-10-31).
 * `make test-gate` — the mailbox gate `vd_here` in py65 (no handler: no IO write, the real bus at once; late ID reads; skipped without py65; also part of `make test`).
-* `make test-agent` — the plain-TeensyROM agent (`build/vdagent-vice.prg`, in GeoRAM) and `d64/vdrive_vec.c` on the stock KERNAL in VICE, mock scenarios `agent` and `agentscan` (part of `make test`); `tests/test_vvec.py` (in `test-d64`) covers the engine's edge cases.
+* `make test-agent` — the plain-TeensyROM agent (`build/vdagent-vice.prg`, in GeoRAM; its hook block `build/vdhooks-vice.prg` in RAM at `$C810`) and `d64/vdrive_vec.c` on the stock KERNAL in VICE, mock scenarios `agent` and `agentscan`, after the hook block in py65 (`tests/test_hooks.py`) (part of `make test`); `tests/test_vvec.py` (in `test-d64`) covers the engine's edge cases.
 * `make test-reset` — the cold-start hook `rst_hook` (SYS64738 back to the menu) in py65 (skipped without py65; also part of `make test`).
 * `make test-variants` — the patch on every ROM in `VD_KnownKernals`, in VICE (mock `variant` scenario); the ROMs are looked up next to `STOCK`
   (VICE's `C64/` and `C128/` data folders), missing ones skipped. Part of `make test`. `make test-fw` passes `STOCK` so the glue's in-memory patch is compared with `kernal-tr.bin`.

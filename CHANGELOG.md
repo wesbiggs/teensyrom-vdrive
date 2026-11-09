@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Added
+- **Plain TeensyROM (the agent build, VICE only so far): disk switching from the keyboard.** The plain TR has no Alt button, so
+  **CTRL+C=+F1** switches the SD drive to the next image of its `/vdrive-config.txt` and **CTRL+C=+F3** the USB drive, with the same
+  border flash as the TR+'s Alt button. Works where the KERNAL reads the keyboard (BASIC, programs that keep the stock IRQ); games
+  that scan the keyboard themselves need `trvdrive`. A 63-byte hook block served from IO2 `$DF10` (`vector/vdhooks.s`); the
+  "VDrive Agent" on the TR+ gets it too. Firmware 0.9.0.54; `docs/DESIGN.md` section 53; py65, host and VICE tests, not on hardware.
+
 ### Build
 - **Releases carry firmware**: publishing a GitHub release builds three hex files in CI (`tools/build_firmware.sh`, on the upstream commit
   in `firmware/UPSTREAM`) and attaches them: `TeensyROM_<ver>_full.hex` (plain TR, no VDrive yet), `TeensyROM+_<ver>_full.hex` (without

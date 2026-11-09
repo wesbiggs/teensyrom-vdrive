@@ -39,15 +39,18 @@ what is untested: `docs/DESIGN.md` section 32.
 ## The agent: "VDrive" on the plain TeensyROM, "VDrive Agent" on the TR+
 `IOH_VDriveAgent.c` (gate `VDrive_Agent`, both boards) needs no Kernal Replace. The C64 keeps its own KERNAL; its RAM vectors point into a
 246-byte 6502 agent (`vector/vdagent.s`, `vdrive/vd_agent.h`) served from a RAM1 page at IO1 `$DE08-$DEFF`. The page keeps the agent's own
-writes and is refreshed at init. The mailbox registers are at IO2 `$DF00-$DF0A` and the window at `$DF80`. The vector engine
+writes and is refreshed at init. The mailbox registers are at IO2 `$DF00-$DF0B` and the window at `$DF80`. The vector engine
 (`vdrive/vdrive_vec.c`, `vvec_poll`) answers it, on the same drive and SD/USB glue as the KERNAL handlers (`IOH_VDrive.c`: shared parts under
 `VDrive_Any`, KERNAL parts under `Fab04_VDrive`).
 
 - `KERNALPreStart()` calls `VDrive_AgentPreStart()` first, which runs the drive's PreStart and skips the KERNAL load.
 - The menu's PRG loader calls the agent's INSTALL entry (`$DE14`) once the program is in memory, if the ID `$D6 $64` answers at `$DF09/$DF0A`.
 - After a reset, `SYS 56852` hooks the vectors again.
+- The hook block (`vector/vdhooks.s`, `VD_Hooks[]`, 63 bytes) is served from IO2 `$DF10` (writes kept). INSTALL points KEYLOG `$028F` and CINV `$0314` at it.
+  CTRL+C=+F1 / CTRL+C=+F3 write the KEY register (`$DF0B`), and the main loop switches the SD / USB unit to the next image of its `/vdrive-config.txt`, as
+  the TR+'s Alt button does. The border flash runs on CINV.
 
-`docs/DESIGN.md` sections 50-52.
+`docs/DESIGN.md` sections 50-53.
 
 ## Device numbers
 `pin[]` (user, two EEPROM bytes `eepAdVDriveDevs`; 0 or an invalid value = automatic) and `dev[]` (current, 0 = none). Build-time defaults of the

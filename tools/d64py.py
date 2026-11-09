@@ -259,4 +259,5 @@ class VVec:
         self.e = ctypes.create_string_buffer(LIB.vvec_sizeof())
         LIB.vvec_init(self.e, io.v, ctypes.c_uint16(base))
         self.io = io
+    def set_hooks(self, addr): LIB.vvec_set_hooks(self.e, ctypes.c_uint16(addr))
     def poll(self): return LIB.vvec_poll(self.e)

@@ -27,9 +27,16 @@ build/vdagent-vice.prg: vector/vdagent.s vector/agent.cfg patches/mailbox.inc
 	ca65 -I patches -D 'MBX=$$C800' -D 'WIN=$$CA00' -o build/vdagent-vice.o vector/vdagent.s
 	ld65 -C vector/agent.cfg -S 0xDE08 -o $@ build/vdagent-vice.o
 
-test-agent: build/vdagent-vice.prg build/libd64.dylib   # the agent + d64/vdrive_vec.c on the stock KERNAL in VICE (mock `agent` and `agentscan`)
-	python3 -I tools/vdrive_mock.py $(STOCK) agent build/vdagent-vice.prg
-	python3 -I tools/vdrive_mock.py $(STOCK) agentscan build/vdagent-vice.prg
+# its hook block (docs/DESIGN.md 53): MBX + $10, in RAM in VICE
+build/vdhooks-vice.prg: vector/vdhooks.s vector/agent.cfg patches/mailbox.inc
+	mkdir -p build
+	ca65 -I patches -D 'MBX=$$C800' -o build/vdhooks-vice.o vector/vdhooks.s
+	ld65 -C vector/agent.cfg -S 0xC810 -o $@ build/vdhooks-vice.o
+
+test-agent: build/vdagent-vice.prg build/vdhooks-vice.prg build/libd64.dylib   # the agent + d64/vdrive_vec.c on the stock KERNAL in VICE (mock `agent` and `agentscan`)
+	python3 -I tests/test_hooks.py
+	python3 -I tools/vdrive_mock.py $(STOCK) agent build/vdagent-vice.prg build/vdhooks-vice.prg
+	python3 -I tools/vdrive_mock.py $(STOCK) agentscan build/vdagent-vice.prg build/vdhooks-vice.prg
 
 D64SRC = d64/d64.c d64/vdrive.c d64/vdrive_io.c d64/vdrive_vec.c
 build/libd64.dylib: $(D64SRC) $(wildcard d64/*.h)

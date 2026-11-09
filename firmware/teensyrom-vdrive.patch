@@ -145,7 +145,7 @@ index 46e27c6..a4c84b8 100644
       rtFileCrt  , IOH_None         , (char*)"Super Expander 64"                , (uint8_t*)super_expander_64_crt      , sizeof(super_expander_64_crt) ,
       rtFileCrt  , IOH_None         , (char*)"Epyx Fast Load Cart"              , (uint8_t*)Epyx_Fast_Load_crt         , sizeof(Epyx_Fast_Load_crt) ,
 diff --git a/Source/Teensy/MinimalBoot/Common/Common_Defs.h b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
-index a0a6e5f..a14262e 100644
+index a0a6e5f..98121fe 100644
 --- a/Source/Teensy/MinimalBoot/Common/Common_Defs.h
 +++ b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
 @@ -14,9 +14,13 @@
@@ -167,7 +167,7 @@ index a0a6e5f..a14262e 100644
  
  
 -#define TRVersion              "0.9"    //*VERSION*
-+#define TRVersion              "0.9.0.53"    //*VERSION*  (stock 0.9 + VDrive rev 53)
++#define TRVersion              "0.9.0.54"    //*VERSION*  (stock 0.9 + VDrive rev 54)
  #ifdef Fab04_Features
     char strVersionNumber[] = "TeensyROM+ v" TRVersion; 
  #else
@@ -341,10 +341,10 @@ index 3ba276c..c24a835 100644
  
 diff --git a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c
 new file mode 100644
-index 0000000..201bc4c
+index 0000000..c1bbf77
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c
-@@ -0,0 +1,1437 @@
+@@ -0,0 +1,1451 @@
 +// The VDrive Special IOs: the virtual IEC drive and its SD / USB glue. On the TeensyROM+ (Fab04_VDrive) "VDrive KERNAL" and its
 +// combined handlers serve a replacement KERNAL; on both boards (VDrive_Agent) IOH_VDriveAgent.c reaches the same drive through the
 +// KERNAL's RAM vectors and a 6502 agent (docs/DESIGN.md 51). The KERNAL-only parts are under Fab04_VDrive.
@@ -1544,7 +1544,10 @@ index 0000000..201bc4c
 +// stick that is missing, an unreadable list or no usable image in it flashes red quickly for 2 s. An image that has disappeared is
 +// skipped. With nothing mounted (or an image that is not in the list) the first usable image is picked.
 +// Wired to the TR's Alt button only when its setting (TR menu, settings) is "None": a chosen action is never taken over.
-+// The border change itself is done by the KERNAL's IRQ routine (patches/vdrive.s, irq_border), driven by the BORDER register.
++// The plain TR has no Alt button: there the agent's hook block (vector/vdhooks.s) sends CTRL+C=+F1 (SD) and CTRL+C=+F3 (USB)
++// through the KEY register instead (docs/DESIGN.md 53); the TR+'s "VDrive Agent" takes both.
++// The border change itself is done by the KERNAL's IRQ routine (patches/vdrive.s, irq_border), driven by the BORDER register,
++// or with the agent by the hook block's CINV hook, which does the same.
 +#define VD_CfgBufSize    2048
 +#define VD_CfgMaxEntries 32
 +#define VD_TapWindowMs   1000
@@ -1729,7 +1732,18 @@ index 0000000..201bc4c
 +FLASHMEM void VD_AltPoll()
 +{
 +   VD_FlashPoll();
-+   if (vdTaps == 0 || vdSwitching) return;
++   if (vdSwitching) return;
++   // the plain TR's keyboard hook (vector/vdhooks.s): CTRL+C=+F1 = one tap (SD), CTRL+C=+F3 = two taps (USB), at once
++   int key = vio ? vio_take_key(vio) : 0;
++   if (key == VIO_KEY_SD || key == VIO_KEY_USB)
++   {
++      vdTaps = 0;
++      vdSwitching = true;
++      VD_SwitchNext(key == VIO_KEY_SD ? 0 : 1);
++      vdSwitching = false;
++      return;
++   }
++   if (vdTaps == 0) return;
 +   if (vdTaps < 2 && millis() - vdTapFirstMs < VD_TapWindowMs) return;     // a second tap may still come
 +   int unit = vdTaps >= 2 ? 1 : 0;
 +   vdTaps = 0;
@@ -1784,10 +1798,10 @@ index 0000000..201bc4c
 +}
 diff --git a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDriveAgent.c b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDriveAgent.c
 new file mode 100644
-index 0000000..73f4522
+index 0000000..769e339
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDriveAgent.c
-@@ -0,0 +1,100 @@
+@@ -0,0 +1,121 @@
 +// "VDrive" Special IO for the plain TeensyROM (and "VDrive Agent" on the TR+): the virtual drive without Kernal Replace
 +// (docs/DESIGN.md 50-51). The C64 keeps its own KERNAL; its RAM vectors point into a 246-byte 6502 agent (vector/vdagent.s,
 +// vd_agent.h) that this handler serves from IO1, and the agent reports every call to the vector engine (d64/vdrive_vec.c),
@@ -1795,7 +1809,8 @@ index 0000000..73f4522
 +// PreStart, the remote control and the LED are IOH_VDrive.c's.
 +//   IO1 $DE08-$DEFF -> the agent (it patches its own operands, so writes are kept: the page lives in RAM1)
 +//   IO1 $DE00-$DE07 -> nothing (left for a SwiftLink ACIA)
-+//   IO2 $DF00-$DF0A -> the mailbox registers (as IO1 $DE10 in the KERNAL build), $DF80-$DFFF -> the 128-byte window
++//   IO2 $DF00-$DF0B -> the mailbox registers (as IO1 $DE10 in the KERNAL build), $DF80-$DFFF -> the 128-byte window
++//   IO2 $DF10-$DF7F -> the hook block (vector/vdhooks.s: KEYLOG for CTRL+C=+F1 / F3, CINV for the border flash; writes kept)
 +// The menu's PRG loader calls the agent's INSTALL entry once the program is in memory (PRGLoadStartReloc.s); after a reset
 +// SYS 56852 hooks the vectors again.
 +// Included from IOHandlers.h after IOH_VDrive.c (unity build, compiled as C++).
@@ -1843,6 +1858,10 @@ index 0000000..73f4522
 +static_assert((VD_AgentBase >> 8) == 0xDE && VD_AgentOfs + sizeof VD_Agent <= 256, "the agent lives in IO1");
 +
 +static uint8_t vdAgentPage[256];    // what IO1 answers: plain static = RAM1/DTCM, read on every agent fetch
++#define VD_HooksOfs (VD_HooksBase & 0xFF)
++static_assert((VD_HooksBase >> 8) == 0xDF && VD_HooksOfs >= VD_AgentRegs + VIO_NREGS && VD_HooksOfs + sizeof VD_Hooks <= VIO_WIN_OFS,
++              "the hook block lives in IO2 between the registers and the window");
++static uint8_t vdHooksPage[VIO_WIN_OFS - VD_HooksOfs];   // what IO2 $DF10-$DF7F answers (the IRQ runs it 50-60 times a second)
 +DMAMEM static vvec_t vvecStore;     // the engine's contexts (~1.2 KB), main loop only
 +static vvec_t *vvec = NULL;
 +
@@ -1850,9 +1869,14 @@ index 0000000..73f4522
 +{
 +   memset(vdAgentPage, 0, sizeof vdAgentPage);
 +   memcpy(vdAgentPage + VD_AgentOfs, VD_Agent, sizeof VD_Agent);   // a fresh copy: the last run patched its operands
++   memset(vdHooksPage, 0, sizeof vdHooksPage);
++   memcpy(vdHooksPage, VD_Hooks, sizeof VD_Hooks);                  // and the hook block's old vectors and saved colour
 +   if (vio == NULL) return;         // PreStart did not run (out of memory): nothing answers, the agent's vectors are never set
++   vio_take_key(vio);               // nothing left over from the last run
 +   vvec = &vvecStore;
 +   vvec_init(vvec, vio, VD_AgentBase);
++   vvec_set_hooks(vvec, VD_HooksBase);
++   VD_AltButtonInit();              // the flash sequencer; on the TR+ also the Alt button (setting "None"), as with the KERNAL handlers
 +   vdDrivePoll = &PollingHndlr_VDriveAgent;
 +}
 +
@@ -1878,6 +1902,17 @@ index 0000000..73f4522
 +FASTRUN void IO2Hndlr_VDriveAgent(uint8_t Address, bool R_Wn)
 +{
 +   if (Address >= VIO_WIN_OFS) { IO2Hndlr_VDrive(Address, R_Wn); return; }   // the window, as in the KERNAL build
++   if (Address >= VD_HooksOfs)                             // the hook block: code, so answered at once, writes kept
++   {
++      if (R_Wn) DataPortWriteWaitLog(vdHooksPage[Address - VD_HooksOfs]);
++      else
++      {
++         uint8_t Data = DataPortWaitRead();
++         TraceLogAddValidData(Data);
++         vdHooksPage[Address - VD_HooksOfs] = Data;
++      }
++      return;
++   }
 +   Address -= VD_AgentRegs;
 +   if (!vioReady || Address >= VIO_NREGS) return;          // not mapped: open bus
 +   if (R_Wn) DataPortWriteWaitLog(reinterpret_cast<volatile uint8_t *>(&vioHot)[Address]);
@@ -3597,10 +3632,10 @@ index 0000000..2876d46
 +#endif
 diff --git a/Source/Teensy/MinimalBoot/Common/vdrive/vd_agent.h b/Source/Teensy/MinimalBoot/Common/vdrive/vd_agent.h
 new file mode 100644
-index 0000000..447aa60
+index 0000000..2377e4b
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/vdrive/vd_agent.h
-@@ -0,0 +1,23 @@
+@@ -0,0 +1,31 @@
 +// The plain TeensyROM's agent (teensyrom-vdrive vector/vdagent.s), generated by tools/build_agent.py: served from IO1
 +// at VD_AgentBase, mailbox registers at IO2 $DF00, window at $DF80 (docs/DESIGN.md 51).
 +#pragma once
@@ -3623,6 +3658,14 @@ index 0000000..447aa60
 +   0x99, 0x80, 0xdf, 0xd9, 0x80, 0xdf, 0xd0, 0xf8, 0x98, 0xd0, 0xf1, 0xa9, 0x13, 0xd0, 0x95, 0xbd,
 +   0x80, 0xdf, 0xdd, 0x80, 0xdf, 0xd0, 0xf8, 0xe8, 0x60, 0x9d, 0x80, 0xdf, 0xdd, 0x80, 0xdf, 0xd0,
 +   0xf8, 0x60, 0x90, 0x98, 0x99, 0x9a
++};
++// vector/vdhooks.s: served from IO2 at VD_HooksBase (KEYLOG / CINV hooks)
++#define VD_HooksBase 0xDF10
++static const uint8_t VD_Hooks[63] PROGMEM = {
++   0x31, 0xea, 0x48, 0xeb, 0x78, 0x60, 0x0e, 0xad, 0x08, 0xdf, 0xcd, 0x08, 0xdf, 0xd0, 0x1a, 0x49,
++   0xc0, 0xc9, 0x10, 0x90, 0x11, 0xf0, 0x0c, 0xc9, 0x70, 0xd0, 0x0e, 0xad, 0x20, 0xd0, 0x8d, 0x16,
++   0xdf, 0xd0, 0x06, 0xad, 0x16, 0xdf, 0x8d, 0x20, 0xd0, 0x6c, 0x10, 0xdf, 0xad, 0x8d, 0x02, 0xc9,
++   0x06, 0xd0, 0x09, 0xa5, 0xcb, 0xc5, 0xc5, 0xf0, 0x03, 0x8d, 0x0b, 0xdf, 0x6c, 0x12, 0xdf
 +};
 diff --git a/Source/Teensy/MinimalBoot/Common/vdrive/vd_cfg.h b/Source/Teensy/MinimalBoot/Common/vdrive/vd_cfg.h
 new file mode 100644
@@ -5093,10 +5136,10 @@ index 0000000..5e62557
 +#endif
 diff --git a/Source/Teensy/MinimalBoot/Common/vdrive/vdrive_io.c b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive_io.c
 new file mode 100644
-index 0000000..af8c597
+index 0000000..186b95d
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive_io.c
-@@ -0,0 +1,247 @@
+@@ -0,0 +1,256 @@
 +#include "vdrive_io.h"
 +#include "vd_cfg.h"
 +#include <string.h>
@@ -5127,6 +5170,7 @@ index 0000000..af8c597
 +    case VIO_BORDER: return h->border;
 +    case VIO_ID0:  return h->id0;
 +    case VIO_ID1:  return h->id1;
++    case VIO_KEY:  return h->key;
 +    default:       return 0;
 +    }
 +}
@@ -5136,6 +5180,7 @@ index 0000000..af8c597
 +    switch (off) {
 +    case VIO_ARG: h->arg = val; break;
 +    case VIO_LEN: h->len = val; break;
++    case VIO_KEY: h->key = val; break;
 +    case VIO_CMD:
 +        h->cmd = val;
 +        h->stat = VIO_BUSY;          /* visible to the 6502 before it can read STAT */
@@ -5302,6 +5347,13 @@ index 0000000..af8c597
 +    return left;
 +}
 +
++VD_COLD int vio_take_key(vio_t *v)
++{
++    uint8_t k = v->h->key;
++    if (k) v->h->key = 0;      /* a write between the read and the clear is lost: it was a second key press within microseconds */
++    return k;
++}
++
 +VD_COLD int vio_take_menu(vio_t *v)
 +{
 +    int r = v->menu_req;
@@ -5346,10 +5398,10 @@ index 0000000..af8c597
 +VD_COLD size_t vio_hot_sizeof(void) { return sizeof(vio_hot_t); }
 diff --git a/Source/Teensy/MinimalBoot/Common/vdrive/vdrive_io.h b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive_io.h
 new file mode 100644
-index 0000000..1b7be2d
+index 0000000..5522e5e
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive_io.h
-@@ -0,0 +1,114 @@
+@@ -0,0 +1,120 @@
 +/* Mailbox register engine for the TR+ virtual drive.
 + *
 + *   IO1 ($DE10, offsets below are relative to it): +0 CMD (W: trigger)  +1 ARG (RW)  +2 DATA (R)  +3 STAT (R)  +4 ST (R)  +5 LEN (RW)
@@ -5385,7 +5437,7 @@ index 0000000..1b7be2d
 +extern "C" {
 +#endif
 +
-+enum { VIO_CMD = 0, VIO_ARG = 1, VIO_DATA = 2, VIO_STAT = 3, VIO_ST = 4, VIO_LEN = 5, VIO_DEV0 = 6, VIO_DEV1 = 7, VIO_BORDER = 8, VIO_ID0 = 9, VIO_ID1 = 10, VIO_NREGS = 11 };
++enum { VIO_CMD = 0, VIO_ARG = 1, VIO_DATA = 2, VIO_STAT = 3, VIO_ST = 4, VIO_LEN = 5, VIO_DEV0 = 6, VIO_DEV1 = 7, VIO_BORDER = 8, VIO_ID0 = 9, VIO_ID1 = 10, VIO_KEY = 11, VIO_NREGS = 12 };
 +#define VIO_BUSY    0x80
 +#define VIO_OK      0x5A
 +#define VIO_NOTMINE 0xA5
@@ -5399,6 +5451,11 @@ index 0000000..1b7be2d
 + * and no tune starts in I/O space, so $D6xx never shows there. Unanswered, the bus floats to $DE. */
 +#define VIO_ID0_VAL 0xD6
 +#define VIO_ID1_VAL 0x64
++/* KEY register (W; reads back the last value until the main loop takes it): the plain TR's keyboard hook (vector/vdhooks.s) writes the
++ * key matrix code of a key newly pressed with CTRL+C= held. VIO_KEY_SD / VIO_KEY_USB (F1, F3) switch that unit to the next image of its
++ * /vdrive-config.txt, as the TR+'s Alt button does; anything else is ignored. See vio_take_key. */
++#define VIO_KEY_SD  0x04
++#define VIO_KEY_USB 0x05
 +#define VIO_WIN     128   /* window size: names, fast LOAD / SAVE blocks (a power of two, see vio_io2_read) */
 +#define VIO_WIN_OFS 0x80  /* the window starts at IO2 + this ($DF80) */
 +#define VIO_SCANREQ 0x3C   /* answer to the first LISTEN / TALK / fast LOAD / fast SAVE of a run: "scan the bus, then ask again" (see VIO_SCAN) */
@@ -5426,7 +5483,7 @@ index 0000000..1b7be2d
 +
 +/* Registers + window: the only memory the bus ISR reads or writes (~140 bytes). Keep in DTCM. */
 +typedef struct {
-+    volatile uint8_t cmd, arg, data, stat, st, len, dev0, dev1, border, id0, id1, pending;   /* cmd..id1 are in register order (see the static_assert in IOH_VDrive.c) */
++    volatile uint8_t cmd, arg, data, stat, st, len, dev0, dev1, border, id0, id1, key, pending;   /* cmd..key are in register order (see the static_assert in IOH_VDrive.c) */
 +    uint8_t window[VIO_WIN];
 +} vio_hot_t;
 +
@@ -5454,6 +5511,7 @@ index 0000000..1b7be2d
 +int     vio_probe_begin(vio_t *v);           /* the menu's probe before launch: releases the automatic numbers, no SCANREQ afterwards; returns units that need a number */
 +int     vio_probe_free(vio_t *v, uint8_t dev);   /* nobody answered at dev during that probe (as VIO_FREE); returns units still waiting */
 +int     vio_take_menu(vio_t *v);             /* 1 once after VIO_MENU: the host should return to its menu */
++int     vio_take_key(vio_t *v);              /* the KEY register's last write, once (and the register cleared); 0 = none */
 +void    vio_set_dma(vio_t *v, int (*write)(void *ctx, uint16_t addr, const uint8_t *buf, uint16_t len), void *ctx, uint8_t *buf, uint16_t max);
 +void    vio_publish_devices(vio_t *v);       /* copy the current device numbers to the DEV0/DEV1 registers (call after vdrive_set_devices) */
 +
@@ -5466,10 +5524,10 @@ index 0000000..1b7be2d
 +#endif
 diff --git a/Source/Teensy/MinimalBoot/Common/vdrive/vdrive_vec.c b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive_vec.c
 new file mode 100644
-index 0000000..4110ba0
+index 0000000..2437ea7
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive_vec.c
-@@ -0,0 +1,399 @@
+@@ -0,0 +1,423 @@
 +#include "vdrive_vec.h"
 +#include "vd_cfg.h"
 +#include <string.h>
@@ -5502,6 +5560,8 @@ index 0000000..4110ba0
 +    e->base = base;
 +    memcpy(e->old, vv_stock, sizeof e->old);
 +}
++
++VD_COLD void vvec_set_hooks(vvec_t *e, uint16_t hooks) { e->hooks = hooks; }
 +
 +VD_COLD size_t vvec_sizeof(void) { return sizeof(vvec_t); }
 +
@@ -5569,8 +5629,9 @@ index 0000000..4110ba0
 +/* the zero page as PEEKed from $AE (23 bytes, $AE-$C4) */
 +#define ZP(a) c->buf[(a) - 0xAE]
 +
-+/* hook every vector that is not ours yet (c->buf = $0302-$0333 as PEEKed), and give the agent its fast paths' old vectors */
-+VD_COLD static void install(vvec_t *e, vv_ctx_t *c)
++/* hook every vector that is not ours yet (c->buf = $0302-$0333 as PEEKed), and give the agent its fast paths' old vectors; with the
++ * hook block also CINV ($0314, in c->buf) and KEYLOG ($028F = keylog) */
++VD_COLD static void install(vvec_t *e, vv_ctx_t *c, uint16_t keylog)
 +{
 +    uint8_t img[0x34 - 0x02];
 +    memcpy(img, c->buf, sizeof img);
@@ -5587,7 +5648,26 @@ index 0000000..4110ba0
 +    uint8_t o3[6] = { (uint8_t)e->old[VV_E_BSOUT], (uint8_t)(e->old[VV_E_BSOUT] >> 8), (uint8_t)e->old[VV_E_BASIN],
 +                      (uint8_t)(e->old[VV_E_BASIN] >> 8), (uint8_t)e->old[VV_NE], (uint8_t)(e->old[VV_NE] >> 8) };
 +    sc_poke(e, (uint16_t)(e->base + VV_OFS_OLD), o3, 6);
++    if (!e->hooks) return;
++    /* the hook block's two vectors (the caller has run its SEI: the IRQ uses both). Old value first, then the vector */
++    uint16_t cinv = (uint16_t)(img[0x0314 - 0x0302] | img[0x0315 - 0x0302] << 8);
++    uint16_t to = (uint16_t)(e->hooks + VV_H_IRQ);
++    if (cinv != to) {
++        uint8_t o[2] = { (uint8_t)cinv, (uint8_t)(cinv >> 8) }, n[2] = { (uint8_t)to, (uint8_t)(to >> 8) };
++        sc_poke(e, (uint16_t)(e->hooks + VV_H_OLD_IRQ), o, 2);
++        sc_poke(e, 0x0314, n, 2);
++    }
++    to = (uint16_t)(e->hooks + VV_H_KEY);
++    if (keylog != to) {
++        uint8_t o[2] = { (uint8_t)keylog, (uint8_t)(keylog >> 8) }, n[2] = { (uint8_t)to, (uint8_t)(to >> 8) };
++        sc_poke(e, (uint16_t)(e->hooks + VV_H_OLD_KEYLOG), o, 2);
++        sc_poke(e, 0x028F, n, 2);
++    }
 +}
++
++/* before install() with the hook block: KEYLOG's value into c->keylog, then interrupts off (the hook block's SEI, a CALL) */
++#define HOOKS_PREPARE() do { if (e->hooks) { PEEK(0x028F, 2); c->keylog = (uint16_t)(c->buf[0] | c->buf[1] << 8); \
++                                             CALL((uint16_t)(e->hooks + VV_H_SEI), c->a, c->x, c->y); } } while (0)
 +
 +VD_COLD static int vv_run(vvec_t *e, vv_ctx_t *c)
 +{
@@ -5622,6 +5702,7 @@ index 0000000..4110ba0
 +
 +    /* handlers (an if chain, not a switch: YIELD's case labels must belong to the protothread's switch) */
 +    if (c->entry == VV_E_INSTALL) {
++        HOOKS_PREPARE();                                             /* the caller's I flag comes back with the return */
 +        PEEK(0x0302, 0x34 - 0x02);
 +        if (c->a == VV_LAUNCH) {
 +            /* from the menu's PRG loader, after the program is in memory: hook only if the vectors are still the ones RESTOR / INITV
@@ -5633,7 +5714,7 @@ index 0000000..4110ba0
 +            if (!c->n || memcmp(c->buf, c->data, 2)) { sc_ret(e, c, c->a, c->x, c->y, 1); DONE(c); }
 +            memcpy(c->buf, c->data, 0x32);
 +        }
-+        install(e, c);
++        install(e, c, c->keylog);
 +        sc_ret(e, c, c->a, c->x, c->y, 0);
 +        DONE(c);
 +    }
@@ -5641,8 +5722,9 @@ index 0000000..4110ba0
 +    if (c->entry == VV_E_MAIN) {                                     /* BASIC's READY loop: hook again after a RESTOR (RUN/STOP+RESTORE) */
 +        PEEK(0x0330, 2);
 +        if ((uint16_t)(c->buf[0] | c->buf[1] << 8) == e->old[VV_E_LOAD] && e->old[VV_E_LOAD] != target_of(e, VV_E_LOAD)) {
++            HOOKS_PREPARE();                                         /* RUN/STOP+RESTORE's CINT reset KEYLOG too */
 +            PEEK(0x0302, 0x34 - 0x02);
-+            install(e, c);
++            install(e, c, c->keylog);
 +        }
 +        CHAIN();
 +    }
@@ -5871,10 +5953,10 @@ index 0000000..4110ba0
 +}
 diff --git a/Source/Teensy/MinimalBoot/Common/vdrive/vdrive_vec.h b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive_vec.h
 new file mode 100644
-index 0000000..67d3c9c
+index 0000000..7d3f6a2
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive_vec.h
-@@ -0,0 +1,69 @@
+@@ -0,0 +1,79 @@
 +/* Vector engine for the plain TeensyROM (docs/DESIGN.md 51): the Teensy side of the 6502 agent in vector/vdagent.s.
 + *
 + * The KERNAL's RAM vectors point into the agent, which the Teensy serves from an IO page. Each call arrives here as a frame
@@ -5911,6 +5993,13 @@ index 0000000..67d3c9c
 +#define VV_OFS_RTS      241
 +#define VV_NZ           4       /* zero-page bytes in the frame: $90 $98 $99 $9A */
 +
++/* the hook block (vector/vdhooks.s, asserted there): KEYLOG and CINV, at vvec_t.hooks (0 = not served: neither vector is hooked) */
++#define VV_H_OLD_IRQ    0       /* the CINV value it chains to */
++#define VV_H_OLD_KEYLOG 2       /* the KEYLOG value it chains to */
++#define VV_H_SEI        4       /* SEI / RTS: called before the two vectors are written */
++#define VV_H_IRQ        7       /* CINV ($0314) -> here: the border flash, then old_irq */
++#define VV_H_KEY        44      /* KEYLOG ($028F) -> here: CTRL+C= + a new key -> the KEY register, then old_keylog */
++
 +#define VV_LAUNCH 0xA5          /* A at INSTALL from the menu's PRG loader: hook only vectors the program left as the ROM set them */
 +#define VV_DEPTH 4              /* nested calls (a ROM routine calling back into a vector) */
 +#define VV_CHUNK 118            /* bytes per POKE / PEEK of file data */
@@ -5925,18 +6014,21 @@ index 0000000..67d3c9c
 +    /* handler state */
 +    uint8_t  fnlen, la, sa, fa, verify, idx, n, dev, eoi, stx, b0, b1, left;
 +    uint16_t fnadr, addr, end, cadr, i;
++    uint16_t keylog;            /* INSTALL / MAIN: KEYLOG as PEEKed (the hook block) */
 +    uint8_t  data[VIO_WIN];
 +} vv_ctx_t;
 +
 +typedef struct {
 +    vio_t   *v;
 +    uint16_t base;              /* the agent's address */
++    uint16_t hooks;             /* the hook block's address (vvec_set_hooks), 0 = none */
 +    uint16_t old[VV_NE + 1];    /* the vectors we replaced, per entry; [VV_NE] = GETIN (fast path only) */
 +    uint8_t  depth, sp;
 +    vv_ctx_t c[VV_DEPTH];
 +} vvec_t;
 +
 +void   vvec_init(vvec_t *e, vio_t *v, uint16_t base);
++void   vvec_set_hooks(vvec_t *e, uint16_t hooks);   /* the hook block is served at this address: INSTALL also hooks KEYLOG and CINV */
 +int    vvec_poll(vvec_t *e);    /* the agent's commands; anything else goes to vio_poll. 1 if a command was processed */
 +size_t vvec_sizeof(void);
 +

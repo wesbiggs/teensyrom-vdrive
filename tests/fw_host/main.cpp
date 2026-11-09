@@ -251,8 +251,8 @@ int main(int argc, char **argv)
 
     // the mailbox lives at $DE10; the ACIA range below it is not ours
     g_bus_out = 0x77; IO1Hndlr_VDrive(0x00, true); IO1Hndlr_VDrive(0x03, true); IO1Hndlr_VDrive(0x07, true); IO1Hndlr_VDrive(0x08, true);
-    IO1Hndlr_VDrive(VD_MboxBase + 11, true);
-    check("mailbox is not mapped at $DE00-$DE07 or past $DE1A", g_bus_out == 0x77);
+    IO1Hndlr_VDrive(VD_MboxBase + VIO_NREGS, true);
+    check("mailbox is not mapped at $DE00-$DE07 or past $DE1B (KEY, the last register)", g_bus_out == 0x77);
     g_bus_in = 0x42; IO1Hndlr_VDrive(0x00, false);
     check("a write to $DE00 does not touch the mailbox", vioHot.arg != 0x42 && !vioHot.pending);
 

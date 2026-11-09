@@ -5,7 +5,8 @@
 // PreStart, the remote control and the LED are IOH_VDrive.c's.
 //   IO1 $DE08-$DEFF -> the agent (it patches its own operands, so writes are kept: the page lives in RAM1)
 //   IO1 $DE00-$DE07 -> nothing (left for a SwiftLink ACIA)
-//   IO2 $DF00-$DF0A -> the mailbox registers (as IO1 $DE10 in the KERNAL build), $DF80-$DFFF -> the 128-byte window
+//   IO2 $DF00-$DF0B -> the mailbox registers (as IO1 $DE10 in the KERNAL build), $DF80-$DFFF -> the 128-byte window
+//   IO2 $DF10-$DF7F -> the hook block (vector/vdhooks.s: KEYLOG for CTRL+C=+F1 / F3, CINV for the border flash; writes kept)
 // The menu's PRG loader calls the agent's INSTALL entry once the program is in memory (PRGLoadStartReloc.s); after a reset
 // SYS 56852 hooks the vectors again.
 // Included from IOHandlers.h after IOH_VDrive.c (unity build, compiled as C++).
@@ -53,6 +54,10 @@ FLASHMEM bool VDrive_AgentPreStart(uint8_t NextIOHndlr)
 static_assert((VD_AgentBase >> 8) == 0xDE && VD_AgentOfs + sizeof VD_Agent <= 256, "the agent lives in IO1");
 
 static uint8_t vdAgentPage[256];    // what IO1 answers: plain static = RAM1/DTCM, read on every agent fetch
+#define VD_HooksOfs (VD_HooksBase & 0xFF)
+static_assert((VD_HooksBase >> 8) == 0xDF && VD_HooksOfs >= VD_AgentRegs + VIO_NREGS && VD_HooksOfs + sizeof VD_Hooks <= VIO_WIN_OFS,
+              "the hook block lives in IO2 between the registers and the window");
+static uint8_t vdHooksPage[VIO_WIN_OFS - VD_HooksOfs];   // what IO2 $DF10-$DF7F answers (the IRQ runs it 50-60 times a second)
 DMAMEM static vvec_t vvecStore;     // the engine's contexts (~1.2 KB), main loop only
 static vvec_t *vvec = NULL;
 
@@ -60,9 +65,14 @@ FLASHMEM void InitHndlr_VDriveAgent()
 {
    memset(vdAgentPage, 0, sizeof vdAgentPage);
    memcpy(vdAgentPage + VD_AgentOfs, VD_Agent, sizeof VD_Agent);   // a fresh copy: the last run patched its operands
+   memset(vdHooksPage, 0, sizeof vdHooksPage);
+   memcpy(vdHooksPage, VD_Hooks, sizeof VD_Hooks);                  // and the hook block's old vectors and saved colour
    if (vio == NULL) return;         // PreStart did not run (out of memory): nothing answers, the agent's vectors are never set
+   vio_take_key(vio);               // nothing left over from the last run
    vvec = &vvecStore;
    vvec_init(vvec, vio, VD_AgentBase);
+   vvec_set_hooks(vvec, VD_HooksBase);
+   VD_AltButtonInit();              // the flash sequencer; on the TR+ also the Alt button (setting "None"), as with the KERNAL handlers
    vdDrivePoll = &PollingHndlr_VDriveAgent;
 }
 
@@ -88,6 +98,17 @@ FASTRUN void IO1Hndlr_VDriveAgent(uint8_t Address, bool R_Wn)
 FASTRUN void IO2Hndlr_VDriveAgent(uint8_t Address, bool R_Wn)
 {
    if (Address >= VIO_WIN_OFS) { IO2Hndlr_VDrive(Address, R_Wn); return; }   // the window, as in the KERNAL build
+   if (Address >= VD_HooksOfs)                             // the hook block: code, so answered at once, writes kept
+   {
+      if (R_Wn) DataPortWriteWaitLog(vdHooksPage[Address - VD_HooksOfs]);
+      else
+      {
+         uint8_t Data = DataPortWaitRead();
+         TraceLogAddValidData(Data);
+         vdHooksPage[Address - VD_HooksOfs] = Data;
+      }
+      return;
+   }
    Address -= VD_AgentRegs;
    if (!vioReady || Address >= VIO_NREGS) return;          // not mapped: open bus
    if (R_Wn) DataPortWriteWaitLog(reinterpret_cast<volatile uint8_t *>(&vioHot)[Address]);

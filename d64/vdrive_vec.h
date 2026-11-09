@@ -34,6 +34,13 @@ enum { VV_E_INSTALL, VV_E_OPEN, VV_E_CLOSE, VV_E_CHKIN, VV_E_CKOUT, VV_E_CLRCH, 
 #define VV_OFS_RTS      241
 #define VV_NZ           4       /* zero-page bytes in the frame: $90 $98 $99 $9A */
 
+/* the hook block (vector/vdhooks.s, asserted there): KEYLOG and CINV, at vvec_t.hooks (0 = not served: neither vector is hooked) */
+#define VV_H_OLD_IRQ    0       /* the CINV value it chains to */
+#define VV_H_OLD_KEYLOG 2       /* the KEYLOG value it chains to */
+#define VV_H_SEI        4       /* SEI / RTS: called before the two vectors are written */
+#define VV_H_IRQ        7       /* CINV ($0314) -> here: the border flash, then old_irq */
+#define VV_H_KEY        44      /* KEYLOG ($028F) -> here: CTRL+C= + a new key -> the KEY register, then old_keylog */
+
 #define VV_LAUNCH 0xA5          /* A at INSTALL from the menu's PRG loader: hook only vectors the program left as the ROM set them */
 #define VV_DEPTH 4              /* nested calls (a ROM routine calling back into a vector) */
 #define VV_CHUNK 118            /* bytes per POKE / PEEK of file data */
@@ -48,18 +55,21 @@ typedef struct {
     /* handler state */
     uint8_t  fnlen, la, sa, fa, verify, idx, n, dev, eoi, stx, b0, b1, left;
     uint16_t fnadr, addr, end, cadr, i;
+    uint16_t keylog;            /* INSTALL / MAIN: KEYLOG as PEEKed (the hook block) */
     uint8_t  data[VIO_WIN];
 } vv_ctx_t;
 
 typedef struct {
     vio_t   *v;
     uint16_t base;              /* the agent's address */
+    uint16_t hooks;             /* the hook block's address (vvec_set_hooks), 0 = none */
     uint16_t old[VV_NE + 1];    /* the vectors we replaced, per entry; [VV_NE] = GETIN (fast path only) */
     uint8_t  depth, sp;
     vv_ctx_t c[VV_DEPTH];
 } vvec_t;
 
 void   vvec_init(vvec_t *e, vio_t *v, uint16_t base);
+void   vvec_set_hooks(vvec_t *e, uint16_t hooks);   /* the hook block is served at this address: INSTALL also hooks KEYLOG and CINV */
 int    vvec_poll(vvec_t *e);    /* the agent's commands; anything else goes to vio_poll. 1 if a command was processed */
 size_t vvec_sizeof(void);
 

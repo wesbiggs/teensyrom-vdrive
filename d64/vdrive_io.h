@@ -33,7 +33,7 @@
 extern "C" {
 #endif
 
-enum { VIO_CMD = 0, VIO_ARG = 1, VIO_DATA = 2, VIO_STAT = 3, VIO_ST = 4, VIO_LEN = 5, VIO_DEV0 = 6, VIO_DEV1 = 7, VIO_BORDER = 8, VIO_ID0 = 9, VIO_ID1 = 10, VIO_NREGS = 11 };
+enum { VIO_CMD = 0, VIO_ARG = 1, VIO_DATA = 2, VIO_STAT = 3, VIO_ST = 4, VIO_LEN = 5, VIO_DEV0 = 6, VIO_DEV1 = 7, VIO_BORDER = 8, VIO_ID0 = 9, VIO_ID1 = 10, VIO_KEY = 11, VIO_NREGS = 12 };
 #define VIO_BUSY    0x80
 #define VIO_OK      0x5A
 #define VIO_NOTMINE 0xA5
@@ -47,6 +47,11 @@ enum { VIO_CMD = 0, VIO_ARG = 1, VIO_DATA = 2, VIO_STAT = 3, VIO_ST = 4, VIO_LEN
  * and no tune starts in I/O space, so $D6xx never shows there. Unanswered, the bus floats to $DE. */
 #define VIO_ID0_VAL 0xD6
 #define VIO_ID1_VAL 0x64
+/* KEY register (W; reads back the last value until the main loop takes it): the plain TR's keyboard hook (vector/vdhooks.s) writes the
+ * key matrix code of a key newly pressed with CTRL+C= held. VIO_KEY_SD / VIO_KEY_USB (F1, F3) switch that unit to the next image of its
+ * /vdrive-config.txt, as the TR+'s Alt button does; anything else is ignored. See vio_take_key. */
+#define VIO_KEY_SD  0x04
+#define VIO_KEY_USB 0x05
 #define VIO_WIN     128   /* window size: names, fast LOAD / SAVE blocks (a power of two, see vio_io2_read) */
 #define VIO_WIN_OFS 0x80  /* the window starts at IO2 + this ($DF80) */
 #define VIO_SCANREQ 0x3C   /* answer to the first LISTEN / TALK / fast LOAD / fast SAVE of a run: "scan the bus, then ask again" (see VIO_SCAN) */
@@ -74,7 +79,7 @@ enum {
 
 /* Registers + window: the only memory the bus ISR reads or writes (~140 bytes). Keep in DTCM. */
 typedef struct {
-    volatile uint8_t cmd, arg, data, stat, st, len, dev0, dev1, border, id0, id1, pending;   /* cmd..id1 are in register order (see the static_assert in IOH_VDrive.c) */
+    volatile uint8_t cmd, arg, data, stat, st, len, dev0, dev1, border, id0, id1, key, pending;   /* cmd..key are in register order (see the static_assert in IOH_VDrive.c) */
     uint8_t window[VIO_WIN];
 } vio_hot_t;
 
@@ -102,6 +107,7 @@ int     vio_arm_scan(vio_t *v);              /* call once the units and pinned n
 int     vio_probe_begin(vio_t *v);           /* the menu's probe before launch: releases the automatic numbers, no SCANREQ afterwards; returns units that need a number */
 int     vio_probe_free(vio_t *v, uint8_t dev);   /* nobody answered at dev during that probe (as VIO_FREE); returns units still waiting */
 int     vio_take_menu(vio_t *v);             /* 1 once after VIO_MENU: the host should return to its menu */
+int     vio_take_key(vio_t *v);              /* the KEY register's last write, once (and the register cleared); 0 = none */
 void    vio_set_dma(vio_t *v, int (*write)(void *ctx, uint16_t addr, const uint8_t *buf, uint16_t len), void *ctx, uint8_t *buf, uint16_t max);
 void    vio_publish_devices(vio_t *v);       /* copy the current device numbers to the DEV0/DEV1 registers (call after vdrive_set_devices) */
 

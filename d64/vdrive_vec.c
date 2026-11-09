@@ -31,6 +31,8 @@ VD_COLD void vvec_init(vvec_t *e, vio_t *v, uint16_t base)
     memcpy(e->old, vv_stock, sizeof e->old);
 }
 
+VD_COLD void vvec_set_hooks(vvec_t *e, uint16_t hooks) { e->hooks = hooks; }
+
 VD_COLD size_t vvec_sizeof(void) { return sizeof(vvec_t); }
 
 static uint16_t target_of(const vvec_t *e, int k)
@@ -97,8 +99,9 @@ static int ours(vvec_t *e, uint8_t dev) { return dev >= 4 && vdrive_unit_for(&e-
 /* the zero page as PEEKed from $AE (23 bytes, $AE-$C4) */
 #define ZP(a) c->buf[(a) - 0xAE]
 
-/* hook every vector that is not ours yet (c->buf = $0302-$0333 as PEEKed), and give the agent its fast paths' old vectors */
-VD_COLD static void install(vvec_t *e, vv_ctx_t *c)
+/* hook every vector that is not ours yet (c->buf = $0302-$0333 as PEEKed), and give the agent its fast paths' old vectors; with the
+ * hook block also CINV ($0314, in c->buf) and KEYLOG ($028F = keylog) */
+VD_COLD static void install(vvec_t *e, vv_ctx_t *c, uint16_t keylog)
 {
     uint8_t img[0x34 - 0x02];
     memcpy(img, c->buf, sizeof img);
@@ -115,7 +118,26 @@ VD_COLD static void install(vvec_t *e, vv_ctx_t *c)
     uint8_t o3[6] = { (uint8_t)e->old[VV_E_BSOUT], (uint8_t)(e->old[VV_E_BSOUT] >> 8), (uint8_t)e->old[VV_E_BASIN],
                       (uint8_t)(e->old[VV_E_BASIN] >> 8), (uint8_t)e->old[VV_NE], (uint8_t)(e->old[VV_NE] >> 8) };
     sc_poke(e, (uint16_t)(e->base + VV_OFS_OLD), o3, 6);
+    if (!e->hooks) return;
+    /* the hook block's two vectors (the caller has run its SEI: the IRQ uses both). Old value first, then the vector */
+    uint16_t cinv = (uint16_t)(img[0x0314 - 0x0302] | img[0x0315 - 0x0302] << 8);
+    uint16_t to = (uint16_t)(e->hooks + VV_H_IRQ);
+    if (cinv != to) {
+        uint8_t o[2] = { (uint8_t)cinv, (uint8_t)(cinv >> 8) }, n[2] = { (uint8_t)to, (uint8_t)(to >> 8) };
+        sc_poke(e, (uint16_t)(e->hooks + VV_H_OLD_IRQ), o, 2);
+        sc_poke(e, 0x0314, n, 2);
+    }
+    to = (uint16_t)(e->hooks + VV_H_KEY);
+    if (keylog != to) {
+        uint8_t o[2] = { (uint8_t)keylog, (uint8_t)(keylog >> 8) }, n[2] = { (uint8_t)to, (uint8_t)(to >> 8) };
+        sc_poke(e, (uint16_t)(e->hooks + VV_H_OLD_KEYLOG), o, 2);
+        sc_poke(e, 0x028F, n, 2);
+    }
 }
+
+/* before install() with the hook block: KEYLOG's value into c->keylog, then interrupts off (the hook block's SEI, a CALL) */
+#define HOOKS_PREPARE() do { if (e->hooks) { PEEK(0x028F, 2); c->keylog = (uint16_t)(c->buf[0] | c->buf[1] << 8); \
+                                             CALL((uint16_t)(e->hooks + VV_H_SEI), c->a, c->x, c->y); } } while (0)
 
 VD_COLD static int vv_run(vvec_t *e, vv_ctx_t *c)
 {
@@ -150,6 +172,7 @@ VD_COLD static int vv_run(vvec_t *e, vv_ctx_t *c)
 
     /* handlers (an if chain, not a switch: YIELD's case labels must belong to the protothread's switch) */
     if (c->entry == VV_E_INSTALL) {
+        HOOKS_PREPARE();                                             /* the caller's I flag comes back with the return */
         PEEK(0x0302, 0x34 - 0x02);
         if (c->a == VV_LAUNCH) {
             /* from the menu's PRG loader, after the program is in memory: hook only if the vectors are still the ones RESTOR / INITV
@@ -161,7 +184,7 @@ VD_COLD static int vv_run(vvec_t *e, vv_ctx_t *c)
             if (!c->n || memcmp(c->buf, c->data, 2)) { sc_ret(e, c, c->a, c->x, c->y, 1); DONE(c); }
             memcpy(c->buf, c->data, 0x32);
         }
-        install(e, c);
+        install(e, c, c->keylog);
         sc_ret(e, c, c->a, c->x, c->y, 0);
         DONE(c);
     }
@@ -169,8 +192,9 @@ VD_COLD static int vv_run(vvec_t *e, vv_ctx_t *c)
     if (c->entry == VV_E_MAIN) {                                     /* BASIC's READY loop: hook again after a RESTOR (RUN/STOP+RESTORE) */
         PEEK(0x0330, 2);
         if ((uint16_t)(c->buf[0] | c->buf[1] << 8) == e->old[VV_E_LOAD] && e->old[VV_E_LOAD] != target_of(e, VV_E_LOAD)) {
+            HOOKS_PREPARE();                                         /* RUN/STOP+RESTORE's CINT reset KEYLOG too */
             PEEK(0x0302, 0x34 - 0x02);
-            install(e, c);
+            install(e, c, c->keylog);
         }
         CHAIN();
     }

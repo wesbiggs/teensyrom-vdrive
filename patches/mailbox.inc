@@ -19,6 +19,7 @@ MBX_ST   = MBX+4
 MBX_LEN  = MBX+5
 MBX_BORDER = MBX+8
 MBX_ID   = MBX+9
+MBX_KEY  = MBX+11             ; W: the plain TR's keyboard hook (vector/vdhooks.s): a key pressed with CTRL+C=
 VD_ID0   = $D6              ; VIO_ID0_VAL / VIO_ID1_VAL in d64/vdrive_io.h
 VD_ID1   = $64
 STAT_OK      = $5A      ; answer tokens: exact values, so a misread can't pass for "done"

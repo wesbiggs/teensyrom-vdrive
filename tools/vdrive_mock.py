@@ -8,7 +8,7 @@ Drives x64sc through its binary monitor: a store-checkpoint on MBX+0 (CMD)
 stops the CPU, this script plays the Teensy (state machine for IEC devices
 8/9 backed by a tiny in-memory 'disk'), writes DATA/STAT/ST and resumes.
 usage: vdrive_mock.py KERNAL.bin [basic|scan|variant]
-       vdrive_mock.py STOCK.bin agent|agentscan VDAGENT.prg
+       vdrive_mock.py STOCK.bin agent|agentscan VDAGENT.prg [VDHOOKS.prg]
   basic    the whole feature test, no physical drives (the SD drive ends up as device 8 after the start-up scan)
   scan     physical 1541s at 8 and 10: the SD and USB drives must end up at 9 and 11
   agent    the plain-TeensyROM build (docs/DESIGN.md 50, 51) on the stock KERNAL: the agent (vector/vdagent.s) served from GeoRAM's
@@ -117,7 +117,7 @@ class Mon:
             out.append(row.rstrip())
         return out
 
-def main(kernal, scenario="basic", vecprg=None):
+def main(kernal, scenario="basic", vecprg=None, hookprg=None):
     agent = scenario in ("agent", "agentscan")
     scan = scenario in ("scan", "agentscan")
     workdir = pathlib.Path(tempfile.mkdtemp())
@@ -239,6 +239,8 @@ def main(kernal, scenario="basic", vecprg=None):
             io.attach(1, None, present=False)      # the USB drive is not present in the mock
         io.arm_scan()                              # the first IEC transaction triggers the bus scan, like on the TR+
         vv = VVec(io, struct.unpack_from("<H", pathlib.Path(vecprg).read_bytes(), 0)[0]) if agent else None
+        hooks = pathlib.Path(hookprg).read_bytes() if agent and hookprg else None      # the hook block (docs/DESIGN.md 53), in RAM at MBX+$10
+        if hooks: vv.set_hooks(struct.unpack_from("<H", hooks, 0)[0])
         log = []
         last_devs = [None]
         fault = {"at": 0, "n": 0}               # fault injection: answer NOT_MINE to the Nth FLOAD_BLK / FLOAD_DMA of a run
@@ -293,7 +295,9 @@ def main(kernal, scenario="basic", vecprg=None):
                     m.go()
 
         m.write(MBX, [0] * 5)
-        m.write(MBX + 9, [0xD6, 0x64])          # the ID registers (VIO_ID0 / VIO_ID1): the KERNAL's reset hook asks for the TR menu
+        m.write(MBX + 9, [0xD6, 0x64, 0])       # the ID registers (VIO_ID0 / VIO_ID1): the KERNAL's reset hook asks for the TR menu; KEY
+        if agent: m.write(MBX + 8, [0x80])      # BORDER idle (the hook block reads it every IRQ)
+        if hooks: m.write(struct.unpack_from("<H", hooks, 0)[0], hooks[2:])
         cp = m.req(0x12, struct.pack("<HHBBBB", CMD, CMD, 1, 1, 2, 0))  # store checkpoint on CMD
         cp_num = struct.unpack_from("<I", cp[2], 0)[0]
         time.sleep(0.5); service(1.0)       # boot
@@ -323,7 +327,7 @@ def main(kernal, scenario="basic", vecprg=None):
             check("SHIFT+RUN: text colour ($0286) untouched", m.read(0x0286, 1) == col)
 
         if agent:
-            good = agent_tests(m, run, check, service, log, disk, big, workdir, pathlib.Path(vecprg).read_bytes(), real if scan else None)
+            good = agent_tests(m, run, check, service, log, disk, big, workdir, pathlib.Path(vecprg).read_bytes(), real if scan else None, hooks)
             return 0 if good and ok else 1
         banner = " 64K RAM  38911 FREE  VDRIVE " + ("SD 9 USB11" if scan else "SD 8 NOUSB")
         check("banner: %r (the KERNAL probed the bus itself at power-on)" % banner, banner in m.screen())
@@ -702,7 +706,7 @@ def main(kernal, scenario="basic", vecprg=None):
         vice.terminate()
         shutil.rmtree(workdir, ignore_errors=True)
 
-def agent_tests(m, run, check, service, log, disk, big, workdir, vec, real):
+def agent_tests(m, run, check, service, log, disk, big, workdir, vec, real, hooks=None):
     """The plain-TeensyROM build on the stock KERNAL: vector/vdagent.s in GeoRAM, the logic in d64/vdrive_vec.c. `real` is set in
     agentscan (true-drive 1541s at 8 and 10)."""
     res = {"ok": True}
@@ -739,6 +743,26 @@ def agent_tests(m, run, check, service, log, disk, big, workdir, vec, real):
     chk("SYS: ILOAD points into the agent ($%04X)" % struct.unpack("<H", v_load)[0],
         start <= struct.unpack("<H", v_load)[0] < start + len(vec) - 2)
     expect('SYS%d\r' % sys_at, "READY.")               # twice: must not save its own handlers as the "old" vectors (an endless loop)
+    hb = struct.unpack_from("<H", hooks, 0)[0] if hooks else None
+    def hooked():
+        return (struct.unpack("<HH", bytes(m.read(0x0314, 2)) + bytes(m.read(0x028F, 2))) == (hb + 7, hb + 44)
+                and struct.unpack("<HH", bytes(m.read(hb, 4))) == (0xEA31, 0xEB48))
+    if hooks:
+        chk("SYS: CINV and KEYLOG point into the hook block, which chains to the ROM's ($EA31, $EB48)", hooked())
+        j0 = m.read(0xA2, 1); service(0.5)
+        chk("SYS: the caller's interrupts are on again (the jiffy clock runs)", m.read(0xA2, 1) != j0)
+        # the border flash through the CINV hook: the BORDER register is RAM here, the IRQ reads it 60 times a second
+        def brd(v): m.write(MBX + 8, [v]); service(0.3)
+        col = m.read(0xD020, 1)[0] & 0x0F
+        brd(0xB0); brd(0xC2)
+        chk("border: SET 2 through the hook ($D020 = %d)" % (m.read(0xD020, 1)[0] & 0x0F), m.read(0xD020, 1)[0] & 0x0F == 2)
+        brd(0xD0)
+        chk("border: RESTORE gives the colour saved before back (%d)" % col, m.read(0xD020, 1)[0] & 0x0F == col)
+        brd(0x80); brd(0xC5); brd(0xDE)
+        chk("border: idle, then garbage ($DE) leaves it alone", m.read(0xD020, 1)[0] & 0x0F == 5)
+        brd(0xD0); brd(0x80)
+        expect('LIST\r', "READY.")
+        chk("typing (no CTRL+C=) wrote nothing to KEY", m.read(MBX + 11, 1)[0] == 0)
     expect('LOAD"$",%d\r' % D, "SEARCHING FOR $")
     expect('LIST\r', '0 "MOCKDISK')
     want_devs = bytes([9, 11]) if real else bytes([8, 0])
@@ -835,6 +859,7 @@ def agent_tests(m, run, check, service, log, disk, big, workdir, vec, real):
     m.jump(0xFE66); service(1.5, limit=15)
     chk("RUN/STOP+RESTORE: READY. and ILOAD is ours again (%r)" % bytes(m.read(0x0330, 2)),
         any("READY." in r for r in m.screen()) and bytes(m.read(0x0330, 2)) == v_load)
+    if hooks: chk("RUN/STOP+RESTORE: CINV and KEYLOG are hooked again", hooked())
     expect('LOAD"$",%d\r' % D, "SEARCHING FOR $")
     expect('LIST\r', '0 "MOCKDISK')
     # --- a reset ($FCE2): INITV resets IMAIN too, so the drives are gone until SYS ---
@@ -843,7 +868,9 @@ def agent_tests(m, run, check, service, log, disk, big, workdir, vec, real):
     n0 = len(log)
     expect('LOAD"$",%d\r' % D, "DEVICE NOT PRESENT")
     chk("reset: nothing reached the mailbox", len(log) == n0)
+    if hooks: chk("reset: CINV and KEYLOG are the ROM's again", struct.unpack("<HH", bytes(m.read(0x0314, 2)) + bytes(m.read(0x028F, 2))) == (0xEA31, 0xEB48))
     expect('SYS%d\r' % sys_at, "READY.")
+    if hooks: chk("SYS after the reset: hooked again", hooked())
     expect('LOAD"$",%d\r' % D, "SEARCHING FOR $")
     expect('LIST\r', '0 "MOCKDISK')
 
@@ -854,4 +881,5 @@ def agent_tests(m, run, check, service, log, disk, big, workdir, vec, real):
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else "basic", sys.argv[3] if len(sys.argv) > 3 else None))
+    sys.exit(main(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else "basic", sys.argv[3] if len(sys.argv) > 3 else None,
+                  sys.argv[4] if len(sys.argv) > 4 else None))
