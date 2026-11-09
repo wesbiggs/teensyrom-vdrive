@@ -795,11 +795,16 @@ def agent_tests(m, run, check, service, log, disk, big, workdir, vec, real):
             expect('20 GET#2,A$:S=ST:IFA$=""THENA$=CHR$(0)\r')
             expect('30 PRINT#3,A$;:IFS=0THEN20\r')
             expect('40 CLOSE2:CLOSE3:PRINT"COPIED";S\r')
+            n = len(log)
             m.keys('RUN\r')
             for _ in range(60):
                 service(1.0, limit=3)
                 if any("COPIED" in r for r in m.screen()): break
-            chk("BASIC copy %s,%d -> %s,%d ends at EOI" % (sname, src, dname, dst), any("COPIED 64" in r for r in m.screen()))
+            good = any("COPIED 64" in r for r in m.screen())
+            chk("BASIC copy %s,%d -> %s,%d ends at EOI" % (sname, src, dname, dst), good)
+            if not good:      # what the C64 shows and the mailbox calls of the run (cmd, arg, data, st, not-mine)
+                print("\n".join(m.screen()))
+                print("mailbox calls of the copy (%d):" % (len(log) - n), log[n:n + 60], "...", log[-20:])
         copy(8, "RSML", 9, "CP")
         chk("real -> ours: CP == RSML byte for byte", file_on(disk, "cp,s") == real["rsml"])
         copy(9, "CP", 10, "BACK")
