@@ -133,7 +133,7 @@ Firmware integration and usage: `firmware/README.md`.
   meant for turned out to be WiFi loss on the host's path (DESIGN 48: `--nodelay` 300 rounds passed from the Mac, steady from a wired Pi); not shown to fix anything seen.
 * 0.9.0.52: **DMA LOAD** (docs/DESIGN.md 49): the KERNAL's LOAD loop sends `VIO_FLOAD_DMA` (17) with the address in ARG/LEN; the Teensy writes up to 2 KB (`VD_DmaPart`) into RAM by
   DMA and the new end into `$AE/$AF`, or answers a window block where DMA is not used (below `$0200`, `$D000-$DFFF`). A failed DMA: DEVICE NOT PRESENT. VERIFY / SAVE unchanged.
-  `test_vio`, `fw_host`, VICE `basic` with DMA on (monitor writes); **not on hardware**. Rebuild `kernal-tr.bin`; an older firmware fails every LOAD with this KERNAL.
+  `test_vio`, `fw_host`, VICE `basic` with DMA on (monitor writes); **on hardware (owner, 2026-11-08, C128 in C64 mode): a 48 KB LOAD in 13-14 jiffies against 85 on 0.9.0.51** (about 6-8x); the other checks of DESIGN 49 not done yet. Rebuild `kernal-tr.bin`; an older firmware fails every LOAD with this KERNAL.
   Compiled in only with `Fab04_VDriveDMALoad` (defined by `make_tr_patch.sh`; without it: window blocks). The KERNAL's request is `VD_DMA_LOAD` in `patches/vdrive.s` (0 = the 0.9.0.51 loop, byte-identical).
   **Keep both out of upstream TeensyROM PRs** (Travis: no DMA in the first VDrive firmware): `VD_DMA_LOAD=0 tools/make_tr_patch.sh <tree>` writes `build/teensyrom-vdrive-nodma.patch` without either.
 * Default device 8 for `LOAD`/`SAVE`/`VERIFY` without a number, as on the SX-64 (`P_E1DA` in `patches/vdrive.s`, docs/DESIGN.md 33). KERNAL only; VICE `basic` run; **not on hardware yet**. Rebuild `kernal-tr.bin`.

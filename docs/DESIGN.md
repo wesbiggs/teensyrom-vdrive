@@ -578,7 +578,7 @@ retransmission (~200 ms, then doubling), and two in a row exceed the 500 ms. 300
 DMA, not the C128, and not shown to be the missing poll (0.9.0.51 is still right: without it a wait could not receive at all). For clients
 over WiFi: retry a `WriteC64Mem` that timed out (the same bytes to the same place again do no harm; a trlib change in teensyrom-rcp).
 
-## 49. DMA LOAD (0.9.0.52; host, glue and VICE tests, not on hardware)
+## 49. DMA LOAD (0.9.0.52; host, glue and VICE tests; first hardware timing on a C128)
 
 **Why.** The window LOAD (section 9, 32) moves 128 bytes per mailbox round trip and copies each byte with two reads (bus margin), about
 24 cycles a byte. DMATEST (48) showed the TR+ can write C64 RAM by DMA while our KERNAL is served, under BASIC and the KERNAL too, so a
@@ -630,5 +630,10 @@ from `$CE00`, from `$0100`, a failed DMA. VICE `basic` (`tools/vdrive_mock.py`):
 stopped at the CMD checkpoint; the whole run (BASIC test programs, VDSUITE, the soak, the fault injection) passes and BIG (6000 bytes)
 comes in three DMA parts. `scan` and `variant` keep the window path with the new KERNAL.
 
-**On hardware, to check:** LOAD of a large program (time it against 0.9.0.51), a load under BASIC (`LOAD"X",8,1` to `$A000`) and one across
+**On hardware (owner, 2026-11-08, C128 in C64 mode):** a 189-block program (about 48 KB), `TI$="000000":LOAD"FILE",8,1` then `?TI`:
+0.9.0.51 85 jiffies every time (~1.42 s, ~34 KB/s), 0.9.0.52 13-14 jiffies (~0.23 s). The count includes the messages (`SEARCHING FOR`, `LOADING`, `READY.`),
+any screen scroll (~20-25 ms each) and the file open, perhaps 1-3 jiffies, plus +-1 jiffy of rounding: DMA LOAD is about 6-8x faster, ~200-250 KB/s.
+The LOAD loop runs with interrupts on and a DMA part halts the CPU for ~2 ms, so the jiffy clock counts true. A 1-block file timed the same way gives the fixed part.
+
+**On hardware, still to check:** a load under BASIC (`LOAD"X",8,1` to `$A000`) and one across
 `$D000`, `VDSUITE` "run all", the C64 as well as the C128, and VDrive+SwiftLink with CCGMS (the NMI hold).
