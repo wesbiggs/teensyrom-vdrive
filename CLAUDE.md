@@ -229,8 +229,10 @@ build/          generated, git-ignored (kernal images derived from the ROM, libd
 * `make test-menuprobe` — the TR menu's bus probe routine in VICE, 1541s at 8 and 10 (skipped without `acme`; also part of `make test`).
 * `make build/kernal-tr.bin STOCK=/path/to/kernal-901227-03.bin` — hardware image (mailbox `$DE10`, window `$DF80`). `build/kernal-tr-nodma.bin`: the same without the DMA LOAD request (upstream's).
   `STOCK` defaults to VICE's bundled ROM under Homebrew. `make build/kernal-banner.bin`, `build/kernal-stock.bin` are bring-up images.
-* `tools/build_firmware.sh tr|tr-plus [outdir] [--install-toolchain]` — release hex: fetches the TeensyROM commit in `firmware/UPSTREAM`, applies
-  `firmware/teensyrom-vdrive.patch`, commits it (clean tree) and runs TeensyROM's `tools/build-firmware.mjs` (node >= 24). **Update `firmware/UPSTREAM`
+* `tools/build_firmware.sh tr|tr-plus|tr-plus-dma [outdir] [--install-toolchain]` — release hex: fetches the TeensyROM commit in `firmware/UPSTREAM`, applies
+  `firmware/teensyrom-vdrive.patch`, commits it (clean tree) and runs TeensyROM's `tools/build-firmware.mjs` (node >= 24). `tr`/`tr-plus` are built without DMA LOAD
+  (the define dropped and `vd_kpatch.h` rebuilt with `-D VD_DMA_LOAD=0`: the same tree as `VD_DMA_LOAD=0 make_tr_patch.sh`, checked for 0.9.0.52); `tr-plus-dma` keeps
+  it and stamps the version `<ver>-DMA`. **Update `firmware/UPSTREAM`
   whenever the patch is rebased** onto another upstream commit. The plain `tr` hex has no VDrive yet (`Fab04_VDrive` sits under `Fab04_Features`; a TR port is on its own branch).
 * `tools/make_tr_patch.sh /path/to/TeensyROM` — regenerate `firmware/teensyrom-vdrive.patch` after changing `firmware/IOH_VDrive.c`
   or anything in `d64/` (the patch embeds copies of those files). Always re-run it, then `git apply --check` on a clean checkout. Run it against a *pristine* upstream tree (`git archive HEAD` of the TeensyROM checkout), not the owner's already-patched one: its edits assert on unpatched text. It also reads `firmware/vdrive_remote.inc` (the remote-control dispatcher inserted into `SerUSBIO.ino`) and `firmware/vdrive_probe.asm`, and rebuilds the menu header with the TR's own `tools/build-c64.mjs` (needs `acme` 0.97 and `node`).
@@ -248,8 +250,8 @@ The full `make test`, VICE runs included, works in a cloud session; do not skip 
 * Still say in the pull request what was not run: a VICE run is not a hardware run.
 * **GitHub Actions** (`.github/workflows/test.yml`) runs the same setup and `make test` on every push to `main`/`bleeding-edge` and every pull request,
   plus `make build/kernal-tr.bin` and `make util`. `cloud_setup.sh` uses `sudo` when not root; py65 comes from `actions/setup-python` (`python3 -I` skips the user site).
-* **Releases** (`.github/workflows/release.yml`): publishing a GitHub release builds `tr` and `tr-plus` with `tools/build_firmware.sh` and attaches
-  `TeensyROM_<ver>_full.hex` and `TeensyROM+_<ver>_full.hex`; a tag `v<ver>` must match the built version (bump `firmware/REV` first). A manual run, or a push touching `firmware/`, `d64/` or the build script, builds both as an artifact only.
+* **Releases** (`.github/workflows/release.yml`): publishing a GitHub release builds `tr`, `tr-plus` and `tr-plus-dma` with `tools/build_firmware.sh` and attaches
+  `TeensyROM_<ver>_full.hex`, `TeensyROM+_<ver>_full.hex` and `TeensyROM+_<ver>-DMA_full.hex`; a tag `v<ver>` must match the built version (bump `firmware/REV` first). A manual run, or a push touching `firmware/`, `d64/` or the build script, builds all three as an artifact only.
 
 ## Gotchas
 * **Firmware version stamp:** our builds are `<stock>.<REV>` (stock 0.9 -> `0.9.0.1`), written into `TRVersion` by `tools/make_tr_patch.sh` from

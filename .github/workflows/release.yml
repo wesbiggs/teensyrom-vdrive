@@ -1,6 +1,9 @@
-# Firmware for a release: builds TeensyROM (tr) and TeensyROM+ (tr-plus) hex files with tools/build_firmware.sh (the TeensyROM commit in
-# firmware/UPSTREAM + firmware/teensyrom-vdrive.patch, TeensyROM's own build script) and attaches both to the GitHub release.
-# A manual run (Actions tab) or a push that changes the firmware builds both and keeps them as a workflow artifact, without touching any release
+# Firmware for a release: builds three hex files with tools/build_firmware.sh (the TeensyROM commit in firmware/UPSTREAM +
+# firmware/teensyrom-vdrive.patch, TeensyROM's own build script) and attaches them to the GitHub release:
+#   tr           TeensyROM_<ver>_full.hex        plain TR, without DMA LOAD
+#   tr-plus      TeensyROM+_<ver>_full.hex       TR+, without DMA LOAD (the VD_DMA_LOAD=0 build, docs/DESIGN.md 49)
+#   tr-plus-dma  TeensyROM+_<ver>-DMA_full.hex   TR+ with DMA LOAD (Fab04_VDriveDMALoad; the version on the menu reads <ver>-DMA)
+# A manual run (Actions tab) or a push that changes the firmware builds all three and keeps them as a workflow artifact, without touching any release
 # (so a patch that no longer builds shows up before a release is cut).
 # The plain TR hex has no VDrive yet (VDrive sits under Fab04_KernalReplace, TR+ only); it is built so the release carries both boards' files.
 name: release firmware
@@ -30,7 +33,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [tr, tr-plus]
+        target: [tr, tr-plus, tr-plus-dma]
     steps:
       - uses: actions/checkout@v4
 
@@ -46,6 +49,10 @@ jobs:
             ~/Arduino/libraries
           key: arduino-teensy-1.61.0-crc32-2.0.1
 
+      # ca65/ld65: the builds without DMA LOAD rebuild the KERNAL table with tools/build.py -D VD_DMA_LOAD=0
+      - name: Install cc65
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq cc65
+
       - name: Build ${{ matrix.target }}
         run: tools/build_firmware.sh ${{ matrix.target }} build/release --install-toolchain
 
@@ -57,7 +64,7 @@ jobs:
           TAG: ${{ github.event.release.tag_name }}
         run: |
           hex=$(ls build/release/*.hex)
-          ver=$(basename "$hex" | sed -E 's/^TeensyROM\+?_(.*)_full\.hex$/\1/')
+          ver=$(basename "$hex" | sed -E 's/^TeensyROM\+?_(.*)_full\.hex$/\1/; s/-DMA$//')
           echo "hex $hex, version $ver, tag $TAG"
           case "$TAG" in
             v[0-9]*) [ "$TAG" = "v$ver" ] || { echo "::error::tag $TAG does not match the firmware version $ver (firmware/REV)"; exit 1; } ;;
@@ -89,5 +96,5 @@ jobs:
           TAG: ${{ github.event.release.tag_name }}
         run: |
           ls -l hex
-          [ "$(ls hex/*.hex | wc -l)" = 2 ] || { echo "::error::expected two hex files"; exit 1; }
+          [ "$(ls hex/*.hex | wc -l)" = 3 ] || { echo "::error::expected three hex files"; exit 1; }
           gh release upload "$TAG" hex/*.hex --clobber --repo "$GITHUB_REPOSITORY"

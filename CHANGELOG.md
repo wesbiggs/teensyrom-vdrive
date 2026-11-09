@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Build
+- **Releases carry firmware**: publishing a GitHub release builds three hex files in CI (`tools/build_firmware.sh`, on the upstream commit
+  in `firmware/UPSTREAM`) and attaches them: `TeensyROM_<ver>_full.hex` (plain TR, no VDrive yet), `TeensyROM+_<ver>_full.hex` (without
+  DMA LOAD) and `TeensyROM+_<ver>-DMA_full.hex` (with DMA LOAD; the menu shows `<ver>-DMA`).
+
 ## v0.9.0.52
 
 ### Added
