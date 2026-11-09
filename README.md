@@ -25,7 +25,7 @@ The `VDSUITE` test program passes on a real C64 on both the SD and the USB unit:
 Still **not run on a real C64**: the machine-code VDCOPY, the default device 8, VDrive+REU, `STATUS` compared with a real drive, and RUN/STOP during a load.
 The test disk (`make testdisk`, see [Building and testing](#building-and-testing)) has a BASIC test program for most of them.
 
-The original TR does not have the Kernal Replace functionality needed for this software, though it may be possible in the future to create a more limited TR-compatible version. 
+The original TR does not have the Kernal Replace functionality needed for this software. A more limited TR version, hooking the KERNAL's RAM vectors instead, is possible but not built yet; see [TR+ and TR compared](#tr-and-tr-compared) for what it would keep and lose.
 A C128 in C64 mode works with 0.9.0.42: the firmware includes upstream's DMA HIRAM sense for Kernal Replace on a C128
 ([TeensyROM PR 78](https://github.com/SensoriumEmbedded/TeensyROM/pull/78)), and `VDSUITE`'s "run all" passes on an NTSC C128 (its checks by hand are not done yet; a PAL C128 is untested).
 
@@ -252,6 +252,33 @@ With the TR menu showing (no program running) the same commands show and change 
 | Running programs with their own fastloaders | No `M-R`/`M-W`/`M-E`, so programs that upload code to the drive (or probe its ROM to detect the drive type) cannot run from the card. With a real 1541, `VDCOPY` `D` writes the `.d64` onto a floppy, and the program runs from there |
 | `U3`-`U8` user jumps, `B-E` | Need drive code |
 | Copy protection that checks for bad sectors | Read errors from the image's error-info bytes are emulated (`U1`, `LOAD`, `GET#`); protections that time the drive, read raw GCR, or check the drive's memory (`M-R`) still fail. Writing a bad sector does not repair it |
+
+### TR+ and TR compared
+The original TR cannot serve a replacement KERNAL, so a TR version (**not built yet**; release builds of plain TR firmware carry no VDrive) would hook the KERNAL's
+RAM vectors (`$0314-$0333`) instead of patching the serial routines. The drive itself (the Teensy side) is the same on both. What differs:
+
+| Feature | TR+ (patched KERNAL) | TR (RAM vectors, planned) |
+|---|---|---|
+| Image formats (`.d64`, `.d71`, `.d81`), `CD` and paths (CMD syntax included) | Yes | Yes |
+| `N:`, `S:`, `R:`, `C:`, `V`, `L:`, `MD:` / `RD:` | Yes | Yes |
+| REL files, append, `#` channels with `U1` / `U2` / `B-P` | Yes | Yes |
+| Plain card files, long-name aliases | Yes | Yes |
+| Automatic and fixed (`U0>`) device numbers | Yes | Yes |
+| Auto-mount and remembered mounts | Yes | Yes |
+| `trvdrive` / `trls` while a program runs | Yes | Yes |
+| VDrive+SwiftLink | Yes | Yes |
+| Fast `LOAD` / `SAVE` / `VERIFY` | Yes | Yes |
+| Programs that call the serial routines directly (`LISTEN` `TALK` `SECOND` `TKSA` `ACPTR` `CIOUT` `UNTLK` `UNLSN`, `$FFB1` and friends: DOS wedges, some directory readers and disk utilities) | Yes | No: they talk to the real bus and do not see the virtual drives. VDCOPY and VDrive Config probe units this way and would have to probe another way (e.g. an `OPEN` of channel 15) |
+| Programs that call `RESTOR` (`$FF8A`) or install their own vectors (many games and demos at start-up) | Yes | No: the drives are gone until the vectors are set again. Multi-load games that use plain `$FFD5` with the default vectors are fine |
+| Code that calls stock routines directly (e.g. `$F333`) instead of the jump table | Yes | No: skips the hooks |
+| Programs that call the KERNAL with the character ROM banked in (`$01` = `$33` / `$32`; rare) | Yes | No: the handler is fetched from RAM instead of I/O, and the program crashes |
+| Drive numbers in the power-on banner | Yes | No |
+| SHIFT+RUN/STOP types `LOAD"*",8,1` and `RUN` | Yes | No: the stock `LOAD` and `RUN` from tape |
+| `SYS64738` back to the TR menu | Yes | No: a normal reset |
+| Disk switching with the Alt button | Yes | Yes, on boards with the button (the switch is done by the Teensy) |
+| Border flash after an Alt-button switch | Yes (KERNAL IRQ routine) | Not as built: needs a hook in the IRQ vector `$0314` (lost on `RESTOR`, like the others) or a DMA write to `$D020` from the Teensy (lands in RAM while a program has I/O banked out) |
+| `LOAD` / `SAVE` / `VERIFY` without a device number | Device 8 | Tape (device 1). Device 8 is possible, but then the tape is blocked; the tape is kept |
+| Tape (device 1) | No: its code space holds the patch | Yes |
 
 ## Utilities
 
