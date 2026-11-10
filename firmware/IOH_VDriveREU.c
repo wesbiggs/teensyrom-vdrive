@@ -4,11 +4,13 @@
 //   IO2 $DF80-$DFFF -> VDrive 128-byte window
 //   no per-cycle callback; init and polling run both.
 // Memory: without SwiftLink's receive queues the REU gets the 128 KB RAM1 image plus 384 KB of RAM2: the full 512 KB of the
-// plain REU handler (MAX_REU_BANKS). The VDrive state is static (DMAMEM/DTCM), so it takes nothing from the malloc heap.
+// plain REU handler (MAX_REU_BANKS). The VDrive state is plain static (DTCM), never DMAMEM: RAM2 statics shrink the heap the REU
+// takes its banks from (before 0.9.0.53 ~9.4 KB of them left every REU, the plain one too, at 256 KB).
 // Also holds the IO2 split and the bus-snoop hand-back that IOH_VDriveSwiftREU.c uses.
 // Included from IOHandlers.h after IOH_VDrive.c and IOH_REU.c (unity build, compiled as C++).
 
 void InitHndlr_VDriveREU();
+uint32_t RAM2BytesFree();   // SerUSBIO.ino
 void IO2Hndlr_VDriveREU(uint8_t Address, bool R_Wn);
 void PollingHndlr_VDriveREU();
 
@@ -61,6 +63,7 @@ FLASHMEM void InitHndlr_VDriveREU()
 {
    // REU before VDrive: InitHndlr_REU clears PendingfBusSnoop and sets the alt button to "save REU"; InitHndlr_VDrive then
    // re-stages KernalCheck and, when the alt-button setting is "None", takes the button for disk switching.
+   Serial.printf("VDrive: RAM2 free before the REU: %lu\n", RAM2BytesFree());   // the REU needs 48 x 8 KB of it for 512 KB (docs/DESIGN.md 50)
    InitHndlr_REU();
    vdReuBase = NULL;
    InitHndlr_VDrive();

@@ -61,6 +61,7 @@ bool (*fBusSnoop)(uint16_t Address, bool R_Wn) = nullptr;
 static std::string g_order;                          // init / poll order across the three handlers
 static int g_reu_io2 = 0, g_reu_xfer = 0, g_kc = 0; static uint8_t g_reu_last = 0xEE, g_reu_regs[32];
 void SpecialBtn_REU(bool) {}
+uint32_t RAM2BytesFree() { return 0; }
 void InitHndlr_REU() { g_order += "R"; fSpecialBtnChange = &SpecialBtn_REU; }
 void PollingHndlr_REU() { g_order += "r"; }
 bool REU_FF00_W_Check(uint16_t Address, bool R_Wn) { if (Address == 0xff00 && !R_Wn) { fBusSnoop = nullptr; g_reu_xfer++; return true; } return false; }

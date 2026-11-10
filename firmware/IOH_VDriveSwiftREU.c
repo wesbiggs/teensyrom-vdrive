@@ -5,8 +5,8 @@
 //   IO2 $DF80-$DFFF -> VDrive 128-byte window
 //   per-cycle callback -> SwiftLink (NMI timing); init and polling run all three.
 // Memory: SwiftLink's receive queues take most of RAM2, so the REU gets the 128 KB RAM1 image (free: a PRG launch loads no
-// cartridge) plus whatever RAM2 is left, rounded down to a power of two by InitHndlr_REU: in practice a 128 KB (1700-size)
-// REU. Below 128 KB InitHndlr_REU disables it and the REU registers read as open bus; VDrive and SwiftLink still work.
+// cartridge) plus whatever RAM2 is left, rounded down to a power of two by InitHndlr_REU: 128 KB (a 1700) on hardware
+// with 0.9.0.51 (REUTEST). Below 128 KB InitHndlr_REU disables it and the REU registers read as open bus; VDrive and SwiftLink still work.
 // The IO2 split and the bus-snoop hand-back (VDREU_Snoop) are shared with "VDrive+REU" in IOH_VDriveREU.c.
 // Included from IOHandlers.h after IOH_VDrive.c, IOH_REU.c, IOH_Swiftlink.c, IOH_VDriveSwift.c and IOH_VDriveREU.c (unity build,
 // compiled as C++).
@@ -32,6 +32,7 @@ FLASHMEM void InitHndlr_VDriveSwiftREU()
    // InitHndlr_REU clears PendingfBusSnoop and sets the alt button to "save REU"; InitHndlr_VDrive then re-stages KernalCheck
    // and, when the alt-button setting is "None", takes the button for disk switching.
    InitHndlr_SwiftLink();
+   Serial.printf("VDrive: RAM2 free before the REU: %lu\n", RAM2BytesFree());
    InitHndlr_REU();
    vdReuBase = NULL;
    InitHndlr_VDrive();

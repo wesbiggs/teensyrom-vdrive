@@ -116,7 +116,7 @@ index 46e27c6..72c265a 100644
       rtFileCrt  , IOH_None         , (char*)"Super Expander 64"                , (uint8_t*)super_expander_64_crt      , sizeof(super_expander_64_crt) ,
       rtFileCrt  , IOH_None         , (char*)"Epyx Fast Load Cart"              , (uint8_t*)Epyx_Fast_Load_crt         , sizeof(Epyx_Fast_Load_crt) ,
 diff --git a/Source/Teensy/MinimalBoot/Common/Common_Defs.h b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
-index a0a6e5f..2ff05ae 100644
+index a0a6e5f..2f727bc 100644
 --- a/Source/Teensy/MinimalBoot/Common/Common_Defs.h
 +++ b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
 @@ -14,6 +14,8 @@
@@ -133,7 +133,7 @@ index a0a6e5f..2ff05ae 100644
  
  
 -#define TRVersion              "0.9"    //*VERSION*
-+#define TRVersion              "0.9.0.52"    //*VERSION*  (stock 0.9 + VDrive rev 52)
++#define TRVersion              "0.9.0.56"    //*VERSION*  (stock 0.9 + VDrive rev 56)
  #ifdef Fab04_Features
     char strVersionNumber[] = "TeensyROM+ v" TRVersion; 
  #else
@@ -209,7 +209,7 @@ index ae1d60b..097c10e 100644
        &IOHndlr_KernalReplace,      //IOH_KernalReplace,
     #endif  
 diff --git a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_KernalReplace.c b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_KernalReplace.c
-index 3ba276c..c24a835 100644
+index 3ba276c..b8246b5 100644
 --- a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_KernalReplace.c
 +++ b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_KernalReplace.c
 @@ -48,6 +48,15 @@ stcIOHandlers IOHndlr_KernalReplace =
@@ -245,7 +245,7 @@ index 3ba276c..c24a835 100644
        SetAddrPortDirIn;//set address ports to input
        SetAddrBufsIn;   //set address buffers to input
        SetExROMDeassert;
-@@ -334,6 +342,12 @@ FLASHMEM void FreeKernalBin()
+@@ -334,8 +342,18 @@ FLASHMEM void FreeKernalBin()
  #endif
  }
  
@@ -253,12 +253,18 @@ index 3ba276c..c24a835 100644
 +
 +#ifdef Fab04_VDrive
 +bool (*KernalImageSource)(uint8_t *Bin) = NULL; //fills Bin (8192 bytes) instead of the <Shift-K> file, false: nothing to serve (VDrive, set by KERNALPreStart())
++static bool KernalFastOnly = false; //VDrive: the image is in KernalFast and KernalBin was freed after the copy (InitHndlr_KernalReplace still hooks it)
 +#endif
 +
  FLASHMEM void InitHndlr_KERNALReplace_PreStart() //not called automatically via init; called earlier, manually, from KERNALPreStart()
  {
++#ifdef Fab04_VDrive
++   KernalFastOnly = false;
++#endif
  #ifdef Fab04_GlobalKernalReplace
-@@ -350,6 +364,18 @@ FLASHMEM void InitHndlr_KERNALReplace_PreStart() //not called automatically via
+    fKernRepl = NULL;  //default, make sure off during loading
+    if (KernalBin == NULL) KernalBin = (uint8_t*)malloc(8192);
+@@ -350,6 +368,18 @@ FLASHMEM void InitHndlr_KERNALReplace_PreStart() //not called automatically via
        return;
     }
  
@@ -277,7 +283,7 @@ index 3ba276c..c24a835 100644
     //load kernal image into RAM:
     char Filename[MaxPathLength];
     EEPreadStr(eepAdKERNALBinName, Filename);
-@@ -387,6 +413,10 @@ FLASHMEM void InitHndlr_KERNALReplace_PreStart() //not called automatically via
+@@ -387,6 +417,13 @@ FLASHMEM void InitHndlr_KERNALReplace_PreStart() //not called automatically via
     //Serial.printf("Read %lu Bytes in %lumS\n", CharNum, millis()-StartmS);
     Serial.printf("Read %lu Bytes\nKernal replace Enabled\n", CharNum);
     LoadFile.close();
@@ -285,10 +291,13 @@ index 3ba276c..c24a835 100644
 +#ifndef KERNAL_NO_DTCM
 +   memcpy(KernalFast, KernalBin, 8192); //fast copy for the bus ISR
 +#endif
++#if defined(Fab04_VDrive) && !defined(KERNAL_NO_DTCM)
++   if (KernalImageSource != NULL) { FreeKernalBin(); KernalFastOnly = true; } //VDrive serves KernalFast only: the 8 KB heap copy would cost the REU a bank
++#endif
     KSenseApplyMode();
     KDS_State = KDS_Idle;
     KDS_Read01Valid = false;
-@@ -399,6 +429,10 @@ FLASHMEM void InitHndlr_KERNALReplace_PreStart() //not called automatically via
+@@ -399,6 +436,10 @@ FLASHMEM void InitHndlr_KERNALReplace_PreStart() //not called automatically via
     fKernRepl = KernalCheckArm();
  #else
     fBusSnoop = KernalCheckArm();
@@ -299,12 +308,24 @@ index 3ba276c..c24a835 100644
  #endif
  }
  
+@@ -411,7 +452,11 @@ FLASHMEM void InitHndlr_KernalReplace()
+    //Only after a PRG load (the handshake owns fBusSnoop) whose PreStart loaded a kernal. PreStart
+    //runs on PRG launches only, but a generic CRT inherits Kernal Replace as its Special IO too:
+    //hooked there, KernalCheck reads an unloaded KernalBin and drives GAME/EXROM over the cart's own.
++#ifdef Fab04_VDrive
++   if (fBusSnoop != &HandshakeSnoop || (KernalBin == NULL && !KernalFastOnly)) return;
++#else
+    if (fBusSnoop != &HandshakeSnoop || KernalBin == NULL) return;
++#endif
+    KDS_State = KDS_Idle;  //KernalCheck is unhooked during the handshake: no sense can be in flight
+    KDS_Read01Valid = false;
+    PendingfBusSnoop = KernalCheckArm(); //not fBusSnoop directly -- may still be mid PRG-load handshake, see HandshakeSnoop
 diff --git a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c
 new file mode 100644
-index 0000000..5b476cb
+index 0000000..1c40403
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c
-@@ -0,0 +1,1400 @@
+@@ -0,0 +1,1401 @@
 +// "VDrive" Special IO for TeensyROM+: replacement KERNAL + virtual IEC drive.
 +//   unit 0 = SD card, unit 1 = USB drive. Device numbers are automatic by default: the first free numbers from 8 up
 +//   (the KERNAL probes the real serial bus on the first disk access of a run, see vdrive_io.h), so 8 (SD) and 9 (USB) when
@@ -379,23 +400,24 @@ index 0000000..5b476cb
 +   char     cwd[VD_CwdLen];  // "" = root
 +};
 +
-+// The drive state (~4.6 KB, see VIO_RAM_BUDGET in tests/test_vio.py) lives in RAM2 by default so RAM1 is
-+// untouched; define VD_ALLOC_HEAP to take it from the malloc heap instead.
++// The drive state (~4.6 KB, see VIO_RAM_BUDGET in tests/test_vio.py) is a plain static (RAM1/DTCM, which has room), like every
++// other buffer here: never DMAMEM. RAM2's statics shrink the malloc heap the REU takes its banks from, and ours (~9.4 KB) left the
++// "512KB REU" at 63 banks, rounded down to 256 KB (REUTEST, 2026-11-09). Define VD_ALLOC_HEAP to take it from the heap instead.
 +#ifndef VD_ALLOC_HEAP
-+DMAMEM static vio_t vioStore;
++static vio_t vioStore;
 +#endif
 +// DMA LOAD (VIO_FLOAD_DMA, docs/DESIGN.md 49), only with Fab04_VDriveDMALoad (Common_Defs.h; needs Fab04_FullDMACapable): one part of a
 +// file at a time, read here and then written into C64 RAM by DMA. 2 KB halts the CPU for about 2.5 ms per part (IRQs and NMIs wait that
-+// long); RAM2, outside the malloc heap the REU sizes itself from. Without the flag no DMA hook is set and the drive answers every LOAD
++// long); RAM1, like the rest (see vioStore). Without the flag no DMA hook is set and the drive answers every LOAD
 +// part through the 128-byte window, the same KERNAL included.
 +#ifdef Fab04_VDriveDMALoad
 +#ifndef VD_DmaPart
 +#define VD_DmaPart 2048
 +#endif
-+DMAMEM static uint8_t vdDmaBuf[VD_DmaPart];
++static uint8_t vdDmaBuf[VD_DmaPart];
 +#endif
 +static vio_hot_t  vioHot;           // registers + window: the ONLY memory the bus ISR touches. Plain static = RAM1/DTCM, fast
-+static vio_t     *vio = NULL;       // everything else (main loop only, may live in slower RAM2)
++static vio_t     *vio = NULL;       // everything else (main loop only; vioStore, or the heap with VD_ALLOC_HEAP)
 +static volatile bool vioReady = false;
 +static uint32_t   lastActivityMs = 0;
 +static stcVDUnit  vdUnit[2];
@@ -732,7 +754,7 @@ index 0000000..5b476cb
 +
 +// Hash bits of the names a folder shows, per unit: a first pass in VD_DirOpen marks names seen twice, so the listing counts
 +// an alias's twins (a folder scan) only when its bit says there may be one.
-+DMAMEM static uint8_t vdSeen[2][128], vdDup[2][128];
++static uint8_t vdSeen[2][128], vdDup[2][128];
 +FLASHMEM static unsigned VD_NameHash(const char *s)
 +{
 +   uint32_t h = 2166136261u;
@@ -960,7 +982,7 @@ index 0000000..5b476cb
 +#ifdef VD_ALLOC_HEAP
 +   if (vio == NULL) vio = (vio_t *)malloc(sizeof(vio_t));
 +#else
-+   vio = &vioStore;                 // DMAMEM is not zero-initialised: vio_init() clears it
++   vio = &vioStore;                 // vio_init() clears it on every start
 +#endif
 +   if (vio == NULL) { Serial.println("VDrive: out of memory"); return; }
 +   vioReady = false;
@@ -1482,8 +1504,8 @@ index 0000000..5b476cb
 +
 +struct stcVDCfgEntry { char *path; uint8_t color, flashes; };
 +
-+DMAMEM static char          vdCfgBuf[VD_CfgBufSize];
-+DMAMEM static stcVDCfgEntry vdCfg[VD_CfgMaxEntries];
++static char          vdCfgBuf[VD_CfgBufSize];
++static stcVDCfgEntry vdCfg[VD_CfgMaxEntries];
 +
 +// "...,  12 " -> 12 and the line cut before the comma; false (line untouched) when the last field is not a plain number
 +FLASHMEM static bool VD_TrailingNumber(char *line, int *val)
@@ -1707,21 +1729,23 @@ index 0000000..5b476cb
 +}
 diff --git a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDriveREU.c b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDriveREU.c
 new file mode 100644
-index 0000000..61b6ad6
+index 0000000..5aa72e3
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDriveREU.c
-@@ -0,0 +1,73 @@
+@@ -0,0 +1,76 @@
 +// "VDrive+REU" Special IO for TeensyROM+: the virtual-drive KERNAL (IOH_VDrive.c) and the REU (IOH_REU.c) at the same time.
 +//   IO1 $DE10-$DE18 -> VDrive mailbox ($DE00-$DE0F unanswered)
 +//   IO2 $DF00-$DF7F -> REU registers (11 registers, repeated every 32 bytes as on a real 1764/1750, but only 4 times)
 +//   IO2 $DF80-$DFFF -> VDrive 128-byte window
 +//   no per-cycle callback; init and polling run both.
 +// Memory: without SwiftLink's receive queues the REU gets the 128 KB RAM1 image plus 384 KB of RAM2: the full 512 KB of the
-+// plain REU handler (MAX_REU_BANKS). The VDrive state is static (DMAMEM/DTCM), so it takes nothing from the malloc heap.
++// plain REU handler (MAX_REU_BANKS). The VDrive state is plain static (DTCM), never DMAMEM: RAM2 statics shrink the heap the REU
++// takes its banks from (before 0.9.0.53 ~9.4 KB of them left every REU, the plain one too, at 256 KB).
 +// Also holds the IO2 split and the bus-snoop hand-back that IOH_VDriveSwiftREU.c uses.
 +// Included from IOHandlers.h after IOH_VDrive.c and IOH_REU.c (unity build, compiled as C++).
 +
 +void InitHndlr_VDriveREU();
++uint32_t RAM2BytesFree();   // SerUSBIO.ino
 +void IO2Hndlr_VDriveREU(uint8_t Address, bool R_Wn);
 +void PollingHndlr_VDriveREU();
 +
@@ -1774,6 +1798,7 @@ index 0000000..61b6ad6
 +{
 +   // REU before VDrive: InitHndlr_REU clears PendingfBusSnoop and sets the alt button to "save REU"; InitHndlr_VDrive then
 +   // re-stages KernalCheck and, when the alt-button setting is "None", takes the button for disk switching.
++   Serial.printf("VDrive: RAM2 free before the REU: %lu\n", RAM2BytesFree());   // the REU needs 48 x 8 KB of it for 512 KB (docs/DESIGN.md 50)
 +   InitHndlr_REU();
 +   vdReuBase = NULL;
 +   InitHndlr_VDrive();
@@ -1849,10 +1874,10 @@ index 0000000..2fe9a34
 +}
 diff --git a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDriveSwiftREU.c b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDriveSwiftREU.c
 new file mode 100644
-index 0000000..5086faa
+index 0000000..6fbe48a
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDriveSwiftREU.c
-@@ -0,0 +1,45 @@
+@@ -0,0 +1,46 @@
 +// "VDrive+Swift+REU" Special IO for TeensyROM+: the virtual-drive KERNAL (IOH_VDrive.c), the SwiftLink / Turbo232 modem
 +// emulation (IOH_Swiftlink.c) and the REU (IOH_REU.c) at the same time.
 +//   IO1 $DE00-$DE0F -> SwiftLink ACIA, IO1 $DE10-$DE18 -> VDrive mailbox (as in IOH_VDriveSwift.c)
@@ -1860,8 +1885,8 @@ index 0000000..5086faa
 +//   IO2 $DF80-$DFFF -> VDrive 128-byte window
 +//   per-cycle callback -> SwiftLink (NMI timing); init and polling run all three.
 +// Memory: SwiftLink's receive queues take most of RAM2, so the REU gets the 128 KB RAM1 image (free: a PRG launch loads no
-+// cartridge) plus whatever RAM2 is left, rounded down to a power of two by InitHndlr_REU: in practice a 128 KB (1700-size)
-+// REU. Below 128 KB InitHndlr_REU disables it and the REU registers read as open bus; VDrive and SwiftLink still work.
++// cartridge) plus whatever RAM2 is left, rounded down to a power of two by InitHndlr_REU: 128 KB (a 1700) on hardware
++// with 0.9.0.51 (REUTEST). Below 128 KB InitHndlr_REU disables it and the REU registers read as open bus; VDrive and SwiftLink still work.
 +// The IO2 split and the bus-snoop hand-back (VDREU_Snoop) are shared with "VDrive+REU" in IOH_VDriveREU.c.
 +// Included from IOHandlers.h after IOH_VDrive.c, IOH_REU.c, IOH_Swiftlink.c, IOH_VDriveSwift.c and IOH_VDriveREU.c (unity build,
 +// compiled as C++).
@@ -1887,6 +1912,7 @@ index 0000000..5086faa
 +   // InitHndlr_REU clears PendingfBusSnoop and sets the alt button to "save REU"; InitHndlr_VDrive then re-stages KernalCheck
 +   // and, when the alt-button setting is "None", takes the button for disk switching.
 +   InitHndlr_SwiftLink();
++   Serial.printf("VDrive: RAM2 free before the REU: %lu\n", RAM2BytesFree());
 +   InitHndlr_REU();
 +   vdReuBase = NULL;
 +   InitHndlr_VDrive();
@@ -1899,7 +1925,7 @@ index 0000000..5086faa
 +   PollingHndlr_VDrive();
 +}
 diff --git a/Source/Teensy/MinimalBoot/Common/IO_Handlers/StatusFunctions.c b/Source/Teensy/MinimalBoot/Common/IO_Handlers/StatusFunctions.c
-index 59ce0b0..a97bfbd 100644
+index 59ce0b0..b1c6433 100644
 --- a/Source/Teensy/MinimalBoot/Common/IO_Handlers/StatusFunctions.c
 +++ b/Source/Teensy/MinimalBoot/Common/IO_Handlers/StatusFunctions.c
 @@ -551,6 +551,9 @@ FLASHMEM void HotKeySetLaunch()
@@ -1912,7 +1938,7 @@ index 59ce0b0..a97bfbd 100644
  #ifdef Fab04_KernalReplace
  
  #ifdef Fab04_GlobalKernalReplace
-@@ -567,11 +570,24 @@ FLASHMEM void KERNALPreStart()
+@@ -567,11 +570,27 @@ FLASHMEM void KERNALPreStart()
     {
        //Serial.println("IO Handler set by Teensy Menu\n");
        NextIOHndlr = MenuSource[SelItemFullIdx].IOHndlrAssoc;
@@ -1930,6 +1956,9 @@ index 59ce0b0..a97bfbd 100644
     {
 +#ifdef Fab04_VDrive
 +      KernalImageSource = VD_IsHandler(NextIOHndlr) ? &VD_KernalImage : NULL; //VDrive: its own image (IOH_VDrive.c), not the <Shift-K> file
++#ifdef Fab04_REU
++      if (NextIOHndlr == IOH_VDriveREU || NextIOHndlr == IOH_VDriveSwiftREU) FreeDriveDirMenu(); //the REU's AllocRAMBanks frees it anyway; first, so the drive's open Files fill its hole instead of pinning it under the heap top (docs/DESIGN.md 50)
++#endif
 +#endif
        InitHndlr_KERNALReplace_PreStart(); //separate function so it doesn't get called twice
 +#ifdef Fab04_VDrive

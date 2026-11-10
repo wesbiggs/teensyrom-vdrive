@@ -72,23 +72,24 @@ struct stcVDUnit
    char     cwd[VD_CwdLen];  // "" = root
 };
 
-// The drive state (~4.6 KB, see VIO_RAM_BUDGET in tests/test_vio.py) lives in RAM2 by default so RAM1 is
-// untouched; define VD_ALLOC_HEAP to take it from the malloc heap instead.
+// The drive state (~4.6 KB, see VIO_RAM_BUDGET in tests/test_vio.py) is a plain static (RAM1/DTCM, which has room), like every
+// other buffer here: never DMAMEM. RAM2's statics shrink the malloc heap the REU takes its banks from, and ours (~9.4 KB) left the
+// "512KB REU" at 63 banks, rounded down to 256 KB (REUTEST, 2026-11-09). Define VD_ALLOC_HEAP to take it from the heap instead.
 #ifndef VD_ALLOC_HEAP
-DMAMEM static vio_t vioStore;
+static vio_t vioStore;
 #endif
 // DMA LOAD (VIO_FLOAD_DMA, docs/DESIGN.md 49), only with Fab04_VDriveDMALoad (Common_Defs.h; needs Fab04_FullDMACapable): one part of a
 // file at a time, read here and then written into C64 RAM by DMA. 2 KB halts the CPU for about 2.5 ms per part (IRQs and NMIs wait that
-// long); RAM2, outside the malloc heap the REU sizes itself from. Without the flag no DMA hook is set and the drive answers every LOAD
+// long); RAM1, like the rest (see vioStore). Without the flag no DMA hook is set and the drive answers every LOAD
 // part through the 128-byte window, the same KERNAL included.
 #ifdef Fab04_VDriveDMALoad
 #ifndef VD_DmaPart
 #define VD_DmaPart 2048
 #endif
-DMAMEM static uint8_t vdDmaBuf[VD_DmaPart];
+static uint8_t vdDmaBuf[VD_DmaPart];
 #endif
 static vio_hot_t  vioHot;           // registers + window: the ONLY memory the bus ISR touches. Plain static = RAM1/DTCM, fast
-static vio_t     *vio = NULL;       // everything else (main loop only, may live in slower RAM2)
+static vio_t     *vio = NULL;       // everything else (main loop only; vioStore, or the heap with VD_ALLOC_HEAP)
 static volatile bool vioReady = false;
 static uint32_t   lastActivityMs = 0;
 static stcVDUnit  vdUnit[2];
@@ -425,7 +426,7 @@ FLASHMEM static int VD_ChDir(void *ctx, int unit, const char *name)
 
 // Hash bits of the names a folder shows, per unit: a first pass in VD_DirOpen marks names seen twice, so the listing counts
 // an alias's twins (a folder scan) only when its bit says there may be one.
-DMAMEM static uint8_t vdSeen[2][128], vdDup[2][128];
+static uint8_t vdSeen[2][128], vdDup[2][128];
 FLASHMEM static unsigned VD_NameHash(const char *s)
 {
    uint32_t h = 2166136261u;
@@ -653,7 +654,7 @@ FLASHMEM void VDrive_PreStart()
 #ifdef VD_ALLOC_HEAP
    if (vio == NULL) vio = (vio_t *)malloc(sizeof(vio_t));
 #else
-   vio = &vioStore;                 // DMAMEM is not zero-initialised: vio_init() clears it
+   vio = &vioStore;                 // vio_init() clears it on every start
 #endif
    if (vio == NULL) { Serial.println("VDrive: out of memory"); return; }
    vioReady = false;
@@ -1175,8 +1176,8 @@ FLASHMEM int VDrive_RemoteIdleSet(int unit, const char *path, char *msg, size_t 
 
 struct stcVDCfgEntry { char *path; uint8_t color, flashes; };
 
-DMAMEM static char          vdCfgBuf[VD_CfgBufSize];
-DMAMEM static stcVDCfgEntry vdCfg[VD_CfgMaxEntries];
+static char          vdCfgBuf[VD_CfgBufSize];
+static stcVDCfgEntry vdCfg[VD_CfgMaxEntries];
 
 // "...,  12 " -> 12 and the line cut before the comma; false (line untouched) when the last field is not a plain number
 FLASHMEM static bool VD_TrailingNumber(char *line, int *val)

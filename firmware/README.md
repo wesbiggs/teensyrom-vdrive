@@ -26,13 +26,13 @@ paired with plain SwiftLink is started with this handler instead (`VDriveSwift_R
 ## VDrive+REU
 `IOH_VDriveREU.c` runs the virtual drive and the REU (`IOH_REU.c`, unchanged): IO1 `$DE10-$DE1A` is the drive mailbox, IO2 `$DF00-$DF7F` the
 REU registers, `$DF80-$DFFF` the drive window, no per-cycle callback. Init runs the REU (the 128 KB RAM1 image plus 384 KB of RAM2: the full
-512 KB, as the plain REU handler) and then VDrive. The REU's `$FF00` trigger would take over `fBusSnoop`, which serves the KERNAL; the IO2
+512 KB, as the plain REU handler; the drive keeps no data in RAM2, which would shrink that heap, `docs/DESIGN.md` 50) and then VDrive. The REU's `$FF00` trigger would take over `fBusSnoop`, which serves the KERNAL; the IO2
 handler (`IO2Hndlr_VDriveREU`, also used by VDrive+Swift+REU) hands it back (`VDREU_Snoop`). With any VDrive Special IO as the default, menu
 programs paired with the REU start with this handler. `docs/DESIGN.md` section 34.
 
 ## VDrive+Swift+REU
 `IOH_VDriveSwiftREU.c` adds SwiftLink to VDrive+REU (it shares its IO2 handler): IO2 `$DF00-$DF7F` goes to the REU registers, `$DF80-$DFFF` to the
-drive window. Init runs SwiftLink, then the REU (it takes the free 128 KB RAM1 image and what RAM2 is left: 128 KB in practice), then VDrive.
+drive window. Init runs SwiftLink, then the REU (it takes the free 128 KB RAM1 image and what RAM2 is left, rounded down to a power of two), then VDrive.
 The REU's `$FF00` trigger would take over `fBusSnoop`, which serves the KERNAL; the IO2 handler hands it back (`VDREU_Snoop`). Details and
 what is untested: `docs/DESIGN.md` section 32.
 

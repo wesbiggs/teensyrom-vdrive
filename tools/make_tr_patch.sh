@@ -108,7 +108,9 @@ edit(f"{C}/IO_Handlers/StatusFunctions.c",
 edit(f"{C}/IO_Handlers/StatusFunctions.c",
      "   if (NextIOHndlr == IOH_KernalReplace)\n   {\n      InitHndlr_KERNALReplace_PreStart(); //separate function so it doesn't get called twice\n",
      "   if (NextIOHndlr == IOH_KernalReplace\n#ifdef Fab04_VDrive\n       || VD_IsHandler(NextIOHndlr)\n#endif\n      )\n   {\n"
-     "#ifdef Fab04_VDrive\n      KernalImageSource = VD_IsHandler(NextIOHndlr) ? &VD_KernalImage : NULL; //VDrive: its own image (IOH_VDrive.c), not the <Shift-K> file\n#endif\n"
+     "#ifdef Fab04_VDrive\n      KernalImageSource = VD_IsHandler(NextIOHndlr) ? &VD_KernalImage : NULL; //VDrive: its own image (IOH_VDrive.c), not the <Shift-K> file\n"
+     "#ifdef Fab04_REU\n      if (NextIOHndlr == IOH_VDriveREU || NextIOHndlr == IOH_VDriveSwiftREU) FreeDriveDirMenu(); //the REU's AllocRAMBanks frees it anyway; first, so the drive's open Files fill its hole instead of pinning it under the heap top (docs/DESIGN.md 50)\n#endif\n"
+     "#endif\n"
      "      InitHndlr_KERNALReplace_PreStart(); //separate function so it doesn't get called twice\n"
      "#ifdef Fab04_VDrive\n      if (VD_IsHandler(NextIOHndlr)) VDrive_PreStart(); //SD/USB probing now, while the C64 still waits\n#endif\n")
 # The VDrive Special IOs serve their own KERNAL (/VDrive/kernal.bin, else the C64's own ROM patched in memory; docs/DESIGN.md 40):
@@ -118,6 +120,7 @@ edit(f"{C}/IO_Handlers/IOH_KernalReplace.c",
      "FLASHMEM void InitHndlr_KERNALReplace_PreStart() //not called automatically via init; called earlier, manually, from KERNALPreStart()\n",
      "#ifdef Fab04_VDrive\n"
      "bool (*KernalImageSource)(uint8_t *Bin) = NULL; //fills Bin (8192 bytes) instead of the <Shift-K> file, false: nothing to serve (VDrive, set by KERNALPreStart())\n"
+     "static bool KernalFastOnly = false; //VDrive: the image is in KernalFast and KernalBin was freed after the copy (InitHndlr_KernalReplace still hooks it)\n"
      "#endif\n\n"
      "FLASHMEM void InitHndlr_KERNALReplace_PreStart() //not called automatically via init; called earlier, manually, from KERNALPreStart()\n")
 edit(f"{C}/IO_Handlers/IOH_KernalReplace.c",
@@ -128,6 +131,29 @@ edit(f"{C}/IO_Handlers/IOH_KernalReplace.c",
 edit(f"{C}/IO_Handlers/IOH_KernalReplace.c",
      "   Serial.printf(\"Read %lu Bytes\\nKernal replace Enabled\\n\", CharNum);\n   LoadFile.close();\n",
      "   Serial.printf(\"Read %lu Bytes\\nKernal replace Enabled\\n\", CharNum);\n   LoadFile.close();\n   }\n")
+# VDrive serves only the DTCM copy (KernalFast) and never reads KernalBin again, so it gives the 8 KB heap buffer back: kept, it
+# cost VDrive+REU one 8 KB REU bank (63 banks, rounded to 256 KB; docs/DESIGN.md 50). The plain Kernal Replace keeps it (its
+# InitHndlr tests KernalBin for "loaded").
+edit(f"{C}/IO_Handlers/IOH_KernalReplace.c",
+     "   memcpy(KernalFast, KernalBin, 8192); //fast copy for the bus ISR\n#endif\n",
+     "   memcpy(KernalFast, KernalBin, 8192); //fast copy for the bus ISR\n#endif\n"
+     "#if defined(Fab04_VDrive) && !defined(KERNAL_NO_DTCM)\n"
+     "   if (KernalImageSource != NULL) { FreeKernalBin(); KernalFastOnly = true; } //VDrive serves KernalFast only: the 8 KB heap copy would cost the REU a bank\n"
+     "#endif\n")
+# ... so "loaded" is KernalBin or that flag: InitHndlr_KernalReplace (run by the VDrive inits after the PRG transfer) re-hooks KernalCheck
+# only when something was loaded. Testing KernalBin alone (0.9.0.54-0.9.0.55) left every VDrive launch from the menu on the C64's own
+# KERNAL once the program ran: the disk calls went to the real bus, and VDrive Config hung after its first screen output.
+edit(f"{C}/IO_Handlers/IOH_KernalReplace.c",
+     "FLASHMEM void InitHndlr_KERNALReplace_PreStart() //not called automatically via init; called earlier, manually, from KERNALPreStart()\n{\n",
+     "FLASHMEM void InitHndlr_KERNALReplace_PreStart() //not called automatically via init; called earlier, manually, from KERNALPreStart()\n{\n"
+     "#ifdef Fab04_VDrive\n   KernalFastOnly = false;\n#endif\n")
+edit(f"{C}/IO_Handlers/IOH_KernalReplace.c",
+     "   if (fBusSnoop != &HandshakeSnoop || KernalBin == NULL) return;\n",
+     "#ifdef Fab04_VDrive\n"
+     "   if (fBusSnoop != &HandshakeSnoop || (KernalBin == NULL && !KernalFastOnly)) return;\n"
+     "#else\n"
+     "   if (fBusSnoop != &HandshakeSnoop || KernalBin == NULL) return;\n"
+     "#endif\n")
 # The launch-time bus probe (docs/DESIGN.md 37). KERNALPreStart() first lets VDrive_ProbeStep() answer the menu's probe steps;
 # the menu clears rwRegScratch before PreStart (a TeensyROM without VDrive never sets it, so its menu skips the probe) and runs
 # VDriveProbe after it, with the C64's own KERNAL still in place.

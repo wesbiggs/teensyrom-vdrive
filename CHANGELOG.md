@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Fixed
+- **REUs back to full size (0.9.0.53-0.9.0.55)**: the drive's buffers (~9.4 KB: the drive state, the DMA LOAD buffer, the Alt-button list,
+  the alias hashes) sat in RAM2 as `DMAMEM` statics, which shrink the heap the REU takes its 8 KB banks from. The REU got 63 banks
+  and rounded down to 32, so the plain "512KB REU" and VDrive+REU gave 256 KB (stock: 512 KB). They are now in RAM1 (DTCM).
+  Found with the new `REUTEST` on the test disk (`tests/asm/reutest.s`: the REU's real size by bank wrap, then every byte).
+  0.9.0.53 gave the plain REU its 512 KB back (owner); VDrive+REU was still 256 KB (62 banks). 0.9.0.54 also frees the 8 KB
+  heap copy of the KERNAL that Kernal Replace's start-up keeps (VDrive serves from its DTCM copy) and prints the free RAM2
+  before the REU allocates. 0.9.0.55: launched from the SD/USB browser, VDrive+REU was still a bank short (512 KB from F2): the
+  menu's 64 KB directory listing was freed only after the drive had opened its files above it, leaving a hole. It is now freed
+  before. VDrive+REU is 512 KB on hardware with 0.9.0.55 (owner). `docs/DESIGN.md` section 50.
+- **Programs launched from the TR menu with a VDrive Special IO ran on the C64's own KERNAL (0.9.0.54-0.9.0.55, fixed in 0.9.0.56)**:
+  freeing the KERNAL's heap copy (above) also made the hand-over after the program transfer skip re-hooking the replacement KERNAL,
+  so VDrive Config hung after switching to lower case and other programs had no virtual drives. `docs/DESIGN.md` section 50.
+
 ### Build
 - **Releases carry firmware**: publishing a GitHub release builds three hex files in CI (`tools/build_firmware.sh`, on the upstream commit
   in `firmware/UPSTREAM`) and attaches them: `TeensyROM_<ver>_full.hex` (plain TR, no VDrive yet), `TeensyROM+_<ver>_full.hex` (without

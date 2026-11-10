@@ -637,3 +637,56 @@ The LOAD loop runs with interrupts on and a DMA part halts the CPU for ~2 ms, so
 
 **On hardware, still to check:** a load under BASIC (`LOAD"X",8,1` to `$A000`) and one across
 `$D000`, `VDSUITE` "run all", the C64 as well as the C128, and VDrive+SwiftLink with CCGMS (the NMI hold).
+
+## 50. The REU's full size back: no VDrive data in RAM2 (0.9.0.53)
+
+REU-Checker showed 256 KB where a 512 KB REU was expected. `REUTEST` (`tests/asm/reutest.s`, on the test disk) measures the REU itself:
+the status register's chip bit, a tag at the start of each 64 KB bank written from bank 7 down and read back from bank 0 up (an REU
+of N banks wraps, so bank N reads bank 0's tag), then a different pattern in every 8 KB chunk of the size found, fetched back and
+compared byte by byte. VICE with 128, 256 and 512 KB REUs and with none gives the right answers. On hardware (owner, 2026-11-09, 0.9.0.51):
+
+- VDrive+Swift+REU: 128 KB, chip bit clear, every byte right. REU-Checker from the TR menu had not run under it: a menu program
+  paired with the REU gets VDrive+REU whenever the default is a VDrive Special IO (`VDriveSwift_Remap`, section 34).
+- VDrive+REU **and the plain "512KB REU"**: 256 KB. The serial console: `Resizing from 63 banks to 32 banks`. Stock 0.9 and a recent
+  upstream build: 512 KB.
+
+The cause was ours. `AllocRAMBanks` takes the 128 KB RAM1 image (16 banks) and then 8 KB `malloc`s from the RAM2 heap, and rounds
+down to a power of two. On the Teensy 4.1 that heap is what RAM2 has left after its static `DMAMEM` data, and the drive kept about
+9.4 KB there in every build, whichever Special IO runs: `vioStore` (`vio_t`, 4568 bytes), `vdDmaBuf` (2 KB, DMA LOAD), `vdCfgBuf` (2 KB)
+and `vdCfg` (256), `vdSeen`/`vdDup` (512). Stock leaves room for exactly the 48 banks the REU needs; ours left 47. Section 32's and
+34's "takes nothing from the malloc heap" was wrong for the same reason.
+
+All five are plain `static` now (DTCM; the TR's DMA is the CPU driving the bus, so `vdDmaBuf` needs no DMA-capable RAM). RAM1 has room
+(66 KB free for locals before, about 9.4 KB less now). Rule from here: **no `DMAMEM` statics in VDrive code.** RAM2 needs go through
+`malloc` at the time they are needed (as the bad-sector table does), or into DTCM.
+
+**0.9.0.53 on hardware (owner, 2026-11-09):** the plain "512KB REU" 512 KB, VDrive+Swift+REU 128 KB, the plain VDrive KERNAL no REU
+(as meant), but **VDrive+REU still 256 KB**, now `Resizing from 62 banks`: two banks short, not one. The VDrive launch path has heap
+users the plain REU does not. One is upstream's Kernal Replace start-up: `InitHndlr_KERNALReplace_PreStart()` `malloc`s an 8 KB
+`KernalBin` (`MIDIRxBuf`) and keeps it for the run. Our `kernalreplace-fixes.patch` serves the KERNAL from the DTCM copy
+`KernalFast`, and VDrive never reads `KernalBin` again, so **0.9.0.54** frees it right after the copy when the image came from
+`KernalImageSource` (the VDrive handlers; `make_tr_patch.sh`). The plain Kernal Replace keeps it: its `InitHndlr` tests it for "loaded".
+The other ~8 KB is not found yet (open `File`s for the mounted image and the probe are only ~100 bytes each). 0.9.0.54 prints
+`VDrive: RAM2 free before the REU: <bytes>` from the VDrive+REU and VDrive+Swift+REU inits (`RAM2BytesFree()`, SerUSBIO.ino): 48 banks
+need 48 x 8200 = 393600 bytes or so (8192 plus `malloc`'s header each), and that line says how far short a launch is.
+
+**0.9.0.54 on hardware (owner, 2026-11-09):** after F2 (BASIC) and right after boot, VDrive+REU gets 512 KB (`RAM2 free before the
+REU: 393216` / `405504`). Launching `REUTEST.PRG` from the SD card in the TR menu: `327680`, `Resizing from 63 banks`, 256 KB.
+`RAM2BytesFree()` is `_heap_end - __brkval`, the room above the heap top, blind to freed holes below it. The 64 KB difference is the
+menu's directory listing (`DriveDirMenu`: `MaxMenuItems` 4000 x 16 bytes, plus a `malloc` per name), which stays allocated while a
+program runs. `AllocRAMBanks()` frees it first, but by then VDrive's PreStart has opened the mounted image and the probe's files
+(`new`'d `File` objects, from the heap) *above* it. So the 64 KB became a hole under live allocations: 7 banks fit in it (7 x 8200 =
+57400, the rest wasted), the remaining banks come from the top, and the total lands one bank short. F2 and the boot start have no
+listing (or no SD one), so no hole. **0.9.0.55** frees the listing in `KERNALPreStart()` (after it has read the selected item's
+handler, before Kernal Replace's and VDrive's PreStart allocate) when the handler is VDrive+REU or VDrive+Swift+REU; the REU frees it
+a moment later anyway. The drive's `File`s then land in the freed space at the bottom, and the top stays one block.
+**0.9.0.55 on hardware (owner, 2026-11-09):** VDrive+REU gives 512 KB with `REUTEST.PRG` launched from the SD browser.
+
+**The 0.9.0.54 free broke every menu launch with a VDrive handler (fixed in 0.9.0.56).** VDrive Config from the TR menu switched to
+lower case and hung (owner, 0.9.0.55). Upstream's `InitHndlr_KernalReplace()`, which the VDrive inits call once the PRG transfer is done,
+re-hooks `KernalCheck` only when `KernalBin != NULL` (its test for "a KERNAL was loaded", so a CRT that inherits Kernal Replace as its
+Special IO is not hooked). With `KernalBin` freed after the copy it returned early: the program ran on the C64's own KERNAL, its screen
+output worked and its disk calls went to the real bus. `REUTEST` never touches the drive, so the REU runs did not show it. 0.9.0.56 sets
+`KernalFastOnly` when it frees the buffer (cleared at the start of every PreStart), and the re-hook takes `KernalBin != NULL ||
+KernalFastOnly` as loaded (`make_tr_patch.sh`; the plain Kernal Replace is unchanged). Lesson: before freeing a buffer, grep for tests
+of its pointer that mean something else. **0.9.0.56 on hardware (owner, 2026-11-09):** VDrive Config launches from the TR menu again.
