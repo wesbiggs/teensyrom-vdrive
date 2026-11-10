@@ -115,6 +115,7 @@ edit(f"{C}/IO_Handlers/StatusFunctions.c",
      "   if (NextIOHndlr == IOH_KernalReplace)\n   {\n      InitHndlr_KERNALReplace_PreStart(); //separate function so it doesn't get called twice\n",
      "   if (NextIOHndlr == IOH_KernalReplace\n#ifdef Fab04_VDrive\n       || VD_IsKernalHandler(NextIOHndlr)\n#endif\n      )\n   {\n"
      "#ifdef Fab04_VDrive\n      KernalImageSource = VD_IsKernalHandler(NextIOHndlr) ? &VD_KernalImage : NULL; //VDrive: its own image (IOH_VDrive.c), not the <Shift-K> file\n"
+     "      if (VD_IsKernalHandler(NextIOHndlr)) VDrive_NoteLaunch(); //the menu source and image path for the auto-mount, before FreeDriveDirMenu() resets them\n"
      "#ifdef Fab04_REU\n      if (NextIOHndlr == IOH_VDriveREU || NextIOHndlr == IOH_VDriveSwiftREU) FreeDriveDirMenu(); //the REU's AllocRAMBanks frees it anyway; first, so the drive's open Files fill its hole instead of pinning it under the heap top (docs/DESIGN.md 50)\n#endif\n"
      "#endif\n"
      "      InitHndlr_KERNALReplace_PreStart(); //separate function so it doesn't get called twice\n"

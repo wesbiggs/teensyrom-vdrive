@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.9.0.60
+
+### Fixed
+- **A program launched from inside a `.d64`/`.d71`/`.d81` in the TR menu got the remembered image mounted instead of that one** under
+  VDrive+REU and VDrive+Swift+REU (0.9.0.55-0.9.0.59; the other VDrive Special IOs were not affected). 0.9.0.55 frees the menu's
+  directory listing before the drive starts, and upstream's free also resets the menu source and the image path the auto-mount reads.
+  The drive now notes both first. Host test (`tests/fw_host`); firmware builds; works on hardware (owner, 2026-11-10, C128 in C64 mode, on the build then numbered 0.9.0.58,
+  i.e. without 0.9.0.57's DMA SAVE/VERIFY and 0.9.0.58's agent:
+  `LOADTEST` launched from inside `vdtest.d64` with another image remembered, `REUTEST` full size). `docs/DESIGN.md` section 50.
+
+### Added
+- `LOADTEST` on the test disk (`tests/asm/loadtest.s`, data files `LDA000` and `LDD000`): a LOAD into the RAM under BASIC
+  (`$A000-$BFEF`) and one across `$D000` (`$C7F0-$DBFF`: RAM, then VIC, SID and colour RAM by the window path), every byte, the guards,
+  the RAM under I/O, the end address and the jiffies checked. VICE (true-drive 1541, stock LOAD; the checker catches planted errors);
+  on hardware (owner, 2026-11-10, C128 in C64 mode, the build then numbered 0.9.0.57-DMA, now 0.9.0.59): passes, `LDA000` in 2 jiffies, `LDD000` in 6. One unexplained first run from the
+  TR menu failed both loads with FILE NOT FOUND (4); not reproduced since, power cycle included. `docs/DESIGN.md` section 49.
+
 ## v0.9.0.59
 
 ### Changed
@@ -12,6 +29,8 @@
   composed on the Teensy, the C128 2 MHz bus test. Firmware builds; fw_host and upstream's `npm test` pass on the patched tree. On hardware, as a build numbered 0.9.0.57 before this
   branch was renumbered (without 0.9.0.57's DMA SAVE/VERIFY and 0.9.0.58's agent) (owner, C128 in C64 mode, VDrive+Swift+REU):
   `BUSTEST` clean in 4 runs with Ethernet on and `trls` traffic over TCP; with USB serial traffic a few late answers (the known USB core issue).
+  Also on hardware (owner, 2026-11-10, NTSC C128 in C64 mode, the same build with `-DMA`): TR menu and banner, VDrive launches from F2 and the SD browser,
+  clean directory listings, `VDSUITE` "run all" on SD and USB (the first full suite with DMA LOAD). Not yet on a C64.
 
 ## v0.9.0.58
 
@@ -51,6 +70,7 @@
 - **VDrive+REU one bank short when launched from the SD/USB browser** (512 KB from F2, 256 KB from the browser): the menu's 64 KB
   directory listing was freed only after the drive had opened its files above it, leaving a hole the REU's banks could not use.
   It is now freed first. Works on hardware (owner: VDrive+REU 512 KB with `REUTEST` launched from the SD browser). `docs/DESIGN.md` section 50.
+  **Broke the auto-mount** of the image a program is launched from under the two REU Special IOs (fixed in 0.9.0.60).
 
 ## v0.9.0.54
 
@@ -174,7 +194,6 @@ Firmware only: `kernal-tr.bin` is unchanged.
 
 Firmware 0.9.0.44 (the KERNAL patch it lays over the C64's ROM) **or** a rebuilt `kernal-tr.bin` for `/VDrive/kernal.bin`.
 
-
 ## v0.9.0.43
 
 ### Added
@@ -198,7 +217,6 @@ Firmware 0.9.0.44 (the KERNAL patch it lays over the C64's ROM) **or** a rebuilt
 
 Host tests (py65, firmware glue against the 901227-03 ROM), VICE (`basic`, and the five ROMs with `make test-variants`); works on a real C64 (`SYS64738` on a C128 not checked).
 Firmware 0.9.0.43 **and a new KERNAL**: built in by the firmware, or rebuild `kernal-tr.bin` for `/VDrive/kernal.bin`.
-
 
 ## v0.9.0.42
 

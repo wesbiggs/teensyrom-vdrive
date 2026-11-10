@@ -145,7 +145,7 @@ index 0bb07a4..f81ebfd 100644
       rtFileCrt  , IOH_None         , (char*)"Super Expander 64"                , (uint8_t*)super_expander_64_crt      , sizeof(super_expander_64_crt) ,
       rtFileCrt  , IOH_None         , (char*)"Epyx Fast Load Cart"              , (uint8_t*)Epyx_Fast_Load_crt         , sizeof(Epyx_Fast_Load_crt) ,
 diff --git a/Source/Teensy/MinimalBoot/Common/Common_Defs.h b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
-index 4de1275..2e7ad2c 100644
+index 4de1275..f12fd7c 100644
 --- a/Source/Teensy/MinimalBoot/Common/Common_Defs.h
 +++ b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
 @@ -14,9 +14,13 @@
@@ -167,7 +167,7 @@ index 4de1275..2e7ad2c 100644
  
  
 -#define TRVersion              "0.9"    //*VERSION*
-+#define TRVersion              "0.9.0.59"    //*VERSION*  (stock 0.9 + VDrive rev 59)
++#define TRVersion              "0.9.0.60"    //*VERSION*  (stock 0.9 + VDrive rev 60)
  // Special builds: tools/build-firmware.mjs --tag <name> defines TRVersionSuffix as "-<name>",
  // and a build with uncommitted edits to the image sources adds "*". Arduino IDE builds have
  // none. Leave TRVersion to releases: it names the hex and the browser's User-Agent.
@@ -390,10 +390,10 @@ index 90cd86e..b59600e 100644
              TxMsgOffset = 0;
 diff --git a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c
 new file mode 100644
-index 0000000..78ae905
+index 0000000..dbaeb49
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c
-@@ -0,0 +1,1445 @@
+@@ -0,0 +1,1463 @@
 +// The VDrive Special IOs: the virtual IEC drive and its SD / USB glue. On the TeensyROM+ (Fab04_VDrive) "VDrive KERNAL" and its
 +// combined handlers serve a replacement KERNAL; on both boards (VDrive_Agent) IOH_VDriveAgent.c reaches the same drive through the
 +// KERNAL's RAM vectors and a 6502 agent (docs/DESIGN.md 53). The KERNAL-only parts are under Fab04_VDrive.
@@ -422,6 +422,7 @@ index 0000000..78ae905
 +void VDrive_PreStart(bool agent = false);   // called from KERNALPreStart(), see StatusFunctions.c; agent: for IOH_VDriveAgent
 +uint8_t VDriveSwift_Remap(uint8_t ioh);   // IOH_VDriveSwift.c (IOH_VDriveAgent.c on the plain TR); used by KERNALPreStart() and IOHandlerSelectInit()
 +void IO2Hndlr_VDrive(uint8_t Address, bool R_Wn);
++void VDrive_NoteLaunch();   // KERNALPreStart(), before anything there can free the menu's listing (below)
 +
 +#ifdef Fab04_VDrive
 +#include "../vdrive/vd_kpatch.h"   // VD_KernalPatch[]: patches/*.s as runs (tools/build.py --table)
@@ -1011,17 +1012,31 @@ index 0000000..78ae905
 +   return r;
 +}
 +
-+FLASHMEM static void VD_StartupMount(int unit, bool menuUnit)
++// The menu source and DriveDirPath of this launch, noted by VDrive_NoteLaunch() before KERNALPreStart() frees the menu's listing
++// for an REU Special IO (docs/DESIGN.md 50): upstream's FreeDriveDirMenu() turns the menu back to the Teensy one and DriveDirPath to
++// "/", so VDrive_PreStart() read "not from an image" and mounted the remembered one (0.9.0.55-0.9.0.57).
++static uint8_t vdLaunchMenu = 0xFF;          // 0xFF: nothing noted, PreStart reads the live values
++static char vdLaunchPath[VD_PathLen];
++
++FLASHMEM void VDrive_NoteLaunch()
++{
++   vdLaunchMenu = IO1[rWRegCurrMenuWAIT];
++   size_t n = strlen(DriveDirPath);
++   if (n < sizeof vdLaunchPath) memcpy(vdLaunchPath, DriveDirPath, n + 1);
++   else vdLaunchPath[0] = 0;                 // too long to mount anyway (VD_StartupMount)
++}
++
++FLASHMEM static void VD_StartupMount(int unit, bool menuUnit, const char *dirPath)
 +{
 +   stcVDUnit *u = &vdUnit[unit];
 +   if (!vio->vd.unit[unit].present) return;
 +   char path[VD_PathLen];
 +   if (menuUnit)
 +   {
-+      size_t n = strlen(DriveDirPath);
-+      if (n >= 2 && DriveDirPath[n - 1] == '*' && n < sizeof path)
++      size_t n = strlen(dirPath);
++      if (n >= 2 && dirPath[n - 1] == '*' && n < sizeof path)
 +      {
-+         memcpy(path, DriveDirPath, n - 1); path[n - 1] = 0;
++         memcpy(path, dirPath, n - 1); path[n - 1] = 0;
 +         VD_MountPath(unit, path);
 +         return;
 +      }
@@ -1100,8 +1115,11 @@ index 0000000..78ae905
 +   vdUnit[1].fs = &firstPartition;
 +   vdrive_attach(&vio->vd, 0, NULL, SDFullInit());
 +   vdrive_attach(&vio->vd, 1, NULL, USBFileSystemWait());
-+   VD_StartupMount(0, IO1[rWRegCurrMenuWAIT] == rmtSD);
-+   VD_StartupMount(1, IO1[rWRegCurrMenuWAIT] == rmtUSBDrive);
++   uint8_t menu = vdLaunchMenu != 0xFF ? vdLaunchMenu : IO1[rWRegCurrMenuWAIT];
++   const char *dirPath = vdLaunchMenu != 0xFF ? vdLaunchPath : DriveDirPath;
++   VD_StartupMount(0, menu == rmtSD, dirPath);
++   VD_StartupMount(1, menu == rmtUSBDrive, dirPath);
++   vdLaunchMenu = 0xFF;             // one launch only
 +   int scanPending = vio_arm_scan(vio);   // automatic numbers: probed by the menu next (else on the first disk access, by the KERNAL
 +   vio_publish_devices(vio);              //   or, with the agent, by the vector engine: docs/DESIGN.md 53)
 +#ifdef Fab04_VDrive
@@ -2144,7 +2162,7 @@ index 0000000..6fbe48a
 +   PollingHndlr_VDrive();
 +}
 diff --git a/Source/Teensy/MinimalBoot/Common/IO_Handlers/StatusFunctions.c b/Source/Teensy/MinimalBoot/Common/IO_Handlers/StatusFunctions.c
-index 59ce0b0..be2aba7 100644
+index 59ce0b0..b06f7cd 100644
 --- a/Source/Teensy/MinimalBoot/Common/IO_Handlers/StatusFunctions.c
 +++ b/Source/Teensy/MinimalBoot/Common/IO_Handlers/StatusFunctions.c
 @@ -551,6 +551,14 @@ FLASHMEM void HotKeySetLaunch()
@@ -2162,7 +2180,7 @@ index 59ce0b0..be2aba7 100644
  #ifdef Fab04_KernalReplace
  
  #ifdef Fab04_GlobalKernalReplace
-@@ -567,11 +575,27 @@ FLASHMEM void KERNALPreStart()
+@@ -567,11 +575,28 @@ FLASHMEM void KERNALPreStart()
     {
        //Serial.println("IO Handler set by Teensy Menu\n");
        NextIOHndlr = MenuSource[SelItemFullIdx].IOHndlrAssoc;
@@ -2180,6 +2198,7 @@ index 59ce0b0..be2aba7 100644
     {
 +#ifdef Fab04_VDrive
 +      KernalImageSource = VD_IsKernalHandler(NextIOHndlr) ? &VD_KernalImage : NULL; //VDrive: its own image (IOH_VDrive.c), not the <Shift-K> file
++      if (VD_IsKernalHandler(NextIOHndlr)) VDrive_NoteLaunch(); //the menu source and image path for the auto-mount, before FreeDriveDirMenu() resets them
 +#ifdef Fab04_REU
 +      if (NextIOHndlr == IOH_VDriveREU || NextIOHndlr == IOH_VDriveSwiftREU) FreeDriveDirMenu(); //the REU's AllocRAMBanks frees it anyway; first, so the drive's open Files fill its hole instead of pinning it under the heap top (docs/DESIGN.md 50)
 +#endif

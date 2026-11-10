@@ -124,7 +124,14 @@ static int call(uint8_t cmd, uint8_t arg = 0, uint8_t len = 0, uint8_t *st = nul
 // KERNALPreStart() as patched (a probe step first, else the PreStart) and then what the menu does after it (MainMenu.asm,
 // VDriveProbe): LISTEN + SECOND on 8, 9, ... with the C64's own KERNAL; each number without a real drive is offered
 static int g_probes = 0;                                   // probes the fake menu ran
-static void kernal_prestart() { if (!VDrive_ProbeStep()) { fBusSnoop = &KernalCheck; VDrive_PreStart(); } }   // + InitHndlr_KERNALReplace_PreStart()
+static bool g_reu_free = false;                            // as for VDrive+REU / VDrive+Swift+REU: FreeDriveDirMenu() between the two
+static void kernal_prestart()                              // + InitHndlr_KERNALReplace_PreStart()
+{
+    if (VDrive_ProbeStep()) return;
+    VDrive_NoteLaunch();
+    if (g_reu_free) { IO1[rWRegCurrMenuWAIT] = rmtTeensy; strcpy(DriveDirPath, "/"); }   // what upstream's FreeDriveDirMenu() leaves (MenuChange)
+    fBusSnoop = &KernalCheck; VDrive_PreStart();
+}
 static void prestart(bool probe = true)
 {
     IO1[rwRegScratch] = 0;
@@ -652,6 +659,14 @@ int main(int argc, char **argv)
     IO1[rWRegCurrMenuWAIT] = rmtTeensy;
     prestart();
     check("... on the following restart too", strcmp(vdUnit[0].cwd, "/SUB") == 0 && vdUnit[0].mounted);
+    // an REU Special IO frees the menu's listing ahead of VDrive's PreStart, which resets the menu source and DriveDirPath
+    // (0.9.0.55-0.9.0.57 then mounted the remembered image instead of the one launched from)
+    cmd15("CD:/"); cmd15("CD:GAME.D64"); status15();                             // remembered: GAME.D64 in the root
+    IO1[rWRegCurrMenuWAIT] = rmtSD; strcpy(DriveDirPath, "/SUB/INNER.D64*");
+    g_reu_free = true; prestart(); g_reu_free = false;
+    check("REU Special IO: the menu image is mounted although the listing was freed first", strcmp(vdUnit[0].cwd, "/SUB") == 0 && vdUnit[0].mounted
+          && fast_load(8, "$").find("GAMEDISK") == std::string::npos);
+    IO1[rWRegCurrMenuWAIT] = rmtTeensy; strcpy(DriveDirPath, "/");
     fs_::remove(SD.root / "SUB" / "INNER.D64");
     prestart();
     check("remembered image deleted: starts unmounted, cwd reset", !vdUnit[0].mounted && vdUnit[0].cwd[0] == 0 && !fs_::exists(SD.root / ".vdrive"));

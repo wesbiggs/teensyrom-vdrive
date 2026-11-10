@@ -635,10 +635,14 @@ comes in three DMA parts. `scan` and `variant` keep the window path with the new
 any screen scroll (~20-25 ms each) and the file open, perhaps 1-3 jiffies, plus +-1 jiffy of rounding: DMA LOAD is about 6-8x faster, ~200-250 KB/s.
 The LOAD loop runs with interrupts on and a DMA part halts the CPU for ~2 ms, so the jiffy clock counts true. A 1-block file timed the same way gives the fixed part.
 
-**On hardware, still to check:** a load under BASIC (`LOAD"X",8,1` to `$A000`) and one across
-`$D000`, `VDSUITE` "run all", the C64 as well as the C128, and VDrive+SwiftLink with CCGMS (the NMI hold).
+**On hardware, the build then numbered 0.9.0.57-DMA (now 0.9.0.59: DMA LOAD, without section 51; owner, 2026-11-10, C128 in C64 mode):** `VDSUITE` "run all" passes on SD and USB.
+`LOADTEST` on the test disk (`LDA000` to `$A000-$BFEF` under BASIC, `LDD000` from `$C7F0` through `$DBFF` across `$D000`; every byte, the guards,
+the RAM under I/O and the end address checked) passes: `LDA000` in 2 jiffies, `LDD000` in 6 (its 3 KB of I/O go by the window). The very first run, launched
+from the TR menu, failed both loads with error 4 (FILE NOT FOUND, from the drive; a failed DMA would give 5); every later run passed, and after a power cycle
+it did not come back. Cause unknown: suspect what was mounted at that first launch rather than DMA LOAD; watch for it.
+**Still to check:** the C64 as well as the C128, and VDrive+SwiftLink with CCGMS (the NMI hold).
 
-## 50. The REU's full size back: no VDrive data in RAM2 (0.9.0.53)
+## 50. The REU's full size back: no VDrive data in RAM2 (0.9.0.53) and the auto-mount under it (0.9.0.60)
 
 REU-Checker showed 256 KB where a 512 KB REU was expected. `REUTEST` (`tests/asm/reutest.s`, on the test disk) measures the REU itself:
 the status register's chip bit, a tag at the start of each 64 KB bank written from bank 7 down and read back from bank 0 up (an REU
@@ -690,6 +694,14 @@ output worked and its disk calls went to the real bus. `REUTEST` never touches t
 `KernalFastOnly` when it frees the buffer (cleared at the start of every PreStart), and the re-hook takes `KernalBin != NULL ||
 KernalFastOnly` as loaded (`make_tr_patch.sh`; the plain Kernal Replace is unchanged). Lesson: before freeing a buffer, grep for tests
 of its pointer that mean something else. **0.9.0.56 on hardware (owner, 2026-11-09):** VDrive Config launches from the TR menu again.
+
+**0.9.0.60: the auto-mount under the REU Special IOs.** Freeing the listing first (0.9.0.55) goes through upstream's `FreeDriveDirMenu()`, whose
+`RedirectEmptyDriveDirMenu()` sets the menu back to `rmtTeensy` and, through `MenuChange()`, `DriveDirPath` to `/`. `VDrive_PreStart()` reads both to
+mount the image a program was launched from (the 0.9.0.2 auto-mount), so under VDrive+REU and VDrive+Swift+REU it saw "not from an image" and
+mounted the `/.vdrive` one (owner: `LOADTEST` from inside `vdtest.d64` failed FILE NOT FOUND on its first run, on the build then numbered 0.9.0.57, now 0.9.0.59). `KERNALPreStart()` now calls
+`VDrive_NoteLaunch()` for every replacement-KERNAL VDrive Special IO (the agent's launch frees nothing first) before anything else there; it copies the menu source and `DriveDirPath`, and the PreStart that
+follows uses that copy once. `tests/fw_host` runs every PreStart through it and has a launch with the free in between (fails without the fix).
+Works on hardware (owner, 2026-11-10, C128 in C64 mode, on the build then numbered 0.9.0.58, without 0.9.0.57's DMA SAVE and 0.9.0.58's agent).
 
 ## 51. DMA SAVE and VERIFY (0.9.0.57; host, glue and VICE tests; not on hardware)
 

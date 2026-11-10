@@ -26,6 +26,7 @@
 void VDrive_PreStart(bool agent = false);   // called from KERNALPreStart(), see StatusFunctions.c; agent: for IOH_VDriveAgent
 uint8_t VDriveSwift_Remap(uint8_t ioh);   // IOH_VDriveSwift.c (IOH_VDriveAgent.c on the plain TR); used by KERNALPreStart() and IOHandlerSelectInit()
 void IO2Hndlr_VDrive(uint8_t Address, bool R_Wn);
+void VDrive_NoteLaunch();   // KERNALPreStart(), before anything there can free the menu's listing (below)
 
 #ifdef Fab04_VDrive
 #include "../vdrive/vd_kpatch.h"   // VD_KernalPatch[]: patches/*.s as runs (tools/build.py --table)
@@ -615,17 +616,31 @@ FLASHMEM static int VD_MountPath(int unit, const char *rawPath)   // 0 ok, else 
    return r;
 }
 
-FLASHMEM static void VD_StartupMount(int unit, bool menuUnit)
+// The menu source and DriveDirPath of this launch, noted by VDrive_NoteLaunch() before KERNALPreStart() frees the menu's listing
+// for an REU Special IO (docs/DESIGN.md 50): upstream's FreeDriveDirMenu() turns the menu back to the Teensy one and DriveDirPath to
+// "/", so VDrive_PreStart() read "not from an image" and mounted the remembered one (0.9.0.55-0.9.0.57).
+static uint8_t vdLaunchMenu = 0xFF;          // 0xFF: nothing noted, PreStart reads the live values
+static char vdLaunchPath[VD_PathLen];
+
+FLASHMEM void VDrive_NoteLaunch()
+{
+   vdLaunchMenu = IO1[rWRegCurrMenuWAIT];
+   size_t n = strlen(DriveDirPath);
+   if (n < sizeof vdLaunchPath) memcpy(vdLaunchPath, DriveDirPath, n + 1);
+   else vdLaunchPath[0] = 0;                 // too long to mount anyway (VD_StartupMount)
+}
+
+FLASHMEM static void VD_StartupMount(int unit, bool menuUnit, const char *dirPath)
 {
    stcVDUnit *u = &vdUnit[unit];
    if (!vio->vd.unit[unit].present) return;
    char path[VD_PathLen];
    if (menuUnit)
    {
-      size_t n = strlen(DriveDirPath);
-      if (n >= 2 && DriveDirPath[n - 1] == '*' && n < sizeof path)
+      size_t n = strlen(dirPath);
+      if (n >= 2 && dirPath[n - 1] == '*' && n < sizeof path)
       {
-         memcpy(path, DriveDirPath, n - 1); path[n - 1] = 0;
+         memcpy(path, dirPath, n - 1); path[n - 1] = 0;
          VD_MountPath(unit, path);
          return;
       }
@@ -704,8 +719,11 @@ FLASHMEM void VDrive_PreStart(bool agent)
    vdUnit[1].fs = &firstPartition;
    vdrive_attach(&vio->vd, 0, NULL, SDFullInit());
    vdrive_attach(&vio->vd, 1, NULL, USBFileSystemWait());
-   VD_StartupMount(0, IO1[rWRegCurrMenuWAIT] == rmtSD);
-   VD_StartupMount(1, IO1[rWRegCurrMenuWAIT] == rmtUSBDrive);
+   uint8_t menu = vdLaunchMenu != 0xFF ? vdLaunchMenu : IO1[rWRegCurrMenuWAIT];
+   const char *dirPath = vdLaunchMenu != 0xFF ? vdLaunchPath : DriveDirPath;
+   VD_StartupMount(0, menu == rmtSD, dirPath);
+   VD_StartupMount(1, menu == rmtUSBDrive, dirPath);
+   vdLaunchMenu = 0xFF;             // one launch only
    int scanPending = vio_arm_scan(vio);   // automatic numbers: probed by the menu next (else on the first disk access, by the KERNAL
    vio_publish_devices(vio);              //   or, with the agent, by the vector engine: docs/DESIGN.md 53)
 #ifdef Fab04_VDrive
