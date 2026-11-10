@@ -15,9 +15,7 @@ mkdir -p "$W/Source/Teensy"; cp "$TR/Source/Teensy/Teensy.ino" "$TR/Source/Teens
 M=Source/C64/MainMenuCRT/source; mkdir -p "$W/$M" "$W/Source/Teensy/TRMenuFiles/ROMs"
 cp "$TR/$M/MainMenu.asm" "$TR/$M/PRGLoadStartReloc.s" "$W/$M/"; cp "$TR/Source/Teensy/TRMenuFiles/ROMs/TeensyROMC64.h" "$W/Source/Teensy/TRMenuFiles/ROMs/"
 cd "$W"; git init -q; git add -A; git -c user.name=x -c user.email=x@x commit -qm base
-# upstream PR #85 (Ethernet stack polled from loop() while Kernal Replace serves the KERNAL), byte for byte; drop it once merged
-git apply "$HERE/firmware/kernal-fnet-poll.patch"
-# fixes to upstream Kernal Replace (fast image copy, late-ISR counters), on top of #85: applied before the edits below
+# fixes to upstream Kernal Replace (fast image copy, late-ISR counters): applied before the edits below
 git apply "$HERE/firmware/kernalreplace-fixes.patch"
 
 python3 -I - "$C" "$HERE/firmware/REV" "$HERE/firmware/vdrive_remote.inc" "$HERE/firmware/vdrive_probe.asm" <<'PY'
@@ -39,14 +37,13 @@ edit(f"{C}/Common_Defs.h",
      "   #define Fab04_DebugSignals         //For debug only\n#endif\n"
      "#define VDrive_Agent   //virtual IEC drive through the KERNAL's RAM vectors and a 6502 agent served from IO1 (no Kernal Replace)\n"
      "#define VDrive_Any     //any VDrive Special IO: the agent, and on the TR+ the replacement-KERNAL ones (Fab04_VDrive)\n")
-# #85's loop poll and AT-command PIT unmask also for the VDrive Special IOs (all serve the replaced KERNAL; VDrive+SwiftLink runs AT commands)
-edit("Source/Teensy/Teensy.ino",
-     "   bool want = FnetPollHold || (CurrentIOHandler == IOH_KernalReplace)\n",
-     "   bool want = FnetPollHold || (CurrentIOHandler == IOH_KernalReplace)\n"
-     "#ifdef Fab04_VDrive\n               || VD_IsHandler(CurrentIOHandler)\n#endif\n")
-for old in ("#ifdef Fab04_GlobalKernalReplace\nFLASHMEM ATRespCode ProcessATCommandInner()",
-            "#ifdef Fab04_GlobalKernalReplace\nextern volatile bool FnetLoopPoll;"):
-    edit(f"{C}/IO_Handlers/Swift_ATcommands.c", old,
+# #85's AT/browser-command PIT unmask (SwiftLink dispatch) also for the VDrive Special IOs: VDrive+SwiftLink runs AT commands while the
+# replaced KERNAL is served. The loop poll itself needs no edit: the VDrive launch goes through InitHndlr_KERNALReplace_PreStart(),
+# whose FnetLoopPollStart() sets FnetPollHold.
+for old in ("#ifdef Fab04_GlobalKernalReplace\nextern volatile bool FnetLoopPoll;",
+            "#ifdef Fab04_GlobalKernalReplace\n            //SwiftLink can run while the KERNAL is replaced",
+            "#ifdef Fab04_GlobalKernalReplace\n            if (FnetLoopPoll) NVIC_DISABLE_IRQ(IRQ_PIT);"):
+    edit(f"{C}/IO_Handlers/IOH_Swiftlink.c", old,
          old.replace("#ifdef Fab04_GlobalKernalReplace", "#if defined(Fab04_GlobalKernalReplace) || defined(Fab04_VDrive)"))
 import re
 base = re.search(r'#define TRVersion\s+"([^"]+)"', open(f"{C}/Common_Defs.h").read()).group(1)

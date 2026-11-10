@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.9.0.59
+
+### Changed
+- **Rebased on upstream TeensyROM `ac24701b`**, which merged [PR 85](https://github.com/SensoriumEmbedded/TeensyROM/pull/85) (the
+  Ethernet stack polled from `loop()` while a replaced KERNAL is served). `firmware/kernal-fnet-poll.patch` is gone; the firmware now
+  has #85 as merged, with its review fixes: the PIT is unmasked for SwiftLink browser commands as well as AT commands, `ReadC64Mem`
+  replies and file sends poll the stack while the socket is full instead of spinning, and the poll is held from the KERNAL's PreStart
+  until the menu returns whatever the Special IO (so the VDrive Special IOs need no entry of their own; VDrive+SwiftLink keeps the PIT
+  unmask through `Fab04_VDrive`). Also from upstream since `6518b966`: the Special IO "REU+USB Mouse/Disk" for GEOS, the C64 banner row
+  composed on the Teensy, the C128 2 MHz bus test. Firmware builds; fw_host and upstream's `npm test` pass on the patched tree. On hardware, as a build numbered 0.9.0.57 before this
+  branch was renumbered (without 0.9.0.57's DMA SAVE/VERIFY and 0.9.0.58's agent) (owner, C128 in C64 mode, VDrive+Swift+REU):
+  `BUSTEST` clean in 4 runs with Ethernet on and `trls` traffic over TCP; with USB serial traffic a few late answers (the known USB core issue).
+
 ## v0.9.0.58
 
 ### Added

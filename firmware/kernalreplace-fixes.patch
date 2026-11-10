@@ -1,8 +1,8 @@
 diff --git a/Source/Teensy/MinimalBoot/Common/Common_Defs.h b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
-index a0a6e5f7..064ed189 100644
+index 4de1275..2c5d19a 100644
 --- a/Source/Teensy/MinimalBoot/Common/Common_Defs.h
 +++ b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
-@@ -183,6 +183,8 @@ bool (*fBusSnoop)(uint16_t Address, bool R_Wn) = NULL;    //Bus snoop routine, r
+@@ -192,6 +192,8 @@ bool (*fBusSnoop)(uint16_t Address, bool R_Wn) = NULL;    //Bus snoop routine, r
  bool (*PendingfBusSnoop)(uint16_t Address, bool R_Wn) = NULL;  //staged by an IO handler's InitHndlr instead of touching fBusSnoop directly
  volatile bool HandshakeReady = false;    //true once IOHandlerInit has completed the current IO handler swap
  
@@ -12,7 +12,7 @@ index a0a6e5f7..064ed189 100644
     #define BigBufSize          1000
  #else
 diff --git a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_KernalReplace.c b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_KernalReplace.c
-index d3e657ce..449bef59 100644
+index d3e657c..449bef5 100644
 --- a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_KernalReplace.c
 +++ b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_KernalReplace.c
 @@ -48,6 +48,15 @@ stcIOHandlers IOHndlr_KernalReplace =
@@ -69,7 +69,7 @@ index d3e657ce..449bef59 100644
  
  FLASHMEM void InitHndlr_KernalReplace()
 diff --git a/Source/Teensy/MinimalBoot/Common/ISRs.c b/Source/Teensy/MinimalBoot/Common/ISRs.c
-index 0425e496..c6dc4f98 100644
+index 0425e49..c6dc4f9 100644
 --- a/Source/Teensy/MinimalBoot/Common/ISRs.c
 +++ b/Source/Teensy/MinimalBoot/Common/ISRs.c
 @@ -55,6 +55,10 @@ void DMAWaitAssertReady()
@@ -98,7 +98,7 @@ index 0425e496..c6dc4f98 100644
        #ifdef DbgCycAdjLog      
           if (BigBuf != NULL)
 diff --git a/Source/Teensy/Teensy.ino b/Source/Teensy/Teensy.ino
-index 8c250d30..f19884a5 100644
+index 5122f18..2a59a1e 100644
 --- a/Source/Teensy/Teensy.ino
 +++ b/Source/Teensy/Teensy.ino
 @@ -55,6 +55,9 @@ uint8_t RAM_Image[RAM_ImageSize]; //Main RAM1 file storage buffer
@@ -110,8 +110,8 @@ index 8c250d30..f19884a5 100644
 +#endif
  #ifdef Fab04_KernalReplace
  volatile bool FnetLoopPoll = false; //Ethernet stack polled from loop(), PIT timer masked (see FnetLoopPollService)
- volatile bool FnetPollHold = false; //set by Kernal Replace PreStart, before CurrentIOHandler changes; cleared with the main menu
-@@ -387,6 +390,50 @@ void loop()
+ volatile bool FnetPollHold = false; //set by Kernal Replace PreStart once a KERNAL is served; cleared with the main menu
+@@ -388,6 +391,50 @@ void loop()
     if (IO1[rwRegPwrUpDefaults2] & rpud2TRContEnabled)
        if (USBHostSerial.available()) ServiceSerial(&USBHostSerial);
  
@@ -160,5 +160,5 @@ index 8c250d30..f19884a5 100644
 +   }
 +#endif
  #ifdef Fab04_KernalReplace
-    FnetLoopPollService();
+    if (FnetPollHold || FnetLoopPoll) FnetLoopPollService();
  #endif
