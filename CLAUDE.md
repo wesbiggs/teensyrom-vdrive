@@ -263,6 +263,12 @@ The full `make test`, VICE runs included, works in a cloud session; do not skip 
   `firmware/REV`. **Bump `firmware/REV` (and regenerate the patch) on any commit that changes firmware behaviour** (`d64/`, `firmware/`, the
   patch edits). It shows on the C64 menu title, in the hex file name (`TeensyROM+_0.9.0.1_full.hex`, never confused with stock
   `0.9_full.hex`) and in the flash tool. Keep it digits-and-dots: `tools/lib/trserial.mjs` parses `TeensyROM+? v[\d.]+`.
+* **CHANGELOG with every user-visible change, in the same commit.** Any REV bump, KERNAL patch change (`patches/`), utility change (`util/`) or
+  fix the owner would notice gets an entry under `## Unreleased` in `CHANGELOG.md` (`### Added` / `### Fixed` / `### Build`), with the
+  version(s), what the user sees, the test status in the same words as here (host/VICE/**hardware**) and the `docs/DESIGN.md` section.
+  When the owner reports a hardware result, update the entry as well as this file. A fix to a regression names the versions that
+  had the bug. Releases are cut from `## Unreleased` (rename it `## v<ver>`); entries written afterwards from memory get missed
+  (0.9.0.51/0.9.0.52 needed a catch-up commit). Before every commit: `git diff --cached --stat` shows `CHANGELOG.md` whenever `firmware/REV` is in it.
 * **Keep the patch hunks away from lines upstream is changing.** `tools/make_tr_patch.sh` places edits so they apply on current `main` *and* on the open TeensyROM PRs that touch the same files
   (written for #39 and #61-#70, all merged by `5728ddc9`; checked at the 0.9.0.38 rebase on `fa509421` against open #79, #81-#83; #80, our SwiftLink Tx fix, merged in `6518b966`; #85 is carried as `kernal-fnet-poll.patch` until it merges, 0.9.0.41 checked against #81-#83): the VDrive entries in the `enumIOHandlers` / `IOHandler[]` lists sit *before* the Kernal Replace entries (upstream appends GeoRAM after `IOH_Debug`),
   the Busy-refusal bypass in `SerUSBIO.ino` is a block after the `ASIDAllowed` statement (not a rewrite of the `if`), the menu remap in `IOHandlers.ino` is an `IOHandlerInit` macro defined before `IOHandlerSelectInit()` and `#undef`'d after it (0.9.0.38: #81 rewrites the function's first lines; the old case ahead of upstream's call also bypassed its GEOS case), and `FnetPollHold = false` follows the `#endif`

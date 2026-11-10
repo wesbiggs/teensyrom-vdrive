@@ -14,7 +14,8 @@
   before. VDrive+REU is 512 KB on hardware with 0.9.0.55 (owner). `docs/DESIGN.md` section 50.
 - **Programs launched from the TR menu with a VDrive Special IO ran on the C64's own KERNAL (0.9.0.54-0.9.0.55, fixed in 0.9.0.56)**:
   freeing the KERNAL's heap copy (above) also made the hand-over after the program transfer skip re-hooking the replacement KERNAL,
-  so VDrive Config hung after switching to lower case and other programs had no virtual drives. `docs/DESIGN.md` section 50.
+  so VDrive Config hung after switching to lower case and other programs had no virtual drives. Works on hardware with 0.9.0.56
+  (owner: VDrive Config launches from the TR menu again). `docs/DESIGN.md` section 50.
 
 ### Build
 - **Releases carry firmware**: publishing a GitHub release builds three hex files in CI (`tools/build_firmware.sh`, on the upstream commit
