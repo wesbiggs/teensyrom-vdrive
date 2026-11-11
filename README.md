@@ -25,7 +25,8 @@ The `VDSUITE` test program passes on a real C64 on both the SD and the USB unit:
 Still **not run on a real C64**: the machine-code VDCOPY, the default device 8, VDrive+REU, `STATUS` compared with a real drive, and RUN/STOP during a load.
 The test disk (`make testdisk`, see [Building and testing](#building-and-testing)) has a BASIC test program for most of them.
 
-The original TR does not have the Kernal Replace functionality needed for this software. A more limited TR version, hooking the KERNAL's RAM vectors instead, is possible but not built yet; see [TR+ and TR compared](#tr-and-tr-compared) for what it would keep and lose.
+The original TR does not have the Kernal Replace functionality needed for this software. A more limited TR version, hooking the KERNAL's RAM vectors instead, is in the firmware since 0.9.0.58 but has only run in VICE; see [TR+ and TR compared](#tr-and-tr-compared) for what it keeps and loses.
+A C128 in 128 mode (BASIC 7.0) uses that same vector version, on the TR and the TR+, since 0.9.0.62: again VICE only so far, see [C128 in 128 mode](#c128-in-128-mode).
 A C128 in C64 mode works with 0.9.0.42: the firmware includes upstream's DMA HIRAM sense for Kernal Replace on a C128
 ([TeensyROM PR 78](https://github.com/SensoriumEmbedded/TeensyROM/pull/78)), and `VDSUITE`'s "run all" passes on an NTSC C128 (its checks by hand are not done yet; a PAL C128 is untested).
 
@@ -257,10 +258,10 @@ With the TR menu showing (no program running) the same commands show and change 
 | Copy protection that checks for bad sectors | Read errors from the image's error-info bytes are emulated (`U1`, `LOAD`, `GET#`); protections that time the drive, read raw GCR, or check the drive's memory (`M-R`) still fail. Writing a bad sector does not repair it |
 
 ### TR+ and TR compared
-The original TR cannot serve a replacement KERNAL, so a TR version (**not built yet**; release builds of plain TR firmware carry no VDrive) would hook the KERNAL's
-RAM vectors (`$0314-$0333`) instead of patching the serial routines. The drive itself (the Teensy side) is the same on both. What differs:
+The original TR cannot serve a replacement KERNAL, so its version ("VDrive" in the Special IO list; "VDrive Agent" on the TR+, since 0.9.0.58, **VICE only so far**)
+hooks the KERNAL's RAM vectors (`$0314-$0333`) instead of patching the serial routines. The drive itself (the Teensy side) is the same on both. What differs:
 
-| Feature | TR+ (patched KERNAL) | TR (RAM vectors, planned) |
+| Feature | TR+ (patched KERNAL) | TR (RAM vectors) |
 |---|---|---|
 | Image formats (`.d64`, `.d71`, `.d81`), `CD` and paths (CMD syntax included) | Yes | Yes |
 | `N:`, `S:`, `R:`, `C:`, `V`, `L:`, `MD:` / `RD:` | Yes | Yes |
@@ -281,6 +282,19 @@ RAM vectors (`$0314-$0333`) instead of patching the serial routines. The drive i
 | Disk switching with the Alt button, with a border flash | Yes | No: the TR (rev 0.2 and 0.3) has no Alt button. Change disks with `trvdrive` over serial or Ethernet instead |
 | `LOAD` / `SAVE` / `VERIFY` without a device number | Device 8 | Tape (device 1). Device 8 is possible, but then the tape is blocked; the tape is kept |
 | Tape (device 1) | No: its code space holds the patch | Yes |
+
+### C128 in 128 mode
+In 128 mode a cartridge cannot replace the C128's KERNAL, so there VDrive always runs the RAM-vector version above (the agent), on the TR
+and the TR+, whichever VDrive Special IO is the default. **VICE only so far** (`x128` with its own ROMs); nothing of it has run on a real C128 in 128 mode.
+- **Starting it.** A C128 BASIC program (one that loads at `$1C01`) picked in the TR menu starts in 128 mode (upstream TeensyROM since PR 96), with the drives
+  installed before `RUN`, the image it was picked from mounted. After **Exit to C128 BASIC** (Utilities), or after a reset: `SYS 56852`.
+- **BASIC 7.0's disk statements** go through the KERNAL and reach the drives: `DIRECTORY`/`CATALOG`, `DLOAD`, `DSAVE`, `DVERIFY`, `BLOAD`/`BSAVE`
+  (any bank), `DOPEN`/`DCLOSE`/`APPEND`, `DS`/`DS$`, `HEADER` (`N:`), `SCRATCH`, `RENAME`, `COPY`, `CONCAT`, `COLLECT`, `BOOT`, and `LOAD`/`SAVE`/`OPEN`/`PRINT#`/`INPUT#` as on the C64.
+  Paths, `CD:`, `U0>` and the other drive commands are the same.
+- **RUN/STOP+RESTORE** keeps the drives; a reset needs `SYS 56852` again.
+- **FAST (2 MHz)** works in VICE; whether the TR's answers keep up at 2 MHz on real hardware is not known yet. Use `SLOW` if the drives misbehave in FAST mode.
+- Everything in the TR column above applies too (programs that call the serial routines directly, or `RESTOR`, do not see the drives), and memory under
+  `$D000-$DFFF` in banks 0 and 1 cannot be loaded into. REU and SwiftLink combinations are not offered in 128 mode.
 
 ## Utilities
 

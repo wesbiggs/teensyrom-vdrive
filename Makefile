@@ -27,9 +27,17 @@ build/vdagent-vice.prg: vector/vdagent.s vector/agent.cfg patches/mailbox.inc
 	ca65 -I patches -D 'MBX=$$C800' -D 'WIN=$$CA00' -o build/vdagent-vice.o vector/vdagent.s
 	ld65 -C vector/agent.cfg -S 0xDE08 -o $@ build/vdagent-vice.o
 
-test-agent: build/vdagent-vice.prg build/libd64.dylib   # the agent + d64/vdrive_vec.c on the stock KERNAL in VICE (mock `agent` and `agentscan`)
+# ... and for x128 in 128 mode (docs/DESIGN.md 56): the same agent bytes, the mailbox below $4000 (RAM in the system bank)
+build/vdagent128-vice.prg: vector/vdagent.s vector/agent.cfg patches/mailbox.inc
+	mkdir -p build
+	ca65 -I patches -D 'MBX=$$3F00' -D 'WIN=$$3F80' -o build/vdagent128-vice.o vector/vdagent.s
+	ld65 -C vector/agent.cfg -S 0xDE08 -o $@ build/vdagent128-vice.o
+
+test-agent: build/vdagent-vice.prg build/vdagent128-vice.prg build/libd64.dylib   # the agent + d64/vdrive_vec.c in VICE: the stock C64 KERNAL (mock `agent`, `agentscan`) and a C128 in 128 mode (`agent128`, `agent128scan`; skipped without x128)
 	python3 -I tools/vdrive_mock.py $(STOCK) agent build/vdagent-vice.prg
 	python3 -I tools/vdrive_mock.py $(STOCK) agentscan build/vdagent-vice.prg
+	if command -v x128 >/dev/null; then python3 -I tools/vdrive_mock.py - agent128 build/vdagent128-vice.prg && \
+	   python3 -I tools/vdrive_mock.py - agent128scan build/vdagent128-vice.prg; else echo "x128 not found: agent128 skipped"; fi
 
 D64SRC = d64/d64.c d64/vdrive.c d64/vdrive_io.c d64/vdrive_vec.c
 build/libd64.dylib: $(D64SRC) $(wildcard d64/*.h)

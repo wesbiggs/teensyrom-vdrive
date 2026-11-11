@@ -170,7 +170,7 @@ enum { rwRegPwrUpDefaults2 = 8, rpud2AltBtnActionMask = 0b00111000, rpud2AltBtnA
 #define Fab04_SpecialButton
 #endif
 extern void (*fSpecialBtnChange)(bool Up_nDn);
-enum { rWRegCurrMenuWAIT = 3, rwRegScratch = 9, rwRegColorRefStart = 42, NumColorRefs = 7, rmtUSBDrive = 0, rmtSD = 1, rmtTeensy = 2 };
+enum { rWRegCurrMenuWAIT = 3, rwRegScratch = 9, rwRegNextIOHndlr = 22, rwRegColorRefStart = 42, NumColorRefs = 7, rmtUSBDrive = 0, rmtSD = 1, rmtTeensy = 2 };
 enum { IO1Size = 104 };   // Menu_Regs.h: StartSIDRegs + 40
 extern volatile uint8_t *IO1;
 extern char DriveDirPath[];

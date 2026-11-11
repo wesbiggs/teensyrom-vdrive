@@ -309,8 +309,10 @@ class VIO:
 
 class VVec:
     """the vector engine (d64/vdrive_vec.c) on top of a VIO: answers the agent's VV_C_VEC / VV_C_CONT, anything else goes to vio_poll"""
-    def __init__(self, io, base):
+    C64, C128 = 0, 1                  # VV_M_*: the machine whose KERNAL the agent hooks
+    def __init__(self, io, base, machine=0):
         self.e = ctypes.create_string_buffer(LIB.vvec_sizeof())
         LIB.vvec_init(self.e, io.v, ctypes.c_uint16(base))
+        if machine: LIB.vvec_set_machine(self.e, ctypes.c_uint8(machine))
         self.io = io
     def poll(self): return LIB.vvec_poll(self.e)

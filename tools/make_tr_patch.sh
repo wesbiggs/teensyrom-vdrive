@@ -17,9 +17,10 @@ C=Source/Teensy/MinimalBoot/Common
 W="$(mktemp -d)"; trap 'rm -rf "$W"' EXIT
 mkdir -p "$W/$C/IO_Handlers"
 for f in Common_Defs.h Menu_Regs.h IOHandlers.h ISRs.c IO_Handlers/StatusFunctions.c IO_Handlers/IOH_KernalReplace.c IO_Handlers/Swift_ATcommands.c IO_Handlers/IOH_Swiftlink.c; do cp "$TR/$C/$f" "$W/$C/$f"; done
-mkdir -p "$W/Source/Teensy"; cp "$TR/Source/Teensy/Teensy.ino" "$TR/Source/Teensy/IOHandlers.ino" "$TR/Source/Teensy/SerUSBIO.ino" "$TR/Source/Teensy/MainMenuItems.h" "$W/Source/Teensy/"
+mkdir -p "$W/Source/Teensy"; cp "$TR/Source/Teensy/Teensy.ino" "$TR/Source/Teensy/IOHandlers.ino" "$TR/Source/Teensy/SerUSBIO.ino" "$TR/Source/Teensy/MainMenuItems.h" "$TR/Source/Teensy/C128Prg.ino" "$W/Source/Teensy/"
 M=Source/C64/MainMenuCRT/source; mkdir -p "$W/$M" "$W/Source/Teensy/TRMenuFiles/ROMs"
 cp "$TR/$M/MainMenu.asm" "$TR/$M/PRGLoadStartReloc.s" "$W/$M/"; cp "$TR/Source/Teensy/TRMenuFiles/ROMs/TeensyROMC64.h" "$W/Source/Teensy/TRMenuFiles/ROMs/"
+B128=Source/C64/C128PrgBoot; mkdir -p "$W/$B128"; cp "$TR/$B128/C128PrgBoot.asm" "$W/$B128/"; cp "$TR/Source/Teensy/TRMenuFiles/ROMs/C128PrgBoot.bin.h" "$W/Source/Teensy/TRMenuFiles/ROMs/"
 cd "$W"; git init -q; git add -A; git -c user.name=x -c user.email=x@x commit -qm base
 # fixes to upstream Kernal Replace (fast image copy, late-ISR counters): applied before the edits below, unless the tree has them
 # (the kernalreplace-fixes branch of the TeensyROM fork, which VDrive builds on, carries them as a commit of their own)
@@ -188,6 +189,22 @@ edit("Source/C64/MainMenuCRT/source/PRGLoadStartReloc.s",
      "   lda $df09\n   cmp #$d6\n   bne +\n   lda $df0a\n   cmp #$64\n   bne +\n   lda $de14\n   cmp #$20\n   bne +\n"
      "   lda #$a5\n   jsr $de14\n+\n"
      "smcSkipPrintRunning:\n")
+# C128 mode (docs/DESIGN.md 56; upstream #96/#98): a VDrive Special IO runs as the agent there, after the drive's PreStart. The call goes
+# after upstream's own Kernal Replace line, once the launch is certain, and before the reset is asked for.
+edit("Source/Teensy/C128Prg.ino",
+     '   SendMsgPrintfln(PSTR("Starting C128 mode"));\n',
+     '#ifdef VDrive_Agent\n'
+     '   VDrive_C128Launch(); //teensyrom-vdrive: with a VDrive Special IO this launch runs the agent (IOH_VDriveAgent.c)\n'
+     '#endif\n'
+     '   SendMsgPrintfln(PSTR("Starting C128 mode"));\n')
+# ... and the boot ROM's loader hooks the KERNAL's vectors through the agent once the handler swap is done, in the system bank
+# (I/O in), before it types RUN: the same check and call as PRGLoadStartReloc.s above.
+edit("Source/C64/C128PrgBoot/C128PrgBoot.asm",
+     "        lda #SYSTEM_BANK\n        sta MMU_CR\n",
+     "        lda #SYSTEM_BANK\n        sta MMU_CR\n"
+     "        ; VDrive agent (teensyrom-vdrive, docs/DESIGN.md 56): let it hook the KERNAL's vectors now that the program is in memory\n"
+     "        lda $df09\n        cmp #$d6\n        bne +\n        lda $df0a\n        cmp #$64\n        bne +\n"
+     "        lda $de14\n        cmp #$20\n        bne +\n        lda #$a5\n        jsr $de14\n+\n")
 edit("Source/C64/MainMenuCRT/source/MainMenu.asm",
      ";Check for Kernal Replace Special IO and start it now\n   lda #rCtlKERNALPreStartWAIT\n   sta wRegControl+IO1Port\n"
      "   jsr WaitForTRDots ;use WaitForTRWaitMsg instead?\n",
@@ -245,7 +262,8 @@ rm -rf "$W/util"
 B="$(mktemp -d)"; mkdir -p "$B/Source" "$B/$C"
 cp -R "$TR/tools" "$B/"; cp -R "$TR/Source/C64" "$B/Source/"; cp "$C/Menu_Regs.h" "$B/$C/"
 cp "$M/MainMenu.asm" "$M/PRGLoadStartReloc.s" "$B/$M/"
-(cd "$B" && node tools/build-c64.mjs --project MainMenuCRT --rom-dir "$W/Source/Teensy/TRMenuFiles/ROMs" >/dev/null)
+cp "$B128/C128PrgBoot.asm" "$B/$B128/"
+(cd "$B" && node tools/build-c64.mjs --project MainMenuCRT,C128PrgBoot --rom-dir "$W/Source/Teensy/TRMenuFiles/ROMs" >/dev/null)
 cmp -s "$B/$M/Menu_Regs.i" "$TR/$M/Menu_Regs.i" || { echo "Menu_Regs.i would change: carry it in the patch" >&2; exit 1; }
 rm -rf "$B"
 mkdir -p "$C/vdrive"

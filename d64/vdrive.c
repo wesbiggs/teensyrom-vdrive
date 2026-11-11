@@ -836,6 +836,34 @@ VD_COLD static void cmd_buffer(vd_unit_t *u, char op, const char *p, const char 
 /* C[d]:new=[d:]old[,[d:]old...]: copy one file, or join several into a new one (types after a comma are not part of a name).
  * Duplicating a whole disk ("C1=0", dual drives only) is not a thing here: 31. */
 #define VD_COPYMAX 8
+
+/* "C:A=A,B,...": append the other sources to A, as a 1541 does it (BASIC 7's CONCAT sends exactly that; d64_copy, the shared engine's,
+ * answers 63 for an existing new name, as a 1541 does when the new name is not the first source). Every source must exist first,
+ * none may be A again or a REL file. A disk full puts A back as it was (d64_write). */
+VD_COLD static int concat_into(d64_t *d, const char *name, const char *const *src, int nsrc)
+{
+    d64_entry_t e;
+    d64_wfile_t w;
+    d64_file_t f;
+    uint8_t chunk[64];
+    int r;
+    if ((r = d64_find(d, name, &e)) <= 0) return r ? r : D64_E_NOTFOUND;
+    if ((e.type & 7) == 4) return D64_E_TYPE;
+    for (int i = 0; i < nsrc; i++) {
+        if (strcmp(src[i], name) == 0) return D64_E_EXISTS;
+        if ((r = d64_find(d, src[i], &e)) <= 0) return r ? r : D64_E_NOTFOUND;
+        if ((e.type & 7) == 4) return D64_E_TYPE;
+    }
+    if ((r = d64_append(d, name, &w))) return r;
+    for (int i = 0; i < nsrc; i++) {
+        if ((r = d64_find(d, src[i], &e)) <= 0) { d64_close_write(d, &w); return r ? r : D64_E_NOTFOUND; }
+        d64_file_open(d, &e, &f);
+        while ((r = d64_file_read(d, &f, chunk, sizeof chunk)) > 0)
+            if ((r = d64_write(d, &w, chunk, (size_t)r)) < 0) return r;      /* A is back as it was */
+        if (r < 0) { d64_close_write(d, &w); return r; }
+    }
+    return d64_close_write(d, &w);
+}
 VD_COLD static void cmd_copy(vd_unit_t *u, const char *p, const char *end)
 {
     if (p >= end || *p != ':') { set_err(u, 31, 0, 0); return; }
@@ -858,7 +886,7 @@ VD_COLD static void cmd_copy(vd_unit_t *u, const char *p, const char *end)
         src[ns] = names[ns + 1];
         p = q + 1;
     }
-    int r = d64_copy(u->disk, names[0], src, ns);
+    int r = ns > 1 && strcmp(names[0], src[0]) == 0 ? concat_into(u->disk, names[0], src + 1, ns - 1) : d64_copy(u->disk, names[0], src, ns);
     if (r) err_from(u, r);
 }
 
@@ -921,6 +949,7 @@ VD_COLD static void exec_command(vdrive_t *v, int unit, vd_unit_t *u, uint8_t *c
         while (p <= end) {
             const char *q = p;
             while (q < end && *q != ',') q++;
+            p = strip_prefix(p, q);                         /* "S0:A,0:B": a drive prefix on every name, as a 1541 takes it */
             char pat[18]; size_t n = (size_t)(q - p);
             if (n && n <= 16) {
                 memcpy(pat, p, n); pat[n] = 0;
@@ -951,9 +980,10 @@ VD_COLD static void exec_command(vdrive_t *v, int unit, vd_unit_t *u, uint8_t *c
         const char *eq = p;
         while (eq < end && *eq != '=') eq++;
         char nn[17], on[17];
-        size_t a = (size_t)(eq - p), b = (size_t)(end - eq - 1);
+        const char *o = eq < end ? strip_prefix(eq + 1, end) : end;   /* "R0:NEW=0:OLD" (the 1541 manual's form; BASIC 7's RENAME) */
+        size_t a = (size_t)(eq - p), b = (size_t)(end - o);
         if (eq == end || a < 1 || a > 16 || b < 1 || b > 16) { set_err(u, 34, 0, 0); break; }
-        memcpy(nn, p, a); nn[a] = 0; memcpy(on, eq + 1, b); on[b] = 0;
+        memcpy(nn, p, a); nn[a] = 0; memcpy(on, o, b); on[b] = 0;
         int r = d64_rename(u->disk, on, nn);
         if (r) err_from(u, r);
         break; }

@@ -212,6 +212,29 @@ class VDriveTests(unittest.TestCase):
         self.assertEqual(self.disk.entries(), [])
         self.valid()
 
+    def test_drive_prefixes_on_every_name(self):
+        """the 1541 manual's forms, which BASIC 7's RENAME / SCRATCH send: R0:NEW=0:OLD, S0:A,0:B"""
+        self.vd.listen(8, 0x6F, b"R0:RENAMED=0:SEED")
+        self.assertEqual(self.vd.status(), "00, OK,00,00\r")
+        self.assertEqual(self.vd.load(8, b"RENAMED"), self.seed[b"SEED"])
+        self.vd.listen(8, 0x6F, b"C0:TWO=0:RENAMED")
+        self.vd.listen(8, 0x6F, b"S0:RENAMED,0:TWO")
+        self.assertEqual(self.vd.status(), "01,FILES SCRATCHED,02,00\r")
+        self.valid()
+
+    def test_concat_into_the_first_source(self):
+        """C0:A=0:A,0:B appends B to A (BASIC 7's CONCAT; a true-drive 1541 in VICE does the same); another existing name is 63"""
+        self.vd.save(8, b"A", b"\x01\x08" + b"a" * 300)
+        self.vd.save(8, b"B", b"\x01\x08" + b"b" * 600)
+        self.vd.listen(8, 0x6F, b"C0:SEED=0:A,0:B")
+        self.assertEqual(self.vd.status(), "63,FILE EXISTS,00,00\r")
+        n = len(self.disk.entries())
+        self.vd.listen(8, 0x6F, b"C0:A=0:A,0:B")
+        self.assertEqual(self.vd.status(), "00, OK,00,00\r")
+        self.assertEqual(self.vd.load(8, b"A"), b"\x01\x08" + b"a" * 300 + b"\x01\x08" + b"b" * 600)
+        self.assertEqual(len(self.disk.entries()), n, "no new entry")
+        self.valid()
+
     def test_copy_command(self):
         self.vd.listen(8, 0x6F, b"C:DUP=SEED")
         self.assertEqual(self.vd.status(), "00, OK,00,00\r")

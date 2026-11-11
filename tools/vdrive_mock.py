@@ -9,11 +9,16 @@ stops the CPU, this script plays the Teensy (state machine for IEC devices
 8/9 backed by a tiny in-memory 'disk'), writes DATA/STAT/ST and resumes.
 usage: vdrive_mock.py KERNAL.bin [basic|scan|variant]
        vdrive_mock.py STOCK.bin agent|agentscan VDAGENT.prg
+       vdrive_mock.py - agent128|agent128scan VDAGENT128.prg
   basic    the whole feature test, no physical drives (the SD drive ends up as device 8 after the start-up scan)
   scan     physical 1541s at 8 and 10: the SD and USB drives must end up at 9 and 11
   agent    the plain-TeensyROM build (docs/DESIGN.md 52, 53) on the stock KERNAL: the agent (vector/vdagent.s) served from GeoRAM's
            page at $DE00 (the stand-in for the Teensy's IO1 page), all logic in d64/vdrive_vec.c (VVec); SYS to its INSTALL entry
   agentscan  the same with physical 1541s at 8 and 10: chaining to the real drives, copies between a real drive and ours
+  agent128 the agent on a C128 in 128 mode (docs/DESIGN.md 56): x128 with its own ROMs (BASIC 7.0), the agent in GeoRAM as above,
+           the mailbox in RAM at $3F00 / $3F80 (below $4000: RAM in the system bank) and mirrored into both RAM banks, since the
+           engine switches bank 1 in to reach BASIC 7's strings and BLOAD / BSAVE data (on the Teensy both are in I/O, seen in every bank)
+  agent128scan  the same with a physical 1541 at 8
 """
 import socket, struct, subprocess, sys, time, threading, queue
 
@@ -71,6 +76,7 @@ class Mon:
                 self.s = socket.create_connection(("127.0.0.1", port)); break
             except OSError: time.sleep(0.1)
         self.rid = 0
+        self.screen_bank = 0              # x128: RAM bank 0 (the CPU may be stopped with bank 1 switched in)
         self.ev = queue.Queue()
         self.resp = {}
         self.cv = threading.Condition()
@@ -98,16 +104,23 @@ class Mon:
             self.cv.wait_for(lambda: self.rid in self.resp, 10)
             return self.resp.pop(self.rid)
 
-    def read(self, a, n):
-        _, _, b = self.req(0x01, struct.pack("<BHHBH", 0, a, a + n - 1, 0, 0))
+    def read(self, a, n, bank=0):     # bank: a VICE bank id (0 = what the CPU sees now; see banks())
+        _, _, b = self.req(0x01, struct.pack("<BHHBH", 0, a, a + n - 1, 0, bank))
         return b[2:2 + n]
-    def write(self, a, data):
-        self.req(0x02, struct.pack("<BHHBH", 0, a, a + len(data) - 1, 0, 0) + bytes(data))
+    def write(self, a, data, bank=0):
+        self.req(0x02, struct.pack("<BHHBH", 0, a, a + len(data) - 1, 0, bank) + bytes(data))
+    def banks(self):
+        _, _, b = self.req(0x82)
+        out, i = {}, 2
+        for _ in range(struct.unpack_from("<H", b, 0)[0]):
+            ln, bid, nl = b[i], struct.unpack_from("<H", b, i + 1)[0], b[i + 3]
+            out[b[i + 4:i + 4 + nl].decode()] = bid; i += 1 + ln
+        return out
     def go(self): self.req(0xAA)
     def jump(self, pc): self.req(0x32, struct.pack("<BHBBH", 0, 1, 3, 3, pc))   # registers set: PC (id 3)
     def keys(self, text): self.req(0x72, bytes([len(text)]) + text.encode("latin1"))
     def screen(self):
-        raw = self.read(0x0400, 1000)
+        raw = self.read(0x0400, 1000, self.screen_bank)
         out = []
         for r in range(25):
             row = ""
@@ -118,13 +131,19 @@ class Mon:
         return out
 
 def main(kernal, scenario="basic", vecprg=None):
-    agent = scenario in ("agent", "agentscan")
-    scan = scenario in ("scan", "agentscan")
+    global MBX, WIN, CMD, ARG, DATA, STAT, ST, LEN, DEV0, DEV1
+    c128 = scenario in ("agent128", "agent128scan")
+    agent = scenario in ("agent", "agentscan") or c128
+    scan = scenario in ("scan", "agentscan", "agent128scan")
+    if c128:       # below $4000: RAM bank 0 in the system bank, where BASIC 7 calls the KERNAL from (see the docstring)
+        MBX, WIN = 0x3F00, 0x3F80
+        CMD, ARG, DATA, STAT, ST, LEN, DEV0, DEV1 = (MBX + i for i in range(8))
     workdir = pathlib.Path(tempfile.mkdtemp())
     drives = ["-drive8type", "0"]
     if scan:       # real 1541s at 8 and 10, each with a blank disk so that a LOAD gets a quick FILE NOT FOUND instead of a long "no disk" wait
         for n in (8, 10):
             subprocess.run(["c1541", "-format", "real%d,r%d" % (n, n), "d64", str(workdir / ("real%d.d64" % n))], check=True, capture_output=True)
+            if c128: break
         rnd = random.Random(5)
         real = {"rprg": b"\x00\x40" + bytes(rnd.randrange(256) for _ in range(5000)),         # a PRG of 20 sectors
                 "rseq": bytes([13, 0, 10, 255, 34, 44, 58] * 400),                                 # SEQ with CR, NUL, quotes, commas
@@ -137,12 +156,14 @@ def main(kernal, scenario="basic", vecprg=None):
                            check=True, capture_output=True)
         drives = ["-drive8type", "1541", "-drive8truedrive", "-drive9type", "0", "-drive10type", "1541", "-drive10truedrive", "-drive11type", "0",
                   "-8", str(workdir / "real8.d64"), "-10", str(workdir / "real10.d64")]
+        if c128: drives = ["-drive8type", "1541", "-drive8truedrive", "-drive9type", "0", "-drive10type", "0", "-8", str(workdir / "real8.d64")]
     # the banner bytes as VD_BannerUnits (firmware/IOH_VDrive.c) writes them into the served image: SD automatic, USB automatic
     # in `scan` (a stick is attached there) and absent in `basic`
-    kimg = bytearray(pathlib.Path(kernal).read_bytes())
-    tag = kimg.find(b"VDUNITS:")
-    if tag >= 0: kimg[tag + 8:tag + 10] = bytes([0xFF, 0xFF if scan else 0xFE])
-    kernal = str(workdir / "kernal.bin"); pathlib.Path(kernal).write_bytes(kimg)
+    if not c128:
+        kimg = bytearray(pathlib.Path(kernal).read_bytes())
+        tag = kimg.find(b"VDUNITS:")
+        if tag >= 0: kimg[tag + 8:tag + 10] = bytes([0xFF, 0xFF if scan else 0xFE])
+        kernal = str(workdir / "kernal.bin"); pathlib.Path(kernal).write_bytes(kimg)
     # -config + -default: start from VICE's defaults, not the user's vicerc (another VICE session saved e.g. Drive8Type=1581 with
     # TrapDevice8 there, which put a virtual drive at 8 and moved the SD drive to 9); a blank config file here also catches SaveResourcesOnExit
     (workdir / "vicerc").write_text("")
@@ -153,7 +174,8 @@ def main(kernal, scenario="basic", vecprg=None):
         gimg = bytearray(512 * 1024); gimg[at:at + len(prg) - 2] = prg[2:]
         (workdir / "geo.bin").write_bytes(gimg)
         geo = ["-georam", "-georamsize", "512", "-georamimage", str(workdir / "geo.bin"), "+georamimagerw"]
-    vice = subprocess.Popen(["x64sc", "-config", str(workdir / "vicerc"), "-default", "-warp", *drives, *geo, "-kernal", kernal,
+    machine = ["x128"] if c128 else ["x64sc", "-kernal", kernal]                    # x128: its own ROMs (VICE's C128 data folder)
+    vice = subprocess.Popen([machine[0], "-config", str(workdir / "vicerc"), "-default", "-warp", *drives, *geo, *machine[1:],
                              "-binarymonitor", "-binarymonitoraddress", "ip4://127.0.0.1:%d" % MON_PORT],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
@@ -162,6 +184,12 @@ def main(kernal, scenario="basic", vecprg=None):
         bad = suite_files.bad_image(sdroot / "vdbad.d64")                # VDSUITE's card files
         (sdroot / "vdplain.prg").write_bytes(suite_files.plain_prg())
         image, big = make_image(workdir, bad)
+        if c128:       # a C128 boot sector on 1/0 (and taken in the BAM): "CBM", no extra sectors, the name, no file, code that marks $0C00
+            image = bytearray(image)
+            image[0:256] = (b"CBM" + bytes(4) + b"VDBOOT\x00" + b"\x00" + bytes([0xA9, 0x5A, 0x8D, 0x00, 0x0C, 0x60])).ljust(256, b"\x00")
+            bam = 0x16500 + 4
+            image[bam] -= 1; image[bam + 1] &= 0xFE
+            image = bytes(image)
         disk = Disk(image)
         io = VIO()
         # a fake SD card for CD:/mount/renumber tests (cdtest.bas, renum.bas, vdsuite.bas)
@@ -238,7 +266,12 @@ def main(kernal, scenario="basic", vecprg=None):
         else:
             io.attach(1, None, present=False)      # the USB drive is not present in the mock
         io.arm_scan()                              # the first IEC transaction triggers the bus scan, like on the TR+
-        vv = VVec(io, struct.unpack_from("<H", pathlib.Path(vecprg).read_bytes(), 0)[0]) if agent else None
+        vv = VVec(io, struct.unpack_from("<H", pathlib.Path(vecprg).read_bytes(), 0)[0], VVec.C128 if c128 else VVec.C64) if agent else None
+        mirror = []
+        if c128:       # the mailbox in both RAM banks (the engine leaves bank 1 switched in while the agent sends a PEEK's data)
+            bk = m.banks(); mirror = [bk["ram00"], bk["ram01"]]; m.screen_bank = bk["ram00"]
+        def mw(a, data):
+            for b in mirror or [0]: m.write(a, data, b)
         log = []
         last_devs = [None]
         fault = {"at": 0, "n": 0}               # fault injection: answer NOT_MINE to the Nth FLOAD_BLK / FLOAD_DMA of a run
@@ -288,15 +321,15 @@ def main(kernal, scenario="basic", vecprg=None):
                         io.w(R_CMD, c)
                         assert vv.poll() == 1
                         log.append((c, a, 0, 0, False))
-                        m.write(WIN, io.win_read(WIN_SIZE))
+                        mw(WIN, io.win_read(WIN_SIZE))
                         devs = (io.r(R_DEV0), io.r(R_DEV1))
-                        if devs != last_devs[0]: m.write(DEV0, list(devs)); last_devs[0] = devs
-                        m.write(STAT, [io.r(3)])
-                        m.write(CMD, [0])
+                        if devs != last_devs[0]: mw(DEV0, list(devs)); last_devs[0] = devs
+                        mw(STAT, [io.r(3)])
+                        mw(CMD, [0])
                     m.go()
 
-        m.write(MBX, [0] * 5)
-        m.write(MBX + 9, [0xD6, 0x64])          # the ID registers (VIO_ID0 / VIO_ID1): the KERNAL's reset hook asks for the TR menu
+        mw(MBX, [0] * 5)
+        mw(MBX + 9, [0xD6, 0x64])               # the ID registers (VIO_ID0 / VIO_ID1): the KERNAL's reset hook asks for the TR menu
         cp = m.req(0x12, struct.pack("<HHBBBB", CMD, CMD, 1, 1, 2, 0))  # store checkpoint on CMD
         cp_num = struct.unpack_from("<I", cp[2], 0)[0]
         time.sleep(0.5); service(1.0)       # boot
@@ -325,6 +358,10 @@ def main(kernal, scenario="basic", vecprg=None):
                   i is not None and "SEARCHING FOR *" in scr[i:] and "RUN" in scr[i:] and "HI" in scr[i:])
             check("SHIFT+RUN: text colour ($0286) untouched", m.read(0x0286, 1) == col)
 
+        if c128:
+            good = agent128_tests(m, run, check, service, log, disk, big, workdir, pathlib.Path(vecprg).read_bytes(), real if scan else None,
+                                  mirror)
+            return 0 if good and ok else 1
         if agent:
             good = agent_tests(m, run, check, service, log, disk, big, workdir, pathlib.Path(vecprg).read_bytes(), real if scan else None)
             return 0 if good and ok else 1
@@ -875,6 +912,167 @@ def agent_tests(m, run, check, service, log, disk, big, workdir, vec, real):
     expect('LIST\r', '0 "MOCKDISK')
 
     # (no dead-mailbox test: the agent has no time-out, since while its code is visible the handler serving it runs; DESIGN.md 53)
+    if not res["ok"]: print("\n".join(m.screen()))
+    print("mailbox calls:", len(log))
+    return res["ok"]
+
+
+def agent128_tests(m, run, check, service, log, disk, big, workdir, vec, real, mirror):
+    """The agent on a C128 in 128 mode (docs/DESIGN.md 56): x128's own KERNAL and BASIC 7.0, the agent in GeoRAM, the engine in its
+    C128 profile. BASIC 7's disk statements (DIRECTORY, DLOAD, DSAVE, DVERIFY, BLOAD/BSAVE in bank 1, DOPEN/DCLOSE, DS$, SCRATCH,
+    RENAME, COPY, COLLECT, BOOT) all go through the KERNAL's vectors or not: this finds out. `real`: a true-drive 1541 at 8."""
+    res = {"ok": True}
+    ram0, ram1 = mirror
+    def chk(label, cond):
+        check(label, cond); res["ok"] = res["ok"] and bool(cond)
+    def expect(keys, want=None, absent=None, wait=1.5):
+        n = len(log); m.keys(keys); service(wait)
+        scr = m.screen()
+        good = (want is None or any(want in r for r in scr)) and not (absent and any(absent in r for r in scr))
+        print(("PASS" if good else "FAIL"), repr(keys), "| expect", want)
+        if not good: print("\n".join(scr))
+        res["ok"] = res["ok"] and good
+        return log[n:]
+    def typed(lines):                     # a program typed in line by line (the keyboard buffer is 10 keys: feed one line at a time)
+        expect('NEW\r')
+        for ln in lines: expect(ln + '\r')
+    def file_on(d, name):
+        img = workdir / "vec_after.d64"; img.write_bytes(d.dump())
+        out = workdir / "vec.out"; out.unlink(missing_ok=True)
+        subprocess.run(["c1541", "-attach", str(img), "-read", name, str(out)], capture_output=True)
+        return out.read_bytes() if out.exists() else b""
+
+    for _ in range(20):                   # x128's cold start
+        service(0.5, limit=1)
+        if any("READY." in r for r in m.screen()): break
+    D = 9 if real else 8
+    start = struct.unpack_from("<H", vec, 0)[0]
+    sys_at = start + 12
+    expect('LOAD"$",%d\r' % D, "DEVICE NOT PRESENT")
+    chk("not installed: BASIC 7's own KERNAL, nothing reached the mailbox", not log)
+    expect('SYS%d,165\r' % sys_at, "READY.")                         # A = $A5: as the boot ROM's loader, against the ROM's tables
+    v_load = bytes(m.read(0x0330, 2, ram0))
+    chk("launch INSTALL (A=$A5, the C128 ROM's RESTOR and BASIC 7 tables): ILOAD points into the agent ($%04X)" % struct.unpack("<H", v_load)[0],
+        start <= struct.unpack("<H", v_load)[0] < start + len(vec) - 2)
+    expect('SYS%d\r' % sys_at, "READY.")
+    expect('DIRECTORY U%d\r' % D, '0 "MOCKDISK')
+    want_devs = bytes([9, 10]) if real else bytes([8, 0])            # scan: the 1541 holds 8, the SD unit takes 9, the USB stick 10
+    chk("the first OPEN ran the bus scan: DEV0/DEV1 %r" % bytes(m.read(DEV0, 2, ram0)), bytes(m.read(DEV0, 2, ram0)) == want_devs)
+    expect('LOAD"$",%d\r' % D, "SEARCHING FOR $")
+    expect('LIST\r', '0 "MOCKDISK')
+
+    if real:
+        typed(['10 OPEN1,8,15:INPUT#1,A,B$:CLOSE1:OPEN2,9,15,"UI":INPUT#2,C,D$:CLOSE2', '20 PRINT A;B$;"/";C;D$'])
+        expect('RUN\r', "CBM DOS V2.6 1541/ 73 TRVDRIVE", wait=4)
+        expect('LOAD"X",8\r', "FILE NOT FOUND", absent="DEVICE NOT PRESENT", wait=4)
+        expect('LOAD"X",10\r', "FILE NOT FOUND", absent="DEVICE NOT PRESENT")   # the USB unit
+        expect('LOAD"X",11\r', "DEVICE NOT PRESENT")
+        expect('NEW\r')
+        m.keys('\x93BLOAD"RPRG",U8,B0,P16384\r')
+        for _ in range(60):
+            service(1.0, limit=1)
+            if any("READY." in r for r in m.screen()): break
+        chk("RPRG (5000 bytes) from the real 1541 through the chained stock LOAD", bytes(m.read(0x4000, 5000, ram0)) == real["rprg"][2:])
+        def copy(src, sname, dst, dname):
+            typed(['10 OPEN2,%d,2,"%s,S,R":OPEN3,%d,3,"%s,S,W"' % (src, sname, dst, dname),
+                   '20 GET#2,A$:S=ST:IFA$=""THENA$=CHR$(0)', '30 PRINT#3,A$;:IFS=0THEN20', '40 CLOSE2:CLOSE3:PRINT"COPIED";S'])
+            m.keys('\x93RUN\r')                       # a clear screen: the last copy's COPIED must not count
+            for _ in range(60):
+                service(1.0, limit=3)
+                if any("COPIED" in r for r in m.screen()): break
+            chk("BASIC copy %s,%d -> %s,%d ends at EOI" % (sname, src, dname, dst), any("COPIED 64" in r for r in m.screen()))
+        copy(8, "RSML", 9, "CP")
+        chk("real -> ours: CP == RSML", file_on(disk, "cp,s") == real["rsml"])
+        copy(9, "CP", 8, "BACK")
+        copy(8, "BACK", 9, "CP2")
+        chk("ours -> real -> ours: CP2 == RSML", file_on(disk, "cp2,s") == real["rsml"])
+
+    # --- LOAD / VERIFY: bank 0, the C128's own messages ---
+    expect('NEW\r')
+    expect('DLOAD"TEST",U%d\r' % D, "LOADING")
+    expect('LIST\r', '10 PRINT"HI"')
+    expect('RUN\r', 'HI')
+    expect('LOAD"NOPE",%d\r' % D, "FILE NOT FOUND")
+    expect('PRINT DS;DS$\r', "62 62,FILE NOT FOUND,00,00")
+    n0 = len(log)
+    expect('LOAD"BIG",%d,1\r' % D, "READY.")
+    chk("BIG (6000 bytes) loaded to $2000 in bank 0 intact", bytes(m.read(0x2000, len(big) - 2, ram0)) == big[2:])
+    chk("LOAD in %d agent round trips" % len(log[n0:]), len(log[n0:]) < 90)
+    expect('VERIFY"BIG",%d,1\r' % D, "OK")
+    m.write(0x2000 + 3000, [m.read(0x2000 + 3000, 1, ram0)[0] ^ 0xFF], ram0)
+    expect('VERIFY"BIG",%d,1\r' % D, "VERIFY ERROR")
+    # --- bank 1: BLOAD / BSAVE, names in string variables (BASIC 7 keeps strings in bank 1) ---
+    expect('NEW\r')
+    n0 = len(log)
+    expect('N$="BIG":BLOAD(N$),U%d,B1,P16384\r' % D, "READY.")
+    chk("BLOAD into bank 1 at $4000: 6000 bytes intact", bytes(m.read(0x4000, len(big) - 2, ram1)) == big[2:])
+    chk("BLOAD into bank 1 in %d round trips (108-byte POKEs between two $FF00 POKEs)" % len(log[n0:]), len(log[n0:]) < 100)
+    chk("bank 0 at $4000 left alone (BASIC 7's ROM there in the system bank)", bytes(m.read(0x4000, 64, ram0)) != big[2:66])
+    expect('BSAVE"B1COPY",U%d,B1,P16384 TO P22000\r' % D, "READY.")
+    chk("BSAVE from bank 1: the file is the bytes there", file_on(disk, "b1copy") == b"\x00\x40" + big[2:2 + 22000 - 16384])
+    expect('NEW\r')
+    expect('N$="":FORI=1TO130:N$=N$+"X":NEXT:LOAD N$,%d\r' % D, "FILE NOT FOUND")   # a long name from bank 1, PEEKed in pieces
+    # --- DSAVE / DVERIFY / DOPEN / DCLOSE / DS$ ---
+    typed(['10 PRINT"SAVED"'])
+    new = expect('DSAVE"SAVEME",U%d\r' % D, "SAVING")
+    chk("DSAVE in %d agent round trips" % len(new), len(new) < 25)
+    expect('DVERIFY"SAVEME",U%d\r' % D, "OK")
+    expect('NEW\r'); expect('DLOAD"SAVEME",U%d\r' % D, "READY."); expect('RUN\r', "SAVED")
+    expect('DSAVE"SAVEME",U%d\r' % D)
+    expect('PRINT DS$\r', "63,FILE EXISTS")
+    expect('DSAVE"@SAVEME",U%d\r' % D)
+    expect('PRINT DS$\r', "00, OK,00,00")
+    typed(['10 DOPEN#2,"DATA",U%d,W:PRINT#2,"HELLO":PRINT#2,"WORLD":DCLOSE#2' % D,
+           '20 DOPEN#3,"DATA",U%d:INPUT#3,A$,B$:DCLOSE#3:PRINT"GOT:";A$;B$' % D])
+    expect('RUN\r', "GOT:HELLOWORLD", wait=3)
+    chk("DOPEN/PRINT#/DCLOSE wrote a SEQ file", file_on(disk, "data,s") == b"HELLO\rWORLD\r")
+    typed(['10 APPEND#4,"DATA",U%d:PRINT#4,"MORE":DCLOSE#4:PRINT DS' % D])
+    expect('RUN\r', " 0", wait=3)
+    data = b"HELLO\rWORLD\rMORE\r"
+    chk("APPEND# added to it (,A)", file_on(disk, "data,s") == data)
+    typed(['10 OPEN2,%d,2,"NUMTST,S,W":PRINT#2,1;"A";2:PRINT#2,12;34:CLOSE2:PRINT"DONE"' % D])
+    expect('RUN\r', "DONE", absent="SYNTAX")
+    # --- the DOS statements (through the command channel) ---
+    typed(['10 COPY"DATA" TO "DATA2",U%d:PRINT DS' % D, '20 RENAME"DATA2" TO "DATA3",U%d:PRINT DS' % D,
+           '30 CONCAT"DATA" TO "DATA3",U%d:PRINT DS' % D, '40 SCRATCH"NUMTST",U%d:PRINT DS' % D, '50 PRINT"DOSDONE"'])
+    expect('RUN\r', "DOSDONE", wait=4)
+    chk("COPY, RENAME, CONCAT, SCRATCH (BASIC 7 sends 0: on every name): DATA3 = DATA twice, NUMTST gone",
+        file_on(disk, "data3,s") == data * 2 and file_on(disk, "numtst,s") == b"")
+    expect('COLLECT U%d\r' % D, "READY.", wait=3)
+    expect('PRINT DS$\r', "00, OK")
+    expect('CATALOG U%d\r' % D, '"DATA3"')
+    # --- FAST (2 MHz): VICE only; on hardware the IO timing at 2 MHz is the open question (DESIGN.md 56) ---
+    expect('FAST:DIRECTORY U%d:SLOW\r' % D, '0 "MOCKDISK')
+    # --- BOOT: the KERNAL's boot call reads 1/0 through the drive and runs its code ---
+    m.write(0x0C00, [0], ram0)
+    expect('BOOT U%d\r' % D, "BOOTING VDBOOT", wait=3)
+    chk("BOOT ran the boot sector's code ($0C00 = $5A)", m.read(0x0C00, 1, ram0) == b"\x5a")
+    expect('NEW\r')
+
+    # --- RUN/STOP+RESTORE: the NMI routine's STOP path ($FA53: RESTOR, IOINIT, CINT, JMP ($0A00)) in the system bank, as its
+    #     trampoline at $FF05 leaves it. RESTOR leaves $0A00, ours, alone: hooked again on the way to BASIC 7's warm start ---
+    m.write(0xFF00, [0]); m.jump(0xFA53); service(1.5, limit=15)
+    chk("RUN/STOP+RESTORE: READY. and ILOAD is ours again (%r)" % bytes(m.read(0x0330, 2, ram0)),
+        any("READY." in r for r in m.screen()) and bytes(m.read(0x0330, 2, ram0)) == v_load)
+    expect('DIRECTORY U%d\r' % D, '0 "MOCKDISK')
+    # --- a reset (the KERNAL's reset routine; VICE's own reset command leaves its monitor stopping on every request): BASIC 7's cold
+    #     start sets $0A00 back to its warm start, so the drives are gone until SYS ---
+    m.jump(0xE000)
+    for _ in range(20):
+        service(0.5, limit=1)
+        if any("BYTES FREE" in r for r in m.screen()) and any("READY." in r for r in m.screen()): break
+    chk("reset: READY., the stock vectors, $0A00 = BASIC 7's warm start (%r)" % bytes(m.read(0x0A00, 2, ram0)),
+        any("READY." in r for r in m.screen()) and bytes(m.read(0x0330, 2, ram0)) != v_load and bytes(m.read(0x0A00, 2, ram0)) == b"\x03\x40")
+    n0 = len(log)
+    expect('LOAD"$",%d\r' % D, "DEVICE NOT PRESENT")
+    chk("reset: nothing reached the mailbox", len(log) == n0)
+    expect('SYS%d\r' % sys_at, "READY.")
+    expect('DIRECTORY U%d\r' % D, '0 "MOCKDISK')
+    # --- HEADER (N:, in a program: no ARE YOU SURE?) last, as it empties the image ---
+    typed(['10 HEADER"FRESH",I01,U%d:PRINT"HD";DS' % D])
+    expect('RUN\r', "HD 0", wait=3)
+    expect('DIRECTORY U%d\r' % D, '0 "FRESH           " 01')
+
     if not res["ok"]: print("\n".join(m.screen()))
     print("mailbox calls:", len(log))
     return res["ok"]

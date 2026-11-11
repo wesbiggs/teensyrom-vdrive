@@ -8,6 +8,9 @@
 //   IO2 $DF00-$DF0A -> the mailbox registers (as IO1 $DE10 in the KERNAL build), $DF80-$DFFF -> the 128-byte window
 // The menu's PRG loader calls the agent's INSTALL entry once the program is in memory (PRGLoadStartReloc.s); after a reset
 // SYS 56852 hooks the vectors again.
+// A C128 in 128 mode (docs/DESIGN.md 56): a launch through upstream's C128Prg.ino runs any VDrive Special IO as this one (the MMU
+// never maps a cartridge's KERNAL in there); the boot ROM's loader (C128PrgBoot.asm) calls INSTALL, and the engine tells the
+// C128's KERNAL from a C64's there by itself.
 // Included from IOHandlers.h after IOH_VDrive.c (unity build, compiled as C++).
 
 #include "../vdrive/vdrive_vec.c"
@@ -47,6 +50,19 @@ FLASHMEM bool VDrive_AgentPreStart(uint8_t NextIOHndlr)
    if (VDriveSwift_Remap(NextIOHndlr) != IOH_VDriveAgent) return false;
    VDrive_PreStart(true);
    return true;
+}
+
+// Called from LaunchC128BasicPrg() (C128Prg.ino) once the launch into C128 mode is certain, while the menu still runs: with a
+// VDrive Special IO as the default, this launch runs the agent (the KERNAL handlers serve a C64 KERNAL, which the MMU never maps
+// in 128 mode; that also keeps their bus hook off the C128's own ROM), after the drive's PreStart, as KERNALPreStart() does for a
+// C64 launch. Overrides the Special IO for this launch only, as upstream's own line above the call does for Kernal Replace:
+// InitHndlr_TeensyROM() reads the default back from EEPROM on the next return to the menu.
+FLASHMEM void VDrive_C128Launch()
+{
+   if (!VD_IsHandler(VDriveSwift_Remap(IO1[rwRegNextIOHndlr]))) return;
+   IO1[rwRegNextIOHndlr] = IOH_VDriveAgent;
+   VDrive_PreStart(true);
+   Serial.println("VDrive: C128 mode, the agent");
 }
 
 #define VD_AgentOfs (VD_AgentBase & 0xFF)

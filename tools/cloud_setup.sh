@@ -24,16 +24,18 @@ if [ -n "$need" ]; then
 fi
 python3 -c "import py65" 2>/dev/null || pip install -q py65 2>/dev/null || pip install -q --break-system-packages py65
 
-# C128: only its two C64-mode KERNALs, for `make test-variants` (the ROMs the firmware patches in memory)
-if [ ! -f "$ROMDIR/C64/kernal-901227-03.bin" ] || [ ! -f "$ROMDIR/DRIVES/dos1541ii-251968-03.bin" ] || [ ! -f "$ROMDIR/C128/kernal64-325182-01.bin" ]; then
+# C128: the whole folder, for `x128` (the agent in 128 mode, `make test-agent`) and its two C64-mode KERNALs for `make test-variants`
+if [ ! -f "$ROMDIR/C64/kernal-901227-03.bin" ] || [ ! -f "$ROMDIR/DRIVES/dos1541ii-251968-03.bin" ] || [ ! -f "$ROMDIR/C128/kernal-318020-05.bin" ]; then
    T="$(mktemp -d)"
    git clone -q --depth 1 --filter=blob:none --sparse https://github.com/VICE-Team/svn-mirror.git "$T/vice"
    (cd "$T/vice" && git sparse-checkout set vice/data/C64 vice/data/DRIVES vice/data/C128)
    mkdir -p "$ROMDIR/C128"
    cp -r "$T/vice/vice/data/C64" "$T/vice/vice/data/DRIVES" "$ROMDIR/"
-   cp "$T/vice/vice/data/C128/kernal64-325179-01.bin" "$T/vice/vice/data/C128/kernal64-325182-01.bin" "$ROMDIR/C128/"
+   cp "$T/vice/vice/data/C128/"* "$ROMDIR/C128/"
    rm -rf "$T"
 fi
+# Ubuntu's x128 (VICE 3.7) asks for chargen-325167-01.bin, which the mirror now ships as -02
+[ -f "$ROMDIR/C128/chargen-325167-01.bin" ] || [ ! -f "$ROMDIR/C128/chargen-325167-02.bin" ] || ln -s chargen-325167-02.bin "$ROMDIR/C128/chargen-325167-01.bin"
 
 # GCC's -Werror trips on existing glue code in tests/fw_host (-Wextra enum/format-truncation); the owner builds with clang (macOS)
 mkdir -p "$SHIM"

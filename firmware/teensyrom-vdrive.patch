@@ -1,3 +1,27 @@
+diff --git a/Source/C64/C128PrgBoot/C128PrgBoot.asm b/Source/C64/C128PrgBoot/C128PrgBoot.asm
+index 3ad4ded..7a0ba84 100644
+--- a/Source/C64/C128PrgBoot/C128PrgBoot.asm
++++ b/Source/C64/C128PrgBoot/C128PrgBoot.asm
+@@ -91,6 +91,19 @@ loaded  lda prgEnd
+ 
+         lda #SYSTEM_BANK
+         sta MMU_CR
++        ; VDrive agent (teensyrom-vdrive, docs/DESIGN.md 56): let it hook the KERNAL's vectors now that the program is in memory
++        lda $df09
++        cmp #$d6
++        bne +
++        lda $df0a
++        cmp #$64
++        bne +
++        lda $de14
++        cmp #$20
++        bne +
++        lda #$a5
++        jsr $de14
+++
+         ldx #runKeysEnd - runKeys - 1
+ -       lda runKeys,x
+         sta KEYBOARD_BUFFER,x
 diff --git a/Source/C64/MainMenuCRT/source/MainMenu.asm b/Source/C64/MainMenuCRT/source/MainMenu.asm
 index fca3660..8dcbc2b 100644
 --- a/Source/C64/MainMenuCRT/source/MainMenu.asm
@@ -90,6 +114,20 @@ index 53998d0..3e33320 100644
  smcSkipPrintRunning:
     lda #0    ;set to non-zero to skip printing MsgRunning
     bne +
+diff --git a/Source/Teensy/C128Prg.ino b/Source/Teensy/C128Prg.ino
+index 0e90f4c..b4b9836 100644
+--- a/Source/Teensy/C128Prg.ino
++++ b/Source/Teensy/C128Prg.ino
+@@ -82,6 +82,9 @@ FLASHMEM void LaunchC128BasicPrg(uint8_t *Prg, uint32_t Size)
+       SendMsgPrintfln(PSTR("Too big for C128 BASIC"));
+       return;
+    }
++#ifdef VDrive_Agent
++   VDrive_C128Launch(); //teensyrom-vdrive: with a VDrive Special IO this launch runs the agent (IOH_VDriveAgent.c)
++#endif
+    SendMsgPrintfln(PSTR("Starting C128 mode"));
+    BootComplete = true;
+    doReset = true;
 diff --git a/Source/Teensy/IOHandlers.ino b/Source/Teensy/IOHandlers.ino
 index 2055a5d..826f854 100644
 --- a/Source/Teensy/IOHandlers.ino
@@ -145,7 +183,7 @@ index 75cea2d..465ffc3 100644
       rtFilePrg  , IOH_TR_BASIC     , (char*)"BASIC with TeensyROM Commands"    , (uint8_t*)TRCBC_prg                  , sizeof(TRCBC_prg) ,
       rtFileCrt  , IOH_None         , (char*)"Super Expander 64"                , (uint8_t*)super_expander_64_crt      , sizeof(super_expander_64_crt) ,
 diff --git a/Source/Teensy/MinimalBoot/Common/Common_Defs.h b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
-index 2c5d19a..2cac2e9 100644
+index 2c5d19a..c21e4e2 100644
 --- a/Source/Teensy/MinimalBoot/Common/Common_Defs.h
 +++ b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
 @@ -14,9 +14,13 @@
@@ -167,7 +205,7 @@ index 2c5d19a..2cac2e9 100644
  
  
 -#define TRVersion              "0.9"    //*VERSION*
-+#define TRVersion              "0.9.0.61"    //*VERSION*  (stock 0.9 + VDrive rev 61)
++#define TRVersion              "0.9.0.62"    //*VERSION*  (stock 0.9 + VDrive rev 62)
  // Special builds: tools/build-firmware.mjs --tag <name> defines TRVersionSuffix as "-<name>",
  // and a build with uncommitted edits to the image sources adds "*". Arduino IDE builds have
  // none. Leave TRVersion to releases: it names the hex and the browser's User-Agent.
@@ -1813,10 +1851,10 @@ index 0000000..2f3f438
 +}
 diff --git a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDriveAgent.c b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDriveAgent.c
 new file mode 100644
-index 0000000..c000d62
+index 0000000..21baf92
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDriveAgent.c
-@@ -0,0 +1,100 @@
+@@ -0,0 +1,116 @@
 +// "VDrive" Special IO for the plain TeensyROM (and "VDrive Agent" on the TR+): the virtual drive without Kernal Replace
 +// (docs/DESIGN.md 52-53). The C64 keeps its own KERNAL; its RAM vectors point into a 246-byte 6502 agent (vector/vdagent.s,
 +// vd_agent.h) that this handler serves from IO1, and the agent reports every call to the vector engine (d64/vdrive_vec.c),
@@ -1827,6 +1865,9 @@ index 0000000..c000d62
 +//   IO2 $DF00-$DF0A -> the mailbox registers (as IO1 $DE10 in the KERNAL build), $DF80-$DFFF -> the 128-byte window
 +// The menu's PRG loader calls the agent's INSTALL entry once the program is in memory (PRGLoadStartReloc.s); after a reset
 +// SYS 56852 hooks the vectors again.
++// A C128 in 128 mode (docs/DESIGN.md 56): a launch through upstream's C128Prg.ino runs any VDrive Special IO as this one (the MMU
++// never maps a cartridge's KERNAL in there); the boot ROM's loader (C128PrgBoot.asm) calls INSTALL, and the engine tells the
++// C128's KERNAL from a C64's there by itself.
 +// Included from IOHandlers.h after IOH_VDrive.c (unity build, compiled as C++).
 +
 +#include "../vdrive/vdrive_vec.c"
@@ -1866,6 +1907,19 @@ index 0000000..c000d62
 +   if (VDriveSwift_Remap(NextIOHndlr) != IOH_VDriveAgent) return false;
 +   VDrive_PreStart(true);
 +   return true;
++}
++
++// Called from LaunchC128BasicPrg() (C128Prg.ino) once the launch into C128 mode is certain, while the menu still runs: with a
++// VDrive Special IO as the default, this launch runs the agent (the KERNAL handlers serve a C64 KERNAL, which the MMU never maps
++// in 128 mode; that also keeps their bus hook off the C128's own ROM), after the drive's PreStart, as KERNALPreStart() does for a
++// C64 launch. Overrides the Special IO for this launch only, as upstream's own line above the call does for Kernal Replace:
++// InitHndlr_TeensyROM() reads the default back from EEPROM on the next return to the menu.
++FLASHMEM void VDrive_C128Launch()
++{
++   if (!VD_IsHandler(VDriveSwift_Remap(IO1[rwRegNextIOHndlr]))) return;
++   IO1[rwRegNextIOHndlr] = IOH_VDriveAgent;
++   VDrive_PreStart(true);
++   Serial.println("VDrive: C128 mode, the agent");
 +}
 +
 +#define VD_AgentOfs (VD_AgentBase & 0xFF)
@@ -2335,10 +2389,10 @@ index 0000000..6f43ceb
 +};
 diff --git a/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.c b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.c
 new file mode 100644
-index 0000000..1355fe7
+index 0000000..189c6aa
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.c
-@@ -0,0 +1,1176 @@
+@@ -0,0 +1,1206 @@
 +#include "vdrive.h"
 +#include "vd_cfg.h"
 +#include <string.h>
@@ -3177,6 +3231,34 @@ index 0000000..1355fe7
 +/* C[d]:new=[d:]old[,[d:]old...]: copy one file, or join several into a new one (types after a comma are not part of a name).
 + * Duplicating a whole disk ("C1=0", dual drives only) is not a thing here: 31. */
 +#define VD_COPYMAX 8
++
++/* "C:A=A,B,...": append the other sources to A, as a 1541 does it (BASIC 7's CONCAT sends exactly that; d64_copy, the shared engine's,
++ * answers 63 for an existing new name, as a 1541 does when the new name is not the first source). Every source must exist first,
++ * none may be A again or a REL file. A disk full puts A back as it was (d64_write). */
++VD_COLD static int concat_into(d64_t *d, const char *name, const char *const *src, int nsrc)
++{
++    d64_entry_t e;
++    d64_wfile_t w;
++    d64_file_t f;
++    uint8_t chunk[64];
++    int r;
++    if ((r = d64_find(d, name, &e)) <= 0) return r ? r : D64_E_NOTFOUND;
++    if ((e.type & 7) == 4) return D64_E_TYPE;
++    for (int i = 0; i < nsrc; i++) {
++        if (strcmp(src[i], name) == 0) return D64_E_EXISTS;
++        if ((r = d64_find(d, src[i], &e)) <= 0) return r ? r : D64_E_NOTFOUND;
++        if ((e.type & 7) == 4) return D64_E_TYPE;
++    }
++    if ((r = d64_append(d, name, &w))) return r;
++    for (int i = 0; i < nsrc; i++) {
++        if ((r = d64_find(d, src[i], &e)) <= 0) { d64_close_write(d, &w); return r ? r : D64_E_NOTFOUND; }
++        d64_file_open(d, &e, &f);
++        while ((r = d64_file_read(d, &f, chunk, sizeof chunk)) > 0)
++            if ((r = d64_write(d, &w, chunk, (size_t)r)) < 0) return r;      /* A is back as it was */
++        if (r < 0) { d64_close_write(d, &w); return r; }
++    }
++    return d64_close_write(d, &w);
++}
 +VD_COLD static void cmd_copy(vd_unit_t *u, const char *p, const char *end)
 +{
 +    if (p >= end || *p != ':') { set_err(u, 31, 0, 0); return; }
@@ -3199,7 +3281,7 @@ index 0000000..1355fe7
 +        src[ns] = names[ns + 1];
 +        p = q + 1;
 +    }
-+    int r = d64_copy(u->disk, names[0], src, ns);
++    int r = ns > 1 && strcmp(names[0], src[0]) == 0 ? concat_into(u->disk, names[0], src + 1, ns - 1) : d64_copy(u->disk, names[0], src, ns);
 +    if (r) err_from(u, r);
 +}
 +
@@ -3262,6 +3344,7 @@ index 0000000..1355fe7
 +        while (p <= end) {
 +            const char *q = p;
 +            while (q < end && *q != ',') q++;
++            p = strip_prefix(p, q);                         /* "S0:A,0:B": a drive prefix on every name, as a 1541 takes it */
 +            char pat[18]; size_t n = (size_t)(q - p);
 +            if (n && n <= 16) {
 +                memcpy(pat, p, n); pat[n] = 0;
@@ -3292,9 +3375,10 @@ index 0000000..1355fe7
 +        const char *eq = p;
 +        while (eq < end && *eq != '=') eq++;
 +        char nn[17], on[17];
-+        size_t a = (size_t)(eq - p), b = (size_t)(end - eq - 1);
++        const char *o = eq < end ? strip_prefix(eq + 1, end) : end;   /* "R0:NEW=0:OLD" (the 1541 manual's form; BASIC 7's RENAME) */
++        size_t a = (size_t)(eq - p), b = (size_t)(end - o);
 +        if (eq == end || a < 1 || a > 16 || b < 1 || b > 16) { set_err(u, 34, 0, 0); break; }
-+        memcpy(nn, p, a); nn[a] = 0; memcpy(on, eq + 1, b); on[b] = 0;
++        memcpy(nn, p, a); nn[a] = 0; memcpy(on, o, b); on[b] = 0;
 +        int r = d64_rename(u->disk, on, nn);
 +        if (r) err_from(u, r);
 +        break; }
@@ -4181,10 +4265,10 @@ index 0000000..3face06
 +#endif
 diff --git a/Source/Teensy/MinimalBoot/Common/vdrive/vdrive_vec.c b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive_vec.c
 new file mode 100644
-index 0000000..4110ba0
+index 0000000..e0c713f
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive_vec.c
-@@ -0,0 +1,399 @@
+@@ -0,0 +1,478 @@
 +#include "vdrive_vec.h"
 +#include "vd_cfg.h"
 +#include <string.h>
@@ -4192,19 +4276,47 @@ index 0000000..4110ba0
 +/* wait states */
 +enum { VV_W_NONE, VV_W_CALL, VV_W_DATA };
 +
-+/* the vector each entry replaces ([VV_NE] = GETIN, reached through the fast path only) and the stock 901227-03 values, used until
-+ * INSTALL has read the real ones */
++/* the vector each entry replaces ([VV_NE] = GETIN, reached through the fast path only); the same addresses on a C64 and a C128, but
++ * for VV_E_MAIN, whose vector is the profile's main_vec */
 +static const uint16_t vv_vec[VV_NE + 1] = { 0, 0x031A, 0x031C, 0x031E, 0x0320, 0x0322, 0x0324, 0x0326, 0x032C, 0x0330, 0x0332, 0x0302, 0x032A };
-+static const uint16_t vv_stock[VV_NE + 1] = { 0, 0xF34A, 0xF291, 0xF20E, 0xF250, 0xF333, 0xF157, 0xF1CA, 0xF32F, 0xF4A5, 0xF5ED, 0xA483, 0xF13E };
 +
-+/* KERNAL routines called through the agent */
-+#define K_SEARCHING 0xF5AF   /* "SEARCHING FOR name" (direct mode only) */
-+#define K_LOADING   0xF5D2   /* "LOADING" / "VERIFYING" ($93) */
-+#define K_SAVING    0xF68F   /* "SAVING name" */
-+#define K_LISTEN    0xFFB1   /* the real bus (the bus scan) */
++/* What differs between the KERNALs (docs/DESIGN.md 56). C64: 901227-03 (the -02, SX-64 and C128 C64-mode ROMs have the same routines
++ * there). C128 in 128 mode: 318020-05 with BASIC 7.0 318018-04 / 318019-04; 315078-03, 318034-01 and 325172-01 differ only in
++ * $FC80-$FE8B, which none of these touch. */
++typedef struct {
++    uint16_t stock[VV_NE + 1];  /* the vectors as RESTOR / BASIC's init set them, used until INSTALL has read the real ones */
++    uint16_t searching;         /* "SEARCHING FOR name" (direct mode only) */
++    uint16_t loading;           /* "LOADING" / "VERIFYING" ($93); the C128's also copies $AE/$AF to $AC/$AD first */
++    uint16_t saving;            /* "SAVING name" */
++    uint16_t error1;            /* the KERNAL's error exits: error1 + 3 * (n - 1), 1 TOO MANY FILES .. 9 ILLEGAL DEVICE */
++    uint16_t files;             /* the file table: LAT, FAT = LAT + 10, SAT = LAT + 20 */
++    uint16_t restor;            /* RESTOR's table of the vectors $0314-$0333 */
++    uint16_t main_vec;          /* the entry that hooks again after a RESTOR: IMAIN on a C64 (BASIC's READY loop); the C128's BASIC 7
++                                   calls IMAIN with bank 14 in ($FF03: the character ROM where I/O, and the agent, would be), so there
++                                   it is the warm-start vector $0A00, which RUN/STOP+RESTORE's NMI routine jumps through after RESTOR */
++    uint16_t initv_main;        /* where BASIC's init keeps main_vec's value (0: it is stock[VV_E_MAIN]) */
++    uint8_t  zp_end;            /* OPEN / LOAD / SAVE PEEK the zero page $AE..zp_end-1 */
++} vv_kernal_t;
++
++static const vv_kernal_t vv_kernal[2] = {
++    { { 0, 0xF34A, 0xF291, 0xF20E, 0xF250, 0xF333, 0xF157, 0xF1CA, 0xF32F, 0xF4A5, 0xF5ED, 0xA483, 0xF13E },
++      0xF5AF, 0xF5D2, 0xF68F, 0xF6FB, 0x0259, 0xFD30, 0x0302, 0xE447 + 2, 0xC5 },
++    { { 0, 0xEFBD, 0xF188, 0xF106, 0xF14C, 0xF226, 0xEF06, 0xEF79, 0xF222, 0xF26C, 0xF54E, 0x4003, 0xEEEB },
++      0xF50F, 0xFC4A, 0xF5BC, 0xF67C, 0x0362, 0xE073, 0x0A00, 0, 0xC8 },
++};
++#define KN (&vv_kernal[e->machine == VV_M_C128])
++
++/* the bus scan's calls of the real bus: the jump table, the same on both */
++#define K_LISTEN    0xFFB1
 +#define K_SECOND    0xFF93
 +#define K_UNLSN     0xFFAE
-+#define K_ERROR(n)  (uint16_t)(0xF6FB + 3 * ((n) - 1))   /* the KERNAL's error exits: 1 TOO MANY FILES .. 9 ILLEGAL DEVICE */
++#define K_ERROR(n)  (uint16_t)(KN->error1 + 3 * ((n) - 1))
++
++/* C128: the MMU's configuration register, and the value for each bank as the KERNAL's GETCFG table ($F7F0) has it, with I/O switched
++ * in (bit 0 clear): the agent runs in I/O. Banks 0-3 are RAM, 14 and 15 the system bank. Both RAM banks hold the KERNAL's interrupt
++ * trampolines at $FF05 and the CPU vectors, so an interrupt while bank 1 is switched in is served as usual. */
++#define MMU_CR 0xFF00
++static const uint8_t vv_bank_cfg[16] = { 0x3E, 0x7E, 0xBE, 0xFE, 0x16, 0x56, 0x96, 0xD6, 0x2A, 0x6A, 0xAA, 0xEA, 0x06, 0x0A, 0x00, 0x00 };
 +
 +#define P_C 0x01
 +#define P_Z 0x02
@@ -4215,7 +4327,13 @@ index 0000000..4110ba0
 +    memset((void *)e, 0, sizeof *e);
 +    e->v = v;
 +    e->base = base;
-+    memcpy(e->old, vv_stock, sizeof e->old);
++    memcpy(e->old, vv_kernal[0].stock, sizeof e->old);
++}
++
++VD_COLD void vvec_set_machine(vvec_t *e, uint8_t machine)
++{
++    e->machine = machine == VV_M_C128 ? VV_M_C128 : VV_M_C64;
++    memcpy(e->old, KN->stock, sizeof e->old);
 +}
 +
 +VD_COLD size_t vvec_sizeof(void) { return sizeof(vvec_t); }
@@ -4279,18 +4397,34 @@ index 0000000..4110ba0
 +#define PEEK(ad, n)   do { sc_peek(e, (ad), (n)); YIELD(c, VV_W_DATA); } while (0)
 +#define CONT()        do { sc(e, VV_OP_CONT); YIELD(c, VV_W_DATA); } while (0)
 +#define CHAIN()       do { sc_chain(e, c, c->entry); DONE(c); } while (0)
++/* C128: memory in another bank. The caller's configuration is read once per call (the KERNAL is visible, so it is the system bank
++ * with I/O, but which RAM bank and ROMs the caller had in is its own business); a PEEK leaves the bank switched in until the next
++ * script, whose first op switches back. A C64, or the bank the caller has in already, needs no switch. */
++#define MMU_READ()    do { if (e->machine == VV_M_C128 && c->mmu == 0xFF) { PEEK(MMU_CR, 1); c->mmu = c->buf[0]; } } while (0)
++#define BANKED(b)     (e->machine == VV_M_C128 && vv_bank_cfg[(b) & 15] != c->mmu)
++#define BPEEK(b, ad, n) do { if (BANKED(b)) { sc_poke1(e, MMU_CR, vv_bank_cfg[(b) & 15]); PEEK((ad), (n)); sc_poke1(e, MMU_CR, c->mmu); } \
++                             else PEEK((ad), (n)); } while (0)
 +#define ERROR(n)      do { sc_error(e, c, (n)); DONE(c); } while (0)
 +
-+/* the zero page as PEEKed from $AE (23 bytes, $AE-$C4) */
++/* the zero page as PEEKed from $AE ($AE-$C4 on a C64; to $C7 on a C128: BA, FNBANK) */
 +#define ZP(a) c->buf[(a) - 0xAE]
 +
-+/* hook every vector that is not ours yet (c->buf = $0302-$0333 as PEEKed), and give the agent its fast paths' old vectors */
++/* hook every vector that is not ours yet (c->buf = $0302-$0333 as PEEKed; c->mainv = main_vec's value where it is elsewhere), and
++ * give the agent its fast paths' old vectors */
 +VD_COLD static void install(vvec_t *e, vv_ctx_t *c)
 +{
 +    uint8_t img[0x34 - 0x02];
 +    memcpy(img, c->buf, sizeof img);
++    if (KN->main_vec != 0x0302) {
++        uint16_t mine = target_of(e, VV_E_MAIN);
++        if (c->mainv != mine) {
++            uint8_t z[2] = { (uint8_t)mine, (uint8_t)(mine >> 8) };
++            e->old[VV_E_MAIN] = c->mainv;
++            sc_poke(e, KN->main_vec, z, 2);
++        }
++    }
 +    for (int k = 1; k <= VV_NE; k++) {
-+        if (k == VV_E_INSTALL) continue;
++        if (k == VV_E_INSTALL || (k == VV_E_MAIN && KN->main_vec != 0x0302)) continue;
 +        int o = vv_vec[k] - 0x0302;
 +        uint16_t cur = (uint16_t)(img[o] | img[o + 1] << 8), mine = target_of(e, k);
 +        if (cur == mine) continue;
@@ -4311,7 +4445,8 @@ index 0000000..4110ba0
 +
 +    /* OPEN, LOAD, SAVE: the file's numbers and name; the bus scan when this run has not had one */
 +    if (c->entry == VV_E_OPEN || c->entry == VV_E_LOAD || c->entry == VV_E_SAVE) {
-+        PEEK(0xAE, 0xC5 - 0xAE);
++        PEEK(0xAE, KN->zp_end - 0xAE);
++        if (e->machine == VV_M_C128) { c->ba = ZP(0xC6); c->fnbank = ZP(0xC7); }
 +        c->fnlen = ZP(0xB7); c->la = ZP(0xB8); c->sa = ZP(0xB9); c->fa = ZP(0xBA);
 +        c->fnadr = (uint16_t)(ZP(0xBB) | ZP(0xBC) << 8);
 +        c->addr = (uint16_t)(ZP(0xC1) | ZP(0xC2) << 8);           /* SAVE: start */
@@ -4337,15 +4472,26 @@ index 0000000..4110ba0
 +
 +    /* handlers (an if chain, not a switch: YIELD's case labels must belong to the protothread's switch) */
 +    if (c->entry == VV_E_INSTALL) {
++        /* which KERNAL: the jump table's LOAD is JMP $F265 on a C128 in 128 mode, JMP $F49E on a C64 (and a C128 in C64 mode). So the
++         * same served agent works after a launch into either mode, an Exit to C128 BASIC, GO64 or a reset into the other mode. */
++        PEEK(0xFFD5, 3);
++        {
++            uint8_t m = (c->buf[0] == 0x4C && c->buf[1] == 0x65 && c->buf[2] == 0xF2) ? VV_M_C128 : VV_M_C64;
++            if (m != e->machine) vvec_set_machine(e, m);
++        }
++        if (KN->main_vec != 0x0302) { PEEK(KN->main_vec, 2); c->mainv = (uint16_t)(c->buf[0] | c->buf[1] << 8); }
 +        PEEK(0x0302, 0x34 - 0x02);
 +        if (c->a == VV_LAUNCH) {
 +            /* from the menu's PRG loader, after the program is in memory: hook only if the vectors are still the ones RESTOR / INITV
 +             * left (the ROM's own tables). A program that loaded over them (an autostart PRG) keeps its own. */
 +            memcpy(c->data, c->buf, 0x32);
-+            PEEK(0xFD30 + (0x031A - 0x0314), 0x34 - 0x1A);
++            PEEK((uint16_t)(KN->restor + (0x031A - 0x0314)), 0x34 - 0x1A);
 +            c->n = (uint8_t)(memcmp(c->buf, c->data + 0x18, 0x34 - 0x1A) == 0);
-+            PEEK(0xE447 + 2, 2);                               /* BASIC's INITV table: $0302's value */
-+            if (!c->n || memcmp(c->buf, c->data, 2)) { sc_ret(e, c, c->a, c->x, c->y, 1); DONE(c); }
++            if (KN->initv_main) {
++                PEEK(KN->initv_main, 2);                      /* BASIC's init table: $0302's value */
++                c->n = (uint8_t)(c->n && !memcmp(c->buf, c->data, 2));
++            } else c->n = (uint8_t)(c->n && c->mainv == KN->stock[VV_E_MAIN]);
++            if (!c->n) { sc_ret(e, c, c->a, c->x, c->y, 1); DONE(c); }
 +            memcpy(c->buf, c->data, 0x32);
 +        }
 +        install(e, c);
@@ -4353,9 +4499,10 @@ index 0000000..4110ba0
 +        DONE(c);
 +    }
 +
-+    if (c->entry == VV_E_MAIN) {                                     /* BASIC's READY loop: hook again after a RESTOR (RUN/STOP+RESTORE) */
++    if (c->entry == VV_E_MAIN) {      /* BASIC's READY loop (C128: its warm start): hook again after a RESTOR (RUN/STOP+RESTORE) */
 +        PEEK(0x0330, 2);
 +        if ((uint16_t)(c->buf[0] | c->buf[1] << 8) == e->old[VV_E_LOAD] && e->old[VV_E_LOAD] != target_of(e, VV_E_LOAD)) {
++            c->mainv = target_of(e, VV_E_MAIN);                      /* we came through it */
 +            PEEK(0x0302, 0x34 - 0x02);
 +            install(e, c);
 +        }
@@ -4364,6 +4511,7 @@ index 0000000..4110ba0
 +
 +    if (c->entry == VV_E_OPEN) {
 +        if (c->fa < 4 || (c->sa & 0x80) || !c->fnlen || !ours(e, c->fa)) CHAIN();
++        MMU_READ();
 +        /* the stock OPEN fills the file table; with the name length 0 it sends nothing */
 +        sc_poke1(e, 0xB7, 0);
 +        CALL(e->old[VV_E_OPEN], c->a, c->x, c->y);
@@ -4375,7 +4523,7 @@ index 0000000..4110ba0
 +        if (c->stx & 0x80) { bus(e, VD_UNLSN, 0, 0, 0); sc_poke1(e, 0x90, c->stx); ERROR(5); }
 +        for (c->i = 0; c->i < c->fnlen; c->i = (uint16_t)(c->i + c->n)) {
 +            c->n = (uint8_t)(c->fnlen - c->i > VV_CHUNK ? VV_CHUNK : c->fnlen - c->i);
-+            PEEK((uint16_t)(c->fnadr + c->i), c->n);
++            BPEEK(c->fnbank, (uint16_t)(c->fnadr + c->i), c->n);
 +            for (int j = 0; j < c->n; j++) bus(e, VD_CIOUT, c->buf[j], 0, &c->stx);
 +        }
 +        bus(e, VD_UNLSN, 0, 0, &c->stx);
@@ -4386,7 +4534,7 @@ index 0000000..4110ba0
 +
 +    if (c->entry == VV_E_CLOSE || c->entry == VV_E_CHKIN || c->entry == VV_E_CKOUT) {   /* CLOSE: A = logical file; CHKIN/CKOUT: X */
 +        if (c->entry != VV_E_CLOSE) sc_poke1(e, 0x90, 0), c->st = 0;   /* as the stock lookup ($F30F) */
-+        PEEK(0x0259, 30);                               /* LAT, FAT, SAT */
++        PEEK(KN->files, 30);                            /* LAT, FAT, SAT */
 +        c->la = c->entry == VV_E_CLOSE ? c->a : c->x;
 +        for (c->idx = c->nfiles; c->idx > 0 && c->buf[c->idx - 1] != c->la; c->idx--) {}
 +        if (!c->idx || c->nfiles > 10) CHAIN();         /* not open: the stock routine reports it */
@@ -4396,10 +4544,12 @@ index 0000000..4110ba0
 +        c->stx = 0;
 +        if (c->entry == VV_E_CLOSE) {
 +            if (c->sa & 0x80) CHAIN();
++            /* C128: CLOSE with C set leaves a drive's command channel open on the drive (stock $F1CF), as DCLOSE's U-commands need */
++            if (e->machine == VV_M_C128 && (c->p & P_C) && c->fa >= 8 && (c->sa & 0x0F) == 0x0F) CHAIN();
 +            bus(e, VD_LISTEN, c->fa, 0, 0);
 +            bus(e, VD_SECOND, (uint8_t)((c->sa & 0xEF) | 0xE0), 0, 0);
 +            bus(e, VD_UNLSN, 0, 0, 0);
-+            sc_poke1(e, (uint16_t)(0x026D + c->idx), (uint8_t)(c->sa | 0x80));   /* now the stock CLOSE only drops the entry */
++            sc_poke1(e, (uint16_t)(KN->files + 20 + c->idx), (uint8_t)(c->sa | 0x80));   /* now the stock CLOSE only drops the entry */
 +            CHAIN();
 +        }
 +        if (c->entry == VV_E_CHKIN) {
@@ -4444,10 +4594,11 @@ index 0000000..4110ba0
 +
 +    if (c->entry == VV_E_LOAD) {                        /* A = 0 load, 1 verify */
 +        if (c->fa < 4 || !c->fnlen || !ours(e, c->fa)) CHAIN();
++        MMU_READ();
 +        c->verify = c->a;
 +        sc_poke1(e, 0x93, c->verify);
 +        sc_poke1(e, 0x90, 0);
-+        CALL(K_SEARCHING, 0, 0, 0);
++        CALL(KN->searching, 0, 0, 0);
 +        sc_poke1(e, 0xB9, 0x60);
 +        c->stx = 0;
 +        bus(e, VD_LISTEN, c->fa, 0, &c->stx);
@@ -4455,7 +4606,7 @@ index 0000000..4110ba0
 +        if (c->stx & 0x80) { bus(e, VD_UNLSN, 0, 0, 0); sc_poke1(e, 0x90, 0x80); ERROR(5); }
 +        for (c->i = 0; c->i < c->fnlen; c->i = (uint16_t)(c->i + c->n)) {
 +            c->n = (uint8_t)(c->fnlen - c->i > VV_CHUNK ? VV_CHUNK : c->fnlen - c->i);
-+            PEEK((uint16_t)(c->fnadr + c->i), c->n);
++            BPEEK(c->fnbank, (uint16_t)(c->fnadr + c->i), c->n);
 +            for (int j = 0; j < c->n; j++) bus(e, VD_CIOUT, c->buf[j], 0, 0);
 +        }
 +        bus(e, VD_UNLSN, 0, 0, 0);
@@ -4475,11 +4626,16 @@ index 0000000..4110ba0
 +            if (!c->eoi) { bus(e, VD_ACPTR, 0, &c->b1, &s1); c->eoi = (s1 & 0x40) != 0; }
 +        }
 +        c->addr = c->sa ? (uint16_t)(c->b0 | c->b1 << 8) : c->cadr;   /* SA 0: the caller's address */
-+        CALL(K_LOADING, 0, 0, 0);
++        {
++            uint8_t z[2] = { (uint8_t)c->addr, (uint8_t)(c->addr >> 8) };   /* as stock: the C128's message copies it to $AC/$AD */
++            sc_poke(e, 0xAE, z, 2);
++        }
++        c->chunk = BANKED(c->ba) ? VV_CHUNK_B : VV_CHUNK;
++        CALL(KN->loading, 0, 0, 0);
 +        c->stx = 0;
 +        while (!c->eoi) {
 +            c->n = 0;
-+            while (c->n < VV_CHUNK && !c->eoi) {
++            while (c->n < c->chunk && !c->eoi) {
 +                uint8_t s = 0, d = 0;
 +                bus(e, VD_ACPTR, 0, &d, &s);
 +                if (s & 0x02) { c->eoi = 1; c->stx |= 0x02; break; }   /* a read error (bad sector): the load ends here, ST $42 */
@@ -4488,8 +4644,13 @@ index 0000000..4110ba0
 +            }
 +            if (!c->n) break;
 +            if (c->verify) {
-+                PEEK(c->addr, c->n);
++                BPEEK(c->ba, c->addr, c->n);
 +                if (memcmp(c->buf, c->data, c->n)) c->stx |= 0x10;     /* VERIFY ERROR; the load goes on, as stock */
++            } else if (BANKED(c->ba)) {
++                sc_poke1(e, MMU_CR, vv_bank_cfg[c->ba & 15]);
++                sc_poke(e, c->addr, c->data, c->n);
++                sc_poke1(e, MMU_CR, c->mmu);
++                CONT();
 +            } else {
 +                sc_poke(e, c->addr, c->data, c->n);
 +                CONT();
@@ -4509,6 +4670,7 @@ index 0000000..4110ba0
 +
 +    if (c->entry == VV_E_SAVE) {                        /* $C1/$C2 start, $AE/$AF end */
 +        if (c->fa < 4 || !c->fnlen || !ours(e, c->fa)) CHAIN();
++        MMU_READ();
 +        sc_poke1(e, 0xB9, 0x61);
 +        c->stx = 0;
 +        bus(e, VD_LISTEN, c->fa, 0, &c->stx);
@@ -4516,18 +4678,18 @@ index 0000000..4110ba0
 +        if (c->stx & 0x80) { bus(e, VD_UNLSN, 0, 0, 0); sc_poke1(e, 0x90, 0x80); ERROR(5); }
 +        for (c->i = 0; c->i < c->fnlen; c->i = (uint16_t)(c->i + c->n)) {
 +            c->n = (uint8_t)(c->fnlen - c->i > VV_CHUNK ? VV_CHUNK : c->fnlen - c->i);
-+            PEEK((uint16_t)(c->fnadr + c->i), c->n);
++            BPEEK(c->fnbank, (uint16_t)(c->fnadr + c->i), c->n);
 +            for (int j = 0; j < c->n; j++) bus(e, VD_CIOUT, c->buf[j], 0, 0);
 +        }
 +        bus(e, VD_UNLSN, 0, 0, 0);
-+        CALL(K_SAVING, 0, 0, 0);
++        CALL(KN->saving, 0, 0, 0);
 +        bus(e, VD_LISTEN, c->fa, 0, 0);
 +        bus(e, VD_SECOND, 0x61, 0, 0);
 +        bus(e, VD_CIOUT, (uint8_t)c->addr, 0, 0);
 +        bus(e, VD_CIOUT, (uint8_t)(c->addr >> 8), 0, 0);
 +        while (c->addr < c->end) {
 +            c->n = (uint8_t)(c->end - c->addr > VV_CHUNK ? VV_CHUNK : c->end - c->addr);
-+            PEEK(c->addr, c->n);
++            BPEEK(c->ba, c->addr, c->n);
 +            for (int j = 0; j < c->n; j++) bus(e, VD_CIOUT, c->buf[j], 0, 0);
 +            c->addr = (uint16_t)(c->addr + c->n);
 +        }
@@ -4565,6 +4727,7 @@ index 0000000..4110ba0
 +            c = &e->c[e->depth++];
 +            memset((void *)c, 0, sizeof *c);
 +            c->entry = (uint8_t)(k / 3);
++            c->mmu = 0xFF;
 +            c->y = w[0]; c->x = w[1]; c->a = w[2]; c->p = w[3];
 +            c->st = w[5]; c->nfiles = w[6]; c->dfltn = w[7]; c->dflto = w[8];
 +        }
@@ -4586,10 +4749,10 @@ index 0000000..4110ba0
 +}
 diff --git a/Source/Teensy/MinimalBoot/Common/vdrive/vdrive_vec.h b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive_vec.h
 new file mode 100644
-index 0000000..b8c9809
+index 0000000..7ee003a
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive_vec.h
-@@ -0,0 +1,69 @@
+@@ -0,0 +1,77 @@
 +/* Vector engine for the plain TeensyROM (docs/DESIGN.md 53): the Teensy side of the 6502 agent in vector/vdagent.s.
 + *
 + * The KERNAL's RAM vectors point into the agent, which the Teensy serves from an IO page. Each call arrives here as a frame
@@ -4629,6 +4792,7 @@ index 0000000..b8c9809
 +#define VV_LAUNCH 0xA5          /* A at INSTALL from the menu's PRG loader: hook only vectors the program left as the ROM set them */
 +#define VV_DEPTH 4              /* nested calls (a ROM routine calling back into a vector) */
 +#define VV_CHUNK 118            /* bytes per POKE / PEEK of file data */
++#define VV_CHUNK_B 108          /* the same into another C128 bank: the two $FF00 POKEs around it share the window */
 +
 +typedef struct {
 +    uint16_t pc;                /* protothread resume point (0 = start) */
@@ -4639,19 +4803,26 @@ index 0000000..b8c9809
 +    uint8_t  buf[VIO_WIN];      /* the last PEEK */
 +    /* handler state */
 +    uint8_t  fnlen, la, sa, fa, verify, idx, n, dev, eoi, stx, b0, b1, left;
-+    uint16_t fnadr, addr, end, cadr, i;
++    uint8_t  ba, fnbank, mmu, chunk;    /* C128: the data and name banks ($C6 / $C7), the caller's $FF00 (0xFF = not read yet),
++                                           bytes per file-data POKE / PEEK */
++    uint16_t fnadr, addr, end, cadr, i, mainv;   /* mainv: the re-hook vector's value, where it is not in $0302-$0333 (C128) */
 +    uint8_t  data[VIO_WIN];
 +} vv_ctx_t;
++
++/* the machine whose KERNAL the agent hooks (docs/DESIGN.md 56): a C64 (or a C128 in C64 mode), or a C128 in 128 mode */
++enum { VV_M_C64, VV_M_C128 };
 +
 +typedef struct {
 +    vio_t   *v;
 +    uint16_t base;              /* the agent's address */
++    uint8_t  machine;           /* VV_M_*: which KERNAL's addresses (vvec_set_machine) */
 +    uint16_t old[VV_NE + 1];    /* the vectors we replaced, per entry; [VV_NE] = GETIN (fast path only) */
 +    uint8_t  depth, sp;
 +    vv_ctx_t c[VV_DEPTH];
 +} vvec_t;
 +
-+void   vvec_init(vvec_t *e, vio_t *v, uint16_t base);
++void   vvec_init(vvec_t *e, vio_t *v, uint16_t base);   /* a C64 */
++void   vvec_set_machine(vvec_t *e, uint8_t machine);    /* INSTALL sets it from the KERNAL it finds; tests set it beforehand */
 +int    vvec_poll(vvec_t *e);    /* the agent's commands; anything else goes to vio_poll. 1 if a command was processed */
 +size_t vvec_sizeof(void);
 +
@@ -4781,6 +4952,27 @@ index e6c5128..7beba22 100644
  FLASHMEM bool ReceiveFileName(RegMenuTypes* DriveType, char *FileNamePath)
  {
     uint32_t RecDrive;
+diff --git a/Source/Teensy/TRMenuFiles/ROMs/C128PrgBoot.bin.h b/Source/Teensy/TRMenuFiles/ROMs/C128PrgBoot.bin.h
+index 1074097..dd13350 100644
+--- a/Source/Teensy/TRMenuFiles/ROMs/C128PrgBoot.bin.h
++++ b/Source/Teensy/TRMenuFiles/ROMs/C128PrgBoot.bin.h
+@@ -12,11 +12,11 @@ PROGMEM static const unsigned char C128PrgBoot_bin[] = {
+ 	0xff, 0xe6, 0x02, 0xd0, 0xdf, 0xe6, 0x03, 0x4c, 0x17, 0x13, 0xad, 0x00,
+ 	0x13, 0x8d, 0x10, 0x12, 0xad, 0x01, 0x13, 0x8d, 0x11, 0x12, 0xa9, 0x00,
+ 	0x8d, 0x04, 0xde, 0xa9, 0x05, 0x8d, 0x04, 0xde, 0xad, 0xfe, 0xde, 0xc9,
+-	0xff, 0xd0, 0xf9, 0xa9, 0x00, 0x8d, 0x00, 0xff, 0xa2, 0x03, 0xbd, 0x71,
+-	0x13, 0x9d, 0x4a, 0x03, 0xca, 0x10, 0xf7, 0xa9, 0x04, 0x85, 0xd0, 0x6c,
+-	0x00, 0x0a, 0x52, 0x55, 0x4e, 0x0d, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+-	0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+-	0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
++	0xff, 0xd0, 0xf9, 0xa9, 0x00, 0x8d, 0x00, 0xff, 0xad, 0x09, 0xdf, 0xc9,
++	0xd6, 0xd0, 0x13, 0xad, 0x0a, 0xdf, 0xc9, 0x64, 0xd0, 0x0c, 0xad, 0x14,
++	0xde, 0xc9, 0x20, 0xd0, 0x05, 0xa9, 0xa5, 0x20, 0x14, 0xde, 0xa2, 0x03,
++	0xbd, 0x8b, 0x13, 0x9d, 0x4a, 0x03, 0xca, 0x10, 0xf7, 0xa9, 0x04, 0x85,
++	0xd0, 0x6c, 0x00, 0x0a, 0x52, 0x55, 0x4e, 0x0d, 0xff, 0xff, 0xff, 0xff,
+ 	0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+ 	0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+ 	0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
 diff --git a/Source/Teensy/TRMenuFiles/ROMs/TeensyROMC64.h b/Source/Teensy/TRMenuFiles/ROMs/TeensyROMC64.h
 index 9bc9643..2db3509 100644
 --- a/Source/Teensy/TRMenuFiles/ROMs/TeensyROMC64.h

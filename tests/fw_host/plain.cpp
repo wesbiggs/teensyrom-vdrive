@@ -64,8 +64,18 @@ int main(int argc, char **argv)
     wr2(VD_AgentRegs + VIO_CMD, VV_C_VEC);
     check("CMD: BUSY at once", rd2(VD_AgentRegs + VIO_STAT) == VIO_BUSY);
     PollingHndlr_VDriveAgent();
-    check("after a poll: OK, and the answer starts with PEEK $0302 (INSTALL reads the vectors first)",
-          rd2(VD_AgentRegs + VIO_STAT) == VIO_OK && rd2(VIO_WIN_OFS + 0) == VV_OP_PEEK && rd2(VIO_WIN_OFS + 1) == 0x02 && rd2(VIO_WIN_OFS + 2) == 0x03);
+    check("after a poll: OK, and the answer starts with PEEK $FFD5 (INSTALL first reads the jump table's LOAD: which KERNAL)",
+          rd2(VD_AgentRegs + VIO_STAT) == VIO_OK && rd2(VIO_WIN_OFS + 0) == VV_OP_PEEK && rd2(VIO_WIN_OFS + 1) == 0xD5 && rd2(VIO_WIN_OFS + 2) == 0xFF
+          && rd2(VIO_WIN_OFS + 3) == 3);
+
+    // a launch into C128 mode (upstream's C128Prg.ino calls VDrive_C128Launch, docs/DESIGN.md 55)
+    EEPROM.write(eepAdNextIOHndlr, IOH_Swiftlink); IO1[rwRegNextIOHndlr] = IOH_Swiftlink; vioReady = false;
+    VDrive_C128Launch();
+    check("C128 launch, default not VDrive: the Special IO stays, no PreStart", IO1[rwRegNextIOHndlr] == IOH_Swiftlink && !vioReady);
+    EEPROM.write(eepAdNextIOHndlr, IOH_VDriveAgent); IO1[rwRegNextIOHndlr] = IOH_VDriveAgent;
+    VDrive_C128Launch();
+    check("C128 launch, default VDrive: the agent, after the drive's PreStart", IO1[rwRegNextIOHndlr] == IOH_VDriveAgent && vioReady
+          && vio->vd.unit[0].present);
 
     printf("%s: %d failure(s)\n", fails ? "FAIL" : "PASS", fails);
     return fails ? 1 : 0;

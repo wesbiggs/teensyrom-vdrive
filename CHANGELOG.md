@@ -1,5 +1,33 @@
 # Changelog
 
+## v0.9.0.62
+
+### Added
+- **VDrive on a C128 in 128 mode** (BASIC 7.0), through the same agent as the plain TeensyROM's vector build: a C128 BASIC program the
+  TR menu starts in 128 mode (upstream's [PR 96](https://github.com/SensoriumEmbedded/TeensyROM/pull/96)), with any VDrive Special IO as
+  the default, gets the agent instead (a cartridge cannot replace the C128's own KERNAL in 128 mode), after the drive's start-up
+  (SD/USB, the auto-mount from the image it came from, the remembered mounts); the boot ROM's loader installs it before RUN. After
+  Exit to C128 BASIC, or after a reset, `SYS 56852` installs it. The engine tells the C128's KERNAL from a C64's by itself and switches
+  RAM banks for BASIC 7's strings and BLOAD/BSAVE. RUN/STOP+RESTORE keeps the drives (through BASIC 7's warm-start vector `$0A00`).
+  Host tests (`tests/test_vvec.py`, `tests/fw_host`) and VICE `x128` (`make test-agent`: `DIRECTORY`, `DLOAD`, `DSAVE`, `DVERIFY`,
+  `BLOAD`/`BSAVE` in bank 1, `DOPEN`/`DCLOSE`, `DS$`, `COPY`, `RENAME`, `CONCAT`, `SCRATCH`, `COLLECT`, `BOOT`, a true-drive 1541 on the
+  same bus); **nothing on hardware yet**, FAST (2 MHz) mode on hardware the main open question. `docs/DESIGN.md` section 56.
+
+### Fixed
+- `R0:NEW=0:OLD` (the drive prefix on the old name, as the 1541 manual writes it and BASIC 7's `RENAME` sends it) answered 62; the
+  later names of `S0:A,0:B` kept their `0:` too.
+- `C0:A=0:A,0:B` (BASIC 7's `CONCAT`) answered 63 FILE EXISTS; a 1541 appends B to A, and so does the drive now (another existing
+  new name is still 63, as on a 1541; both checked against a true-drive 1541 in VICE). Unit tests.
+
+### Changed
+- A 128-mode launch with a VDrive KERNAL Special IO as the default runs the agent: the KERNAL handlers' bus hook never reaches the
+  C128's ROM. The patch hooks upstream's `C128Prg.ino` and `C128PrgBoot.asm` ([PR 96](https://github.com/SensoriumEmbedded/TeensyROM/pull/96)),
+  both in the fork's `7b3c3294`; that base does not have upstream's [PR 98](https://github.com/SensoriumEmbedded/TeensyROM/pull/98)
+  (plain Kernal Replace dropped for a 128-mode launch) yet, which only matters with plain Kernal Replace as the default.
+  Firmware builds (`tools/build_firmware.sh tr-plus`); fw_host and upstream's boot-ROM test pass on the patched tree.
+- The agent's INSTALL reads the KERNAL's jump table first (one more round trip on a C64), and LOAD sets `$AE/$AF` to the start address
+  before "LOADING", as the stock LOAD does.
+
 ## v0.9.0.61
 
 ### Changed

@@ -1235,6 +1235,21 @@ int main(int argc, char **argv)
         g_led = true;
     }
 
+    // a launch into C128 mode (upstream's C128Prg.ino, docs/DESIGN.md 55): the MMU never maps a cartridge's KERNAL in there, so any
+    // VDrive default runs as the agent; Kernal Replace (upstream drops it itself) and the rest are left alone
+    for (uint8_t def : {IOH_VDrive, IOH_VDriveSwift, IOH_VDriveSwiftREU, IOH_VDriveREU, IOH_VDriveAgent}) {
+        EEPROM.write(eepAdNextIOHndlr, def); IO1[rwRegNextIOHndlr] = def; vioReady = false;
+        memset(KernalFast, 0x5A, 64);
+        VDrive_C128Launch();
+        char what[120];
+        snprintf(what, sizeof what, "C128 launch, default %d: the agent, after the drive's PreStart (no KERNAL banner bytes)", def);
+        check(what, IO1[rwRegNextIOHndlr] == IOH_VDriveAgent && vioReady && KernalFast[0] == 0x5A && IO1[rwRegScratch] == 0);
+    }
+    EEPROM.write(eepAdNextIOHndlr, IOH_Other); IO1[rwRegNextIOHndlr] = IOH_Other; vioReady = false;
+    VDrive_C128Launch();
+    check("C128 launch, default not VDrive: untouched, no PreStart", IO1[rwRegNextIOHndlr] == IOH_Other && !vioReady);
+    EEPROM.write(eepAdNextIOHndlr, IOH_None);
+
     printf("%s\n", fails ? "FAILED" : "ALL OK");
     return fails ? 1 : 0;
 }

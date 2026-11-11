@@ -1012,3 +1012,106 @@ applied to a `git archive` of `kernalreplace-fixes` and to a fresh fetch of `fir
 (`TeensyROM+_0.9.0.61_full.hex`; main image RAM1 free for locals 54940). Against the TeensyROM `vdrive` branch the patched tree differs
 only in the two engine files gone, the includes, and the write-back.
 
+## 56. The agent on a C128 in 128 mode (0.9.0.62; host tests and VICE `x128`; not on hardware)
+
+**Why the agent.** In 128 mode the MMU ignores GAME and EXROM: a cartridge never replaces the C128's own KERNAL, so none of the
+KERNAL handlers (the patched C64 KERNAL, sections 41 and 49) can work there. Upstream's 128-mode launch (TeensyROM #96, `C128Prg.ino`) also
+turned up the hazard that a KERNAL handler armed in 128 mode drives C64 KERNAL bytes against the C128's ROM; upstream's #98 drops Kernal
+Replace for such a launch. The agent (sections 52-54) needs nothing from the cartridge port but IO1/IO2, which sit at `$DE00/$DF00` in
+128 mode as well, so the C128 version is the agent with a second set of KERNAL addresses in the engine. **The agent's bytes are the
+same** (`vd_agent.h` is unchanged); only `d64/vdrive_vec.c` and the launch path changed.
+
+**The KERNAL profile** (`vv_kernal[]` in `vdrive_vec.c`), read from the ROMs (VICE's data folder: KERNAL 318020-05, BASIC 7.0
+318018-04 / 318019-04; 315078-03, 318034-01 and 325172-01 differ from -05 only in `$FC80-$FE8B`, which the profile does not touch; the
+1985 318020-03 is not checked):
+
+| | C64 (901227-03) | C128, 128 mode |
+|---|---|---|
+| vectors `$031A-$0333`, zero page `$90 $98 $99 $9A $AE-$C4` | | the same |
+| file tables LAT / FAT / SAT | `$0259` / `$0263` / `$026D` | `$0362` / `$036C` / `$0376` |
+| "SEARCHING FOR" / "LOADING" / "SAVING" | `$F5AF` / `$F5D2` / `$F68F` | `$F50F` / `$FC4A` (copies `$AE/$AF` to `$AC/$AD`, then `$F533`) / `$F5BC` |
+| error exits 1-9 | `$F6FB` + 3(n-1) | `$F67C` + 3(n-1) |
+| RESTOR's table | `$FD30` | `$E073` |
+| the re-hook entry's vector | IMAIN `$0302` (`$A483`; INITV's copy at `$E449`) | BASIC 7's warm start `$0A00` (`$4003`; see below) |
+| name and data banks | | FNBANK `$C7`, BA `$C6` |
+
+The stock vector values (`stock[]`) are only used before INSTALL has read the real ones. The bus scan's `$FFB1`/`$FF93`/`$FFAE` and
+the jump table's layout are the same.
+
+**Which machine.** INSTALL first PEEKs the jump table's LOAD at `$FFD5`: `JMP $F265` is the C128's 128-mode KERNAL, anything else a C64
+(or a C128 in C64 mode, `JMP $F49E`). So one served agent covers a launch into either mode, Exit to C128 BASIC, `GO64`, and a reset
+into the other mode, with no flag from the firmware. It costs a C64 INSTALL one more round trip.
+
+**Banks.** BASIC 7 keeps its strings, and so most file names, in bank 1 (FNBANK), and BLOAD/BSAVE take any bank (BA). The agent runs
+in I/O, so it can only switch to a configuration with I/O in: the engine POKEs `$FF00` with the KERNAL's GETCFG value for the bank
+(`$F7F0`) with bit 0 cleared (`$3E` bank 0, `$7E` bank 1). The agent is unchanged: a POKE to `$FF00` is an ordinary POKE. The caller's
+configuration is PEEKed once per OPEN, LOAD and SAVE (one round trip) and put back after every banked op. A banked PEEK leaves the bank
+switched in while the agent sends its data; the next script starts by switching back (`BPEEK`). A banked LOAD POKEs 108 bytes at a
+time (`VV_CHUNK_B`: the two `$FF00` POKEs share the window). Interrupts meanwhile are safe: both RAM banks carry the KERNAL's
+trampolines at `$FF05` (IRQ `$FF17`, NMI `$FF05`) and the CPU vectors, which save `$FF00`, switch to the system bank, and restore it
+(read in VICE). Not reachable this way: the RAM under `$D000-$DFFF` in banks 0 and 1 (I/O is in; the C64 version has the same limit
+under its I/O, as had the stock C64 KERNAL).
+
+**The re-hook entry moved to `$0A00`.** In VICE, typing a program line crashed into a BRK in the character ROM: BASIC 7 runs much of
+the time with PCRC (`$FF03`, configuration `$01`: bank 14, the character ROM where I/O would be) and jumps through IMAIN from there,
+so a vector into I/O cannot be IMAIN on a C128. The KERNAL vectors themselves are called in the system bank with I/O in (checked with
+an exec checkpoint on the agent page: every CHROUT/CHRIN fast path ran with `$FF00` = `$00`). RUN/STOP+RESTORE's NMI routine (`$FA53`)
+runs RESTOR, IOINIT and CINT, then `JMP ($0A00)` in the system bank, and RESTOR leaves `$0A00` alone; so on the C128 the entry hooks
+`$0A00` (stock `$4003`, BASIC 7's warm start) instead. A reset is a BASIC cold start, which sets `$0A00` back: the drives are gone until
+`SYS 56852`, as on the C64. A reset back into the TR menu goes to C64 mode at `$E242` (the menu cartridge's GAME/EXROM) before the
+KERNAL could jump through `$0A00`. The launch INSTALL compares `$0A00` with `$4003` instead of INITV's copy.
+
+**Smaller C128 differences in the engine.** CLOSE with C set leaves a drive's command channel open on the drive, as the stock `$F1CF`
+does (DCLOSE). "LOADING" (`$FC4A`) gets `$AE/$AF` = the start address first, as the stock LOAD sets them (the C64 path now does the
+same; `$F5D2` ignores them). OPEN, LOAD and SAVE PEEK the zero page up to `$C7`.
+
+**Drive bugs BASIC 7 found** (`d64/vdrive.c`; a C64 sending the 1541 manual's forms had them too): `R0:NEW=0:OLD` kept the
+`0:` on the old name (62), the second and later names of `S0:A,0:B` kept theirs, and `C0:A=0:A,0:B` (CONCAT) answered 63 where a 1541
+appends B to A. A true-drive 1541 in VICE (`agent128scan`) answers `00, OK` to the last and grows A, and `63` when the existing new name is
+not the first source. `cmd_copy` now hands `C:A=A,...` to its own `concat_into` (`d64_append`, then the other sources), and anything else
+to the shared engine's `d64_copy`, which stays byte-identical to the fork's `DiskImage` copy (section 55). Unit tests in `tests/test_vdrive.py`.
+
+**Firmware.**
+- `VDrive_C128Launch()` (`IOH_VDriveAgent.c`) is called from upstream's `LaunchC128BasicPrg()` (`C128Prg.ino`), after #98's own Kernal
+  Replace line, once the launch is certain. With any VDrive Special IO as the default (the four KERNAL ones or the agent, through
+  `VDriveSwift_Remap`) it sets `rwRegNextIOHndlr` to the agent for this launch only (as #98 does; `InitHndlr_TeensyROM()` reads the
+  default back from EEPROM on the next return to the menu) and runs the drive's PreStart (SD/USB, the auto-mount from the image the
+  program was picked from, the remembered mounts), which `KERNALPreStart()` does for a C64 launch. That also keeps the KERNAL handlers'
+  bus hook off the C128's ROM. The menu's bus probe is not run; the engine scans on the first OPEN/LOAD/SAVE.
+- The boot ROM's loader (`C128PrgBoot.asm`) calls INSTALL (`$DE14`, A = `$A5`) once the handler swap is done and the system bank is
+  back, before it types RUN, with the same ID check as `PRGLoadStartReloc.s`. `make_tr_patch.sh` edits it and rebuilds
+  `C128PrgBoot.bin.h` with the TR's `build-c64.mjs`. The loader still fits its page.
+- **Exit to C128 BASIC** (an empty program, no boot ROM) gets the agent and the PreStart, but nothing calls INSTALL: `SYS 56852`.
+- REU and SwiftLink combinations are not offered in 128 mode (the agent has none, section 54): a VDrive+REU default runs the agent alone.
+- The patch applies on the fork's `7b3c3294` (section 55), which has upstream's #96 and #97 but not #98 (plain Kernal Replace dropped for
+  a 128-mode launch); the `VDrive_C128Launch()` hunk anchors on the `"Starting C128 mode"` line, so it applies with or without #98.
+
+**Tests.**
+- `tests/test_vvec.py` `C128Test`: the engine against a model of the MMU (two RAM banks, the system bank's ROMs, the common page,
+  `$FF00`): INSTALL and the C128 stock vectors, the launch INSTALL against `$E073` / `$0A00`, the machine told from `$FFD5` (and back to a
+  C64), SAVE/LOAD/VERIFY with name and data in bank 1 (bank 0 untouched), SAVE from bank 0 under BASIC 7's ROM, the caller's `$0E`
+  configuration put back, OPEN/CHKIN/CLOSE through `$0362`, CLOSE with C set, FILE NOT FOUND through `$F685`, the re-hook through `$0A00`.
+- `tests/fw_host`: `VDrive_C128Launch` with each VDrive default (the agent, PreStart run, no KERNAL banner bytes, no menu probe asked) and
+  with others (untouched); the plain TR's build too; the INSTALL answer starts with the `$FFD5` PEEK.
+- VICE, `make test-agent` (`agent128`, `agent128scan`; skipped without `x128`): `x128` with its own ROMs, the agent in GeoRAM as for the
+  C64, the mailbox in RAM at `$3F00/$3F80` (below `$4000`, RAM in the system bank) mirrored into both RAM banks. Not installed: the stock
+  KERNAL, nothing reaches the mailbox; `SYS 56852,165` (the launch INSTALL); `DIRECTORY`, `CATALOG`, `LOAD"$"`, `DLOAD` + `RUN`, FILE NOT
+  FOUND and `DS`/`DS$`, a 6000-byte `LOAD` and `VERIFY` (OK, then VERIFY ERROR), `BLOAD` into bank 1 with the name in a string variable,
+  `BSAVE` from bank 1, a 130-character name from bank 1, `DSAVE`, `DVERIFY`, `DSAVE` over an existing file (63) and with `@`,
+  `DOPEN`/`PRINT#`/`INPUT#`/`DCLOSE`, `APPEND#`, `PRINT#` of numbers (CHROUT's A), `COPY`, `RENAME`, `CONCAT`, `SCRATCH`, `COLLECT`, `FAST`
+  (2 MHz: VICE says nothing about the bus timing), `BOOT` (a boot sector on 1/0 whose code runs), RUN/STOP+RESTORE through `$FA53`
+  (hooked again), a reset (the stock vectors, `$0A00` = `$4003`), `SYS 56852` after it, and last `HEADER` (`N:`, the image emptied). `agent128scan` adds a true-drive 1541 at 8 (ours at
+  9 after the scan): both error channels in one line, FILE NOT FOUND from the real drive, a 5000-byte `BLOAD` from it through the chained
+  stock LOAD, and byte-by-byte BASIC copies real -> ours -> real -> ours, byte-exact.
+- The boot ROM: upstream's `tools/c128/c128prgboot-run.test.mjs` (4 tests) passes on the patched ROM; a one-off variant of it with the
+  agent's ID answered saw the loader call `$DE14` with A = `$A5` and `$FF00` = `$00`, then type RUN (not committed: it is upstream's file).
+
+**Not done.**
+- **Hardware.** Nothing of this has run on a C128 in 128 mode, and the agent itself (section 54) has not run on hardware either. First:
+  the IO-execution soak test of section 52 on a C128, at 1 MHz and in FAST mode. At 2 MHz every opcode the agent runs is a Teensy IO
+  answer; whether the C128 stretches IO accesses in FAST mode, and whether the Teensy's answer meets the 2 MHz timing, decides whether a
+  FAST program can use the drive at all. Upstream's `C128FastTest` (Test+Diags) is the tool.
+- 80 columns: VICE ran the 40-column screen only (the KERNAL's editor does both; nothing here depends on it).
+- A program that calls the KERNAL with the character ROM banked in (bank 14) crashes into it, as on the C64 (section 52's table).
+- The 318020-03 KERNAL (1985) and other BASIC 7 revisions; JiffyDOS-128 and other replaced C128 KERNALs.
+- A real 1571's burst mode on the same bus (`agent128scan` has a 1541): our devices never reach the stock serial code, theirs is chained.

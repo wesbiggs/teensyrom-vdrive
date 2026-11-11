@@ -47,8 +47,11 @@ writes and is refreshed at init. The mailbox registers are at IO2 `$DF00-$DF0A` 
 - `KERNALPreStart()` calls `VDrive_AgentPreStart()` first, which runs the drive's PreStart and skips the KERNAL load.
 - The menu's PRG loader calls the agent's INSTALL entry (`$DE14`) once the program is in memory, if the ID `$D6 $64` answers at `$DF09/$DF0A`.
 - After a reset, `SYS 56852` hooks the vectors again.
+- **C128 in 128 mode** (0.9.0.62, VICE only): upstream's `LaunchC128BasicPrg()` (`C128Prg.ino`) calls `VDrive_C128Launch()`, which with any
+  VDrive Special IO as the default sets the agent for that launch and runs the drive's PreStart; the C128 boot ROM's loader
+  (`C128PrgBoot.asm`) calls INSTALL before it types RUN. The engine tells the C128's KERNAL from the C64's at INSTALL (`$FFD5`).
 
-`docs/DESIGN.md` sections 52-54.
+`docs/DESIGN.md` sections 52-56.
 
 ## Device numbers
 `pin[]` (user, two EEPROM bytes `eepAdVDriveDevs`; 0 or an invalid value = automatic) and `dev[]` (current, 0 = none). Build-time defaults of the

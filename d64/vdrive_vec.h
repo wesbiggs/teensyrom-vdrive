@@ -37,6 +37,7 @@ enum { VV_E_INSTALL, VV_E_OPEN, VV_E_CLOSE, VV_E_CHKIN, VV_E_CKOUT, VV_E_CLRCH, 
 #define VV_LAUNCH 0xA5          /* A at INSTALL from the menu's PRG loader: hook only vectors the program left as the ROM set them */
 #define VV_DEPTH 4              /* nested calls (a ROM routine calling back into a vector) */
 #define VV_CHUNK 118            /* bytes per POKE / PEEK of file data */
+#define VV_CHUNK_B 108          /* the same into another C128 bank: the two $FF00 POKEs around it share the window */
 
 typedef struct {
     uint16_t pc;                /* protothread resume point (0 = start) */
@@ -47,19 +48,26 @@ typedef struct {
     uint8_t  buf[VIO_WIN];      /* the last PEEK */
     /* handler state */
     uint8_t  fnlen, la, sa, fa, verify, idx, n, dev, eoi, stx, b0, b1, left;
-    uint16_t fnadr, addr, end, cadr, i;
+    uint8_t  ba, fnbank, mmu, chunk;    /* C128: the data and name banks ($C6 / $C7), the caller's $FF00 (0xFF = not read yet),
+                                           bytes per file-data POKE / PEEK */
+    uint16_t fnadr, addr, end, cadr, i, mainv;   /* mainv: the re-hook vector's value, where it is not in $0302-$0333 (C128) */
     uint8_t  data[VIO_WIN];
 } vv_ctx_t;
+
+/* the machine whose KERNAL the agent hooks (docs/DESIGN.md 56): a C64 (or a C128 in C64 mode), or a C128 in 128 mode */
+enum { VV_M_C64, VV_M_C128 };
 
 typedef struct {
     vio_t   *v;
     uint16_t base;              /* the agent's address */
+    uint8_t  machine;           /* VV_M_*: which KERNAL's addresses (vvec_set_machine) */
     uint16_t old[VV_NE + 1];    /* the vectors we replaced, per entry; [VV_NE] = GETIN (fast path only) */
     uint8_t  depth, sp;
     vv_ctx_t c[VV_DEPTH];
 } vvec_t;
 
-void   vvec_init(vvec_t *e, vio_t *v, uint16_t base);
+void   vvec_init(vvec_t *e, vio_t *v, uint16_t base);   /* a C64 */
+void   vvec_set_machine(vvec_t *e, uint8_t machine);    /* INSTALL sets it from the KERNAL it finds; tests set it beforehand */
 int    vvec_poll(vvec_t *e);    /* the agent's commands; anything else goes to vio_poll. 1 if a command was processed */
 size_t vvec_sizeof(void);
 
