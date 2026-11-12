@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Build build/testdisk/vdtest.d64: hello + big + the BASIC test programs (tests/basic/*.bas), and VDSUITE's card files.
+"""Build build/testdisk/vdtest.d64: VDSUITE (tests/basic/vdsuite.bas with the machine-code checks of tests/asm/suite.s), DMATEST,
+LOADTEST's data files, HELLO + BIG (for VDSUITE's checks by hand), VDCOPY and VDrive Config; and VDSUITE's card files.
 
 usage: make_testdisk.py [OUTDIR]     (needs petcat and c1541 from VICE)
 Copy the resulting vdtest.d64, vdbad.d64 and vdplain.prg to the root of the SD card (or USB stick) and mount vdtest.d64 with CD:VDTEST.D64.
@@ -14,7 +15,6 @@ out.mkdir(parents=True, exist_ok=True)
 
 rnd = random.Random(2026)
 big = bytes(rnd.randrange(256) for _ in range(6000))
-xx = sum(big[i] for i in range(0, 6000, 8))
 (out / "big.prg").write_bytes(b"\x00\x20" + big)                      # loads at $2000
 
 hello_line = bytes([0x99, 0x22]) + b"HELLO FROM D64" + bytes([0x22, 0x00])
@@ -44,16 +44,13 @@ c1541("-attach", str(img), "-write", str(out / "hello.prg"), "hello")
 c1541("-attach", str(img), "-write", str(out / "big.prg"), "big")
 c1541("-attach", str(img), "-write", str(out / "lda000.prg"), "lda000")   # LOADTEST's data files
 c1541("-attach", str(img), "-write", str(out / "ldd000.prg"), "ldd000")
-for src in sorted((root / "tests" / "basic").glob("*.bas")):
-    text = out / src.name
-    text.write_text(suite_files.subst(src.read_text().replace("@XX@", str(xx)), bad))
-    prg = out / (src.stem + ".prg")
-    subprocess.run(["petcat", "-w2", "-o", str(prg), "--", str(text)], check=True, capture_output=True)
-    c1541("-attach", str(img), "-write", str(prg), src.stem)
+c1541("-attach", str(img), "-write", str(suite_files.build_vdsuite(out, bad)), "vdsuite")
 from make_util import build as build_util, build_config
 c1541("-attach", str(img), "-write", str(build_util(out / "util")), "vdcopy")
 c1541("-attach", str(img), "-write", str(build_config(out / "util")), "vdconfig")
-for src in sorted((root / "tests" / "asm").glob("*.s")):      # machine-code tests: PRG with a BASIC SYS stub at $0801
+# the one stand-alone machine-code test, a PRG with a BASIC SYS stub at $0801 (it writes $2000-$3FFF, where VDSUITE's BASIC is;
+# the other tests in tests/asm are VDSUITE's machine code, tests/asm/suite.s)
+for src in [root / "tests" / "asm" / "dmatest.s"]:
     obj, prg, cfg = out / (src.stem + ".o"), out / (src.stem + ".prg"), out / "asm.cfg"
     cfg.write_text("MEMORY { LA: start=$07FF, size=2; M: start=$0801, size=$3000, file=%O; }\n"
                    "SEGMENTS { LOADADDR: load=LA, type=ro; CODE: load=M, type=ro; RODATA: load=M, type=ro; }\n")
@@ -61,5 +58,4 @@ for src in sorted((root / "tests" / "asm").glob("*.s")):      # machine-code tes
     subprocess.run(["ld65", "-C", str(cfg), "-o", str(prg), str(obj)], check=True)
     c1541("-attach", str(img), "-write", str(prg), src.stem)
 print(subprocess.run(["c1541", "-attach", str(img), "-list"], capture_output=True, text=True, encoding="latin1").stdout.split("\n", 2)[2].rsplit("Unit", 1)[0])
-print(f"BIG: 6000 bytes at $2000; full-sum {sum(big)}, stride-8 sum {xx} (the soak program checks the latter)")
 print(f"wrote {img}; for VDSUITE also copy {out / 'vdbad.d64'} and {out / 'vdplain.prg'} to the card root")

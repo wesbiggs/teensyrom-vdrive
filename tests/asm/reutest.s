@@ -5,7 +5,7 @@
 ;   2. Size: one tag byte at offset 0 of each 64 KB bank, written from bank 7 down to bank 0, then read back from bank 0 up.
 ;      An REU of N banks wraps the address, so bank N reads back bank 0's tag (bank N+1 bank 1's, ...). The first bank that does
 ;      not hold its own tag ends the REU. Every bank's line is printed ("BANK 4 HOLDS BANK 0" = wrapped there).
-;   3. Data: every 8 KB chunk of the size found gets its own pattern (STASH from $4000), then each chunk is FETCHed to $6000
+;   3. Data: every 8 KB chunk of the size found gets its own pattern (STASH from $6000), then each chunk is FETCHed to $8000
 ;      and compared byte by byte. A dot per good chunk, an X per bad one, the count of wrong bytes and the first one.
 ; Results also stay in memory for a monitor: $0334 status, $0335 banks found, $0336/$0337 wrong bytes, $0338 first bad chunk ($FF none).
 ; The REU command is an immediate one ($FF00 trigger off); nothing here uses the disk.
@@ -26,8 +26,8 @@ R_ACTRL  = REU + 10
 C_STASH  = $90              ; execute, no $FF00 wait, C64 -> REU
 C_FETCH  = $91              ; execute, no $FF00 wait, REU -> C64
 
-BUF      = $4000            ; 8 KB pattern
-BACK     = $6000            ; 8 KB read back
+BUF      = $6000            ; 8 KB pattern (above VDSUITE, which lowers the top of BASIC to $6000)
+BACK     = $8000            ; 8 KB read back
 TAGBASE  = $50              ; bank b's tag is TAGBASE + b
 MAXBANK  = 8                ; 512 KB, the TeensyROM's limit
 
@@ -50,13 +50,8 @@ cx       = $FE
 hk       = $02
 bad      = $03              ; this chunk had a wrong byte
 
-.segment "LOADADDR"
-        .word $0801
 .segment "CODE"
-        .word @next
-        .word 10
-        .byte $9E, "2061", 0
-@next:  .word 0
+start:                          ; VDSUITE calls it by SYS through the jump table in tests/asm/suite.s
         lda #0
         sta RBANKS
         sta RERR

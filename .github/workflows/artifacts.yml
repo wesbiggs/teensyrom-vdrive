@@ -1,23 +1,22 @@
-# Firmware for a release: builds three hex files with tools/build_firmware.sh (the TeensyROM commit in firmware/UPSTREAM +
-# firmware/teensyrom-vdrive.patch, TeensyROM's own build script) and attaches them to the GitHub release:
+# Build artifacts: everything a release ships, attached to the GitHub release when one is published.
+# Firmware: three hex files with tools/build_firmware.sh (the TeensyROM commit in firmware/UPSTREAM + firmware/teensyrom-vdrive.patch,
+# TeensyROM's own build script):
 #   tr           TeensyROM_<ver>_full.hex        plain TR, without DMA LOAD
 #   tr-plus      TeensyROM+_<ver>_full.hex       TR+, without DMA LOAD (the VD_DMA_LOAD=0 build, docs/DESIGN.md 49)
 #   tr-plus-dma  TeensyROM+_<ver>-DMA_full.hex   TR+ with DMA LOAD (Fab04_VDriveDMALoad; the version on the menu reads <ver>-DMA)
-# A manual run (Actions tab) or a push that changes the firmware builds all three and keeps them as a workflow artifact, without touching any release
-# (so a patch that no longer builds shows up before a release is cut).
 # The plain TR hex has no VDrive yet (VDrive sits under Fab04_KernalReplace, TR+ only); it is built so the release carries both boards' files.
-name: release firmware
+# Test files (tools/make_testdisk.py, tests/basic/README.md), to copy to the root of the SD card or USB stick:
+#   vdtest.d64   VDSUITE, DMATEST, LOADTEST's data files, HELLO, BIG, VDCOPY, VDrive Config
+#   vdbad.d64    VDSUITE's bad-sector image (section 5)
+#   vdplain.prg  VDSUITE's plain card file (section 6)
+# Runs only on demand: publishing a release, or a manual run (Actions tab, "Run workflow"), which builds them all and keeps them as
+# workflow artifacts without touching any release (run it before cutting a release to see that the patch still builds).
+name: build artifacts
 
 on:
   release:
     types: [published]
   workflow_dispatch:
-  push:
-    paths:
-      - 'firmware/**'
-      - 'd64/**'
-      - 'tools/build_firmware.sh'
-      - '.github/workflows/release.yml'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -77,8 +76,30 @@ jobs:
           path: build/release/*.hex
           if-no-files-found: error
 
+  testfiles:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      # c1541 and petcat (Ubuntu's vice package; no ROMs needed for these), ca65/ld65 for VDSUITE's machine code and the utilities
+      - name: Install VICE tools and cc65
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq vice cc65
+
+      - name: Build the test disk and the card files
+        run: |
+          python3 -I tools/make_testdisk.py build/testdisk
+          mkdir -p build/testfiles
+          cp build/testdisk/vdtest.d64 build/testdisk/vdbad.d64 build/testdisk/vdplain.prg build/testfiles/
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: testfiles
+          path: build/testfiles/*
+          if-no-files-found: error
+
   attach:
-    needs: build
+    needs: [build, testfiles]
     if: github.event_name == 'release'
     runs-on: ubuntu-24.04
     permissions:
@@ -90,11 +111,17 @@ jobs:
           merge-multiple: true
           path: hex
 
+      - uses: actions/download-artifact@v8
+        with:
+          name: testfiles
+          path: testfiles
+
       - name: Attach to the release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.event.release.tag_name }}
         run: |
-          ls -l hex
+          ls -l hex testfiles
           [ "$(ls hex/*.hex | wc -l)" = 3 ] || { echo "::error::expected three hex files"; exit 1; }
-          gh release upload "$TAG" hex/*.hex --clobber --repo "$GITHUB_REPOSITORY"
+          for f in vdtest.d64 vdbad.d64 vdplain.prg; do [ -f "testfiles/$f" ] || { echo "::error::$f missing"; exit 1; }; done
+          gh release upload "$TAG" hex/*.hex testfiles/vdtest.d64 testfiles/vdbad.d64 testfiles/vdplain.prg --clobber --repo "$GITHUB_REPOSITORY"

@@ -23,7 +23,7 @@ Please raise a GitHub issue if you find a non-working configuration.
 The `VDSUITE` test program passes on a real C64 on both the SD and the USB unit: `.d64` / `.d71` / `.d81` images made with `N:`, direct sector access,
 `C:` copy, REL files, append, `V` validate, `L:` / `W-` lock and write protect, bad sectors, plain files from the card, `MD:` / `RD:`, CMD paths and `S:` on images.
 Still **not run on a real C64**: the machine-code VDCOPY, the default device 8, VDrive+REU, `STATUS` compared with a real drive, and RUN/STOP during a load.
-The test disk (`make testdisk`, see [Building and testing](#building-and-testing)) has a BASIC test program for most of them.
+The test disk (`make testdisk`, see [Building and testing](#building-and-testing)) has `VDSUITE`, whose menu covers most of them.
 
 The original TR does not have the Kernal Replace functionality needed for this software. A more limited TR version, hooking the KERNAL's RAM vectors instead, is in the firmware since 0.9.0.58 but has only run in VICE; see [TR+ and TR compared](#tr-and-tr-compared) for what it keeps and loses.
 A C128 in 128 mode (BASIC 7.0) uses that same vector version, on the TR and the TR+, since 0.9.0.62: again VICE only so far, see [C128 in 128 mode](#c128-in-128-mode).
@@ -352,9 +352,10 @@ make build/kernal-tr.bin STOCK=/path/to/kernal-901227-03.bin
 ```
 
 ### Test disk for real hardware
-`make testdisk` builds `build/testdisk/vdtest.d64` with the BASIC test programs from `tests/basic/` (the same ones `make test` runs in VICE)
-and `VDCOPY`. Copy it to the SD card, mount it with `OPEN15,8,15,"CD:VDTEST.D64":CLOSE15`, then `LOAD"$",8` to see the programs. Each one
-prints its results; please include them in an issue if one fails. `tests/basic/README.md` says what each program checks.
+`make testdisk` builds `build/testdisk/vdtest.d64` (`VDSUITE`, the one test program, which `make test` also runs in VICE; `DMATEST`; `VDCOPY`; VDrive Config;
+and a few data files) and next to it `vdbad.d64` and `vdplain.prg`, which `VDSUITE` needs. Each release carries the three files too (built by
+`.github/workflows/artifacts.yml`). Copy all three to the root of the SD card (or USB stick), mount the disk with `OPEN15,8,15,"CD:VDTEST.D64":CLOSE15`,
+then `LOAD"VDSUITE",8` and `RUN`. It prints its results; please include them in an issue if a check fails. `tests/basic/README.md` says what each section checks.
 
 ## Further Documentation
 * [firmware/README.md](firmware/README.md): how the firmware glue and the KERNAL patches work.

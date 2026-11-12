@@ -1,20 +1,23 @@
 0 rem vdsuite: the hardware checklist in one program (tests/basic/README.md)
+5 if peek(65533)=252 then poke55,0:poke56,96:clr:rem c64: basic ends at $6000 (reutest, soak above)
 10 print chr$(147);"vdrive test suite"
 20 d=8:input"device";d:open15,d,15
-30 dim fl$(20),sp(9),sf(9),im$(3),dn$(3),fr(3),lt(3),dh(3),sn$(9)
+30 dim fl$(20),sp(17),sf(17),im$(3),dn$(3),fr(3),lt(3),dh(3),sn$(17)
 40 for k=1 to 3:read dn$(k),im$(k),fr(k),lt(k),dh(k):next
 50 data vs64,vs64.d64,664,35,18,vs71,vs71.d71,1328,70,18,vs81,vs81.d81,3160,80,40
-60 for k=1 to 8:read sn$(k):next
+60 for k=1 to 8:read sn$(k):next:for k=11 to 17:read sn$(k):next
 70 data setup,d64 image,d71 image,d81 image,bad sectors,card files,cmd paths,clean up
+80 data bus stress,load test,ram under rom,reu,soak,status text,renumber
 100 print chr$(147);"vdrive test suite, device";d
-110 for k=1 to 8:print k;sn$(k):next
-120 print" 9 run all":print" 10 checks by hand":print" 0 quit"
+110 for k=1 to 8:print k;sn$(k):next:print" 9 run all":print" 10 checks by hand"
+120 for k=11 to 17:print k;sn$(k):next:print" 0 quit"
 130 input"choice";m:if m=0 then close15:sys 64738
 140 if m=10 then 9000
-150 if m<1 or m>9 then 100
+150 if m<1 or m>17 then 100
 160 ra=(m=9):sn=m:if ra then sn=1:p=0:f=0
 170 print chr$(147);
-200 p0=p:f0=f:print"--- ";sn$(sn):on sn goto 1000,2000,2000,2000,5000,6000,7000,8000
+200 p0=p:f0=f:print"--- ";sn$(sn):if sn>10 then on sn-10 goto 10000,11000,12000,13000,14000,15000,16000
+205 on sn goto 1000,2000,2000,2000,5000,6000,7000,8000
 400 sp(sn)=p-p0:sf(sn)=f-f0:print sn$(sn);":";sp(sn);"passed,";sf(sn);"failed"
 410 if ra and sn<8 then sn=sn+1:goto 200
 420 if ra=0 then 480
@@ -46,15 +49,17 @@
 850 print#15,c$:gosub 900:return
 900 input#15,en,em$,et,es:return
 950 rem kernal load of n$ to its own address (basic's load stops on a time-out), s = st
-955 for i=1 to len(n$):poke 831+i,asc(mid$(n$,i,1)):next:poke780,len(n$):poke781,64:poke782,3:sys65469
-960 poke780,1:poke781,d:poke782,1:sys65466:poke780,0:sys65493:s=st:return
+955 gosub 970:poke780,1:poke781,d:poke782,1:sys65466:poke780,0:sys65493:s=st:return
+970 for i=1 to len(n$):poke 831+i,asc(mid$(n$,i,1)):next:poke780,len(n$):poke781,64:poke782,3:sys65469:return
 1000 rem setup: the scratch folder and its three images
 1010 c$="cd:/":gosub 850:t$="cd:/ to the card root":x=(en=0):gosub 700
+1015 l$="$":n$="":gosub 600:t$="the root lists as "+h$:x=(left$(h$,3)="sd:" or left$(h$,4)="usb:"):gosub 700
 1020 c$="md:vdscratch":gosub 850:t$="md:vdscratch (or there)":x=(en=0 or en=63):gosub 700
 1030 c$="cd:vdscratch":gosub 850:t$="cd:vdscratch":x=(en=0):gosub 700
 1040 for k=1 to 3:gosub 1500:t$=im$(k)+" mounted":x=(en=0):gosub 700
 1050 c$="cd:_":gosub 850:next
-1060 l$="$":n$="vs81.d81":gosub 600:t$="the folder lists them":x=fd:gosub 700
+1055 c$="cd:nowhere.d64":gosub 850:t$="missing image (62)":x=(en=62):gosub 700
+1060 l$="$":n$="vs81.d81":gosub 600:t$="the folder lists them, still selected":x=fd:gosub 700
 1070 goto 400
 1500 rem mount im$(k) in the current folder, made with n: if missing
 1510 c$="cd:"+im$(k):gosub 850:if en=0 then return
@@ -73,6 +78,9 @@
 2110 open2,d,2,"vsseq,s,r":e=0:for i=1 to 100:input#2,a$,b,g$,v
 2120 if a$<>"line" or b<>i or g$<>"check" or v<>i*7 then e=e+1
 2130 next:close2:gosub 900:t$="seq file, 100 lines":x=(e=0 and en=0):gosub 700
+2132 open2,d,2,"vsseq,s,r":e=0:for i=1 to 100:x$="line,"+str$(i)+" ,check,"+str$(i*7)+" "+chr$(13)
+2134 for j=1 to len(x$):get#2,a$:if a$<>mid$(x$,j,1) then e=e+1
+2136 next j,i:s=st:close2:t$="the same by get#, every byte, eoi last":x=(e=0 and s=64):gosub 700
 2140 c$="s:vsseq":gosub 850:t$="scratch it (01,1)":x=(en=1 and et=1):gosub 700
 2200 for i=1 to 3:n$="dt"+chr$(48+i):gosub 800:next
 2210 c$="r:dtnew=dt1":gosub 850:t$="rename":x=(en=0):gosub 700
@@ -197,11 +205,55 @@
 8100 n$="vdscratch":gosub 600:t$="the root without it":x=(fd=0):gosub 700
 8110 goto 400
 9000 print chr$(147);"checks by hand (see tests/basic/readme)"
-9010 print"- status: run status on a 1541 and here,":print"  compare the texts"
+9010 print"- 16 status text: run it on a 1541 too":print"  (device 8 there), compare the texts"
+9015 print"- with vdtest.d64 mounted:"
 9020 print"- run/stop during load"chr$(34)"big"chr$(34)",8,1:":print"  break, then load"chr$(34)"$"chr$(34)",8 works"
 9030 print"- load"chr$(34)"hello"chr$(34)" with no device number"
 9040 print"- vdrive+reu: reu-checker says 512 kb":print"  with an image mounted"
 9050 print"- vdcopy: sd to 1541 and back"
 9055 print"- s: on an image made read-only on a":print"  pc: 26, the file stays"
 9060 print"- d81 time: setup prints it the first":print"  time it makes vs81.d81"
+9070 print"- dmatest (on vdtest.d64) with":print"  tools/dmatest.py on the host"
 9090 input"return for menu";z$:goto 100
+9500 rem mc = the jump table of the machine code after this program (tests/asm/suite.s), 0 if missing
+9510 mc=peek(45)+256*peek(46)-12:if peek(65533)<>252 then mc=0:print"c64 only":return
+9520 if peek(mc-2)<>86 or peek(mc-1)<>68 then mc=0:print"machine code missing: load vdsuite again"
+9530 return
+10000 rem bus stress (bustest): mailbox registers and window at full speed, no commands; about a minute
+10010 gosub 9500:if mc=0 then 400
+10020 sys mc:e=peek(820)+256*peek(821):t$="no wrong read ("+mid$(str$(e),2)+")":x=(e=0 and peek(822)=0):gosub 700:goto 400
+11000 rem load test (loadtest): lda000 and ldd000 from vdtest.d64 in the card root, under basic and across $d000
+11010 gosub 9500:if mc=0 then 400
+11020 c$="cd:/":gosub 850:c$="cd:vdtest.d64":gosub 850:t$="mount vdtest.d64 (card root)":x=(en=0):gosub 700:if en then 400
+11030 poke 186,d:sys mc+3:t$="every byte, the guards, the end":x=(peek(820)=0):gosub 700:c$="cd:/":gosub 850:goto 400
+12000 rem ram under rom (vaulttest): $d000-$feff with $01=$34, as quest for the king uses it
+12010 gosub 9500:if mc=0 then 400
+12020 sys mc+6:e=0:for i=0 to 5:e=e+peek(820+i):next:t$="no wrong byte":x=(e=0):gosub 700:goto 400
+13000 rem reu (reutest): its size by bank wrap and every byte of it
+13010 gosub 9500:if mc=0 then 400
+13020 sys mc+9:b=peek(821):t$="an reu,"+str$(b*64)+" kb":x=(b>0):gosub 700
+13030 t$="every byte kept":x=(b>0 and peek(822)=0 and peek(823)=0):gosub 700:goto 400
+14000 rem soak: a 4 kb file saved once on vs64.d64, then loaded and checked until a key is pressed
+14010 if peek(65533)<>252 then print"c64 only":goto 400
+14020 gosub 1600:k=1:gosub 1500:c$="s:vssoak":gosub 850:print"making the file"
+14030 for i=0 to 4095:poke 24576+i,(i and 255)+int(i/256)*7 and 255:next
+14040 n$="vssoak":gosub 970:poke780,1:poke781,d:poke782,0:sys65466
+14050 poke251,0:poke252,96:poke780,251:poke781,0:poke782,112:sys65496:gosub 900:t$="save 4 kb":x=(en=0):gosub 700
+14060 n=0:e=0:print"any key stops it"
+14070 for i=0 to 4095 step 8:poke 24576+i,0:next:n$="vssoak":gosub 950:n=n+1
+14080 for i=0 to 4095 step 8:if peek(24576+i)<>((i and 255)+int(i/256)*7 and 255) then e=e+1
+14090 next:if s and 191 then e=e+1
+14100 print"pass";n;"errors";e:get k$:if k$="" then 14070
+14110 c$="s:vssoak":gosub 850:c$="cd:_":gosub 850:t$="soak,"+str$(n)+" loads":x=(e=0):gosub 700:goto 400
+15000 rem status text: the raw error channel text of a few commands; run it on a real drive too and compare
+15010 c$="s:nofile":gosub 15100:c$="r:a=zzz":gosub 15100:c$="x:foo":gosub 15100
+15020 open2,d,2,"nofile,s,r":gosub 15110:close2:c$="i":gosub 15100:goto 400
+15100 print#15,c$
+15110 print"[";:c=0
+15120 get#15,a$:c=c+1:if a$=chr$(13) or c>60 then print"]":return
+15130 print a$;:goto 15120
+16000 rem renumber with u0>: the new number answers and the suite goes on with it (17 again puts it back)
+16010 n=0:input"new device (8-30)";n:if n<8 or n>30 then 400
+16020 print#15,"u0>"+chr$(n):close15:d=n:open15,d,15:gosub 900:print"new device";d;"answers:";en;em$
+16030 t$="device"+str$(d)+" answers":x=(en=0):gosub 700
+16040 print"a fixed number now, kept in eeprom;":print"u0>"chr$(34)"+chr$(0) is automatic again":goto 400

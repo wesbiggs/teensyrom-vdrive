@@ -15,13 +15,8 @@ rnd      = $FF
 ystart   = $F7
 yend     = $F8              ; 0 = 256
 
-.segment "LOADADDR"
-        .word $0801
 .segment "CODE"
-        .word @next
-        .word 10
-        .byte $9E, "2061", 0
-@next:  .word 0
+start:                          ; VDSUITE calls it by SYS through the jump table in tests/asm/suite.s
         lda #<hdr
         ldx #>hdr
         jsr puts

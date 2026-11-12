@@ -40,7 +40,7 @@ import suite_files
 OK = b"00, OK,00,00\r"
 
 def make_image(workdir, bad):
-    """Build a test disk with c1541: TEST (BASIC), BIG (multi-sector, load $2000), the BASIC tests (bad = VDBAD.D64's bad file sector)."""
+    """Build a test disk with c1541: TEST (BASIC), BIG (multi-sector, load $2000), VDSUITE (bad = VDBAD.D64's bad file sector)."""
     rnd = random.Random(1)
     big = b"\x00\x20" + bytes(rnd.randrange(256) for _ in range(6000))
     prg = b"\x01\x08" + bytes.fromhex("0e08 0a00 99 22 48 49 22 00 00 00".replace(" ", ""))  # 10 PRINT"HI"
@@ -51,14 +51,7 @@ def make_image(workdir, bad):
     c("-format", "mockdisk,md", "d64", str(img))
     c("-attach", str(img), "-write", str(workdir / "test.prg"), "test")
     c("-attach", str(img), "-write", str(workdir / "big.prg"), "big")
-    basic = pathlib.Path(__file__).resolve().parent.parent / "tests" / "basic"
-    xx = sum(big[2 + i] for i in range(0, 6000, 8))                 # stride-8 checksum soak.bas compares against
-    for src in sorted(basic.glob("*.bas")):
-        out = workdir / (src.stem + ".prg")
-        text = workdir / src.name
-        text.write_text(suite_files.subst(src.read_text().replace("@XX@", str(xx)), bad))
-        subprocess.run(["petcat", "-w2", "-o", str(out), "--", str(text)], check=True, capture_output=True)
-        c("-attach", str(img), "-write", str(out), src.stem)
+    c("-attach", str(img), "-write", str(suite_files.build_vdsuite(workdir / "suite", bad, mock=True)), "vdsuite")   # BUSTEST on the RAM mailbox
     from make_util import build as build_util
     c("-attach", str(img), "-write", str(build_util(workdir / "util", mock=True)), "vdcopy")
     return img.read_bytes(), big
@@ -175,7 +168,8 @@ def main(kernal, scenario="basic", vecprg=None):
         (workdir / "geo.bin").write_bytes(gimg)
         geo = ["-georam", "-georamsize", "512", "-georamimage", str(workdir / "geo.bin"), "+georamimagerw"]
     machine = ["x128"] if c128 else ["x64sc", "-kernal", kernal]                    # x128: its own ROMs (VICE's C128 data folder)
-    vice = subprocess.Popen([machine[0], "-config", str(workdir / "vicerc"), "-default", "-warp", *drives, *geo, *machine[1:],
+    reu = ["-reu", "-reusize", "512"] if scenario == "basic" else []   # VDSUITE's REUTEST (section 14)
+    vice = subprocess.Popen([machine[0], "-config", str(workdir / "vicerc"), "-default", "-warp", *drives, *geo, *reu, *machine[1:],
                              "-binarymonitor", "-binarymonitoraddress", "ip4://127.0.0.1:%d" % MON_PORT],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
@@ -192,13 +186,12 @@ def main(kernal, scenario="basic", vecprg=None):
             image = bytes(image)
         disk = Disk(image)
         io = VIO()
-        # a fake SD card for CD:/mount/renumber tests (cdtest.bas, renum.bas, vdsuite.bas)
+        # a fake SD card for CD:/mount/renumber tests (vdsuite.bas)
         (sdroot / "mock.d64").write_bytes(image)
         for fmt, nm_, fn in (("d81", "bigdisk", "big.d81"), ("d71", "twodisk", "two.d71")):
             subprocess.run(["c1541", "-format", nm_ + ",xx", fmt, str(sdroot / fn)], check=True, capture_output=True)
             (workdir / "h.prg").write_bytes(b"\x01\x08" + bytes.fromhex("0b08 0a00 99 22 48 49 22 00 00 00".replace(" ", "")))   # 10 PRINT"HI"
             subprocess.run(["c1541", "-attach", str(sdroot / fn), "-write", str(workdir / "h.prg"), "hello"], check=True, capture_output=True)
-        subprocess.run(["c1541", "-format", "vdtest,01", "d64", str(sdroot / "vdtest.d64")], check=True, capture_output=True)
         hs = {"cwd": sdroot, "disks": {}, "entries": [], "i": 0, "saved": [], "cur": None, "snap": None, "plain": None}
         def h_mount(ctx, unit, name, out):              # an image keeps its contents across unmount / mount (written back, as on the card)
             p = hs["cwd"] / name.decode().lower()
@@ -546,13 +539,22 @@ def main(kernal, scenario="basic", vecprg=None):
         run('CLOSE2\r')
         run('OPEN15,8,15,"S:NUMTST":CLOSE15\r')
 
-        # --- the shipped BASIC test programs, run for real inside VICE ---
+        # --- the shipped BASIC test program (VDSUITE), run for real inside VICE ---
+        def on_screen(text):
+            return any(" ".join(text.split()) in " ".join(r.split()) for r in m.screen())
+        def answer(a, wait=3.0):
+            """a = keys (RETURN added), or (keys, a text to wait for, at most s) for machine code that makes no mailbox calls"""
+            if isinstance(a, tuple):
+                m.keys(a[0] + '\r'); t_end = time.time() + a[2]
+                while time.time() < t_end and not on_screen(a[1]): service(0.5, limit=2)
+            else:
+                m.keys(a + '\r'); service(wait)
         def prog(name, answers, expect, wait=3.0, dev=8):
             run('NEW\r')
             run('LOAD"%s",%d\r' % (name.upper(), dev), "READY.")
             m.keys('RUN\r'); service(1.0)
             for a in answers:
-                m.keys(a + '\r'); service(wait)
+                answer(a, wait)
             scr = m.screen()
             norm = [" ".join(r.split()) for r in scr]
             ok_ = all(any(" ".join(e.split()) in r for r in norm) for e in expect)
@@ -560,24 +562,6 @@ def main(kernal, scenario="basic", vecprg=None):
             if not ok_:
                 print("\n".join(scr))
             return ok_
-        ok = prog("seqtest", [""], ["SEQ TEST PASS", "CHECKED 100 LINES, 0 ERRORS"]) and ok
-        ok = prog("dostest", [""], ["10 PASSED, 0 FAILED"]) and ok
-        ok = prog("blktest", [""], ["12 PASSED, 0 FAILED"]) and ok
-        ok = prog("reltest", [""], ["14 PASSED, 0 FAILED"], wait=8.0) and ok
-        ok = prog("dos2test", [""], ["12 PASSED, 0 FAILED"], wait=6.0) and ok
-        run('NEW\r')
-        run('LOAD"SOAK",8\r', "READY.")
-        m.keys('RUN\r')
-        for _ in range(12):                                           # let it make several passes (each reloads BIG and checksums it)
-            service(0.5, limit=5)
-            if any("PASS 3 " in r for r in m.screen()): break
-        scr = m.screen()
-        soak_ok = any("PASS 3 ERRORS 0" in r.replace("  ", " ") for r in scr) and not any("MISMATCH" in r for r in scr)
-        print(("PASS" if soak_ok else "FAIL"), "BASIC soak program: 3 load+verify passes, 0 errors")
-        if not soak_ok: print("\n".join(scr))
-        ok = ok and soak_ok
-        m.keys(' '); service(1.5, limit=15)                            # any key stops the soak loop
-
         # --- fault injection: a bad answer in the middle of a LOAD must give an error, never silent corruption ---
         m.write(0x2000, bytes(6000))                                  # known contents to see whether anything was copied after the fault
         fault["at"], fault["n"] = 3, 0
@@ -649,18 +633,6 @@ def main(kernal, scenario="basic", vecprg=None):
         run('OPEN15,8,15,"S:SAVEME":CLOSE15\r')
         run('LOAD"SAVEME",8\r', "FILE NOT FOUND")
 
-        # --- cdtest + renum: they unmount / renumber the drive, so they run after the disk checks and before the dead-mailbox test ---
-        ok = prog("cdtest", [""], ["6 PASSED, 0 FAILED"]) and ok
-        run('OPEN15,8,15,"CD:MOCK.D64":CLOSE15\r')                    # remount the mock disk
-        ok = prog("renum", ["8", "10"], ["NEW DEVICE 10 ANSWERS: 0 OK"]) and ok
-        check("U0> reported the new number for persistence", hs["saved"] and hs["saved"][-1] == (10, 0))
-        ok = prog("renum", ["10", "8"], ["NEW DEVICE 8 ANSWERS: 0 OK"], dev=10) and ok
-        check("... an explicit 8 is a fixed number now (saved as 8, not as 'automatic')", hs["saved"][-1] == (8, 0))
-        run('OPEN15,8,15,"U0>"+CHR$(0):CLOSE15\r')                    # CHR$(0): back to automatic numbering
-        check("U0>CHR$(0) saves 'automatic'", hs["saved"][-1] == (0, 0))
-        run('LOAD"$",8\r', "SEARCHING FOR $")
-        check("... and the drive still answers as 8", bytes(m.read(DEV0, 1)) == bytes([8]))
-
         # --- paths in LOAD names, UI, D71 / D81 images ---
         run('NEW\r')
         run('10 OPEN15,8,15,"UI":INPUT#15,A,B$:PRINT"UI=";A;B$:CLOSE15\r')
@@ -705,9 +677,47 @@ def main(kernal, scenario="basic", vecprg=None):
 
         ok = prog("vdsuite", ["", "1", "", "6", "", "6"], ["CARD FILES: 20 PASSED, 0 FAILED"], wait=10.0) and ok   # 6 twice: T2/E.D64 left by the first
         quit_suite()
-        ok = prog("vdsuite", ["", "9"], ["TOTAL 186 PASSED, 0 FAILED"], wait=10.0) and ok
+        ok = prog("vdsuite", ["", "9"], ["TOTAL 191 PASSED, 0 FAILED"], wait=10.0) and ok
         quit_suite()
         check("vdsuite: its clean-up left no VDSCRATCH folder", not (sdroot / "vdscratch").exists() and (sdroot / "vdplain.prg").exists())
+        # the machine-code checks appended to VDSUITE (BUSTEST on the RAM mailbox, VAULTTEST, REUTEST with VICE's 512 KB REU; LOADTEST
+        # is not run: its LDD000 overwrites the mock's mailbox at $C800), the soak, the status probe and the renumbering
+        def step(keys, text, limit, label, enter=True):
+            """keys (RETURN added unless enter is False), then wait up to limit s for text on the screen and check it"""
+            m.keys(keys + ('\r' if enter else '')); t_end = time.time() + limit
+            service(0.5, limit=2)                                       # at least once: a text still on the screen may be an old one
+            while time.time() < t_end and not on_screen(text): service(0.5, limit=2)
+            good = on_screen(text); check("vdsuite: " + label, good)
+            if not good: print("\n".join(m.screen()))
+        ok = prog("vdsuite", [""], ["CHOICE"]) and ok
+        step("11", "BUS STRESS: 1 PASSED, 0 FAILED", 240, "11 bus stress (BUSTEST), no wrong read")
+        step("", "CHOICE", 10, "back to the menu")
+        step("13", "RAM UNDER ROM: 1 PASSED, 0 FAILED", 120, "13 RAM under ROM (VAULTTEST)")
+        step("", "CHOICE", 10, "back to the menu")
+        step("14", "REU: 2 PASSED, 0 FAILED", 240, "14 REUTEST")
+        check("vdsuite: ... it found 512 KB", on_screen("REU, 512 KB"))
+        step("", "CHOICE", 10, "back to the menu")
+        step("15", "PASS 3 ERRORS 0", 120, "15 soak, 3 loads without an error")
+        step(" ", "SOAK: 2 PASSED, 0 FAILED", 60, "any key ends the soak, clean", enter=False)
+        step("", "CHOICE", 10, "back to the menu")
+        step("16", "STATUS TEXT: 0 PASSED, 0 FAILED", 30, "16 status text")
+        check("vdsuite: ... the raw replies in brackets (nothing mounted: 74)", on_screen("[74,DRIVE NOT READY,00,00]"))
+        # renumber (U0> sent with PRINT#'s CR), the suite goes on with the new number; then back to 8
+        step("", "CHOICE", 10, "back to the menu")
+        step("17", "NEW DEVICE (8-30)", 10, "17 renumber asks for the number")
+        step("10", "RENUMBER: 1 PASSED, 0 FAILED", 30, "device 10 answers after U0>")
+        check("vdsuite: ... NEW DEVICE 10 ANSWERS: 0 OK", on_screen("NEW DEVICE 10 ANSWERS: 0 OK"))
+        check("U0> reported the new number for persistence", hs["saved"] and hs["saved"][-1] == (10, 0))
+        step("", "SUITE, DEVICE 10", 10, "the menu shows device 10")
+        step("17", "NEW DEVICE (8-30)", 10, "17 renumber asks for the number")
+        step("8", "NEW DEVICE 8 ANSWERS: 0 OK", 30, "device 8 answers again")
+        check("... an explicit 8 is a fixed number now (saved as 8, not as 'automatic')", hs["saved"][-1] == (8, 0))
+        quit_suite()
+        check("vdsuite: the soak's VDSCRATCH is left (the clean-up removes it)", (sdroot / "vdscratch" / "vs64.d64").exists())
+        run('OPEN15,8,15,"U0>"+CHR$(0):CLOSE15\r')                    # CHR$(0): back to automatic numbering
+        check("U0>CHR$(0) saves 'automatic'", hs["saved"][-1] == (0, 0))
+        run('LOAD"$",8\r', "SEARCHING FOR $")
+        check("... and the drive still answers as 8", bytes(m.read(DEV0, 1)) == bytes([8]))
         run('NEW\r')
 
         # --- SYS64738 while the handler answers: the cold start asks for the TR menu (VIO_MENU) and waits for the Teensy's reset ---
@@ -885,14 +895,11 @@ def agent_tests(m, run, check, service, log, disk, big, workdir, vec, real):
     expect('NEW\r')
 
     if not real:
-        # the shipped BASIC test programs talk to device 8
-        prog("seqtest", 8, [""], ["SEQ TEST PASS", "CHECKED 100 LINES, 0 ERRORS"])
-        prog("dostest", 8, [""], ["10 PASSED, 0 FAILED"])
-        prog("blktest", 8, [""], ["12 PASSED, 0 FAILED"])
-        prog("reltest", 8, [""], ["14 PASSED, 0 FAILED"], wait=8.0)
-        prog("dos2test", 8, [""], ["12 PASSED, 0 FAILED"], wait=6.0)
-        prog("cdtest", 8, [""], ["6 PASSED, 0 FAILED"])
-        expect('OPEN15,8,15,"CD:MOCK.D64":CLOSE15\r')
+        # VDSUITE on device 8: setup (CD, MD, N: of three images) and the D64 section (SEQ, DOS commands, B-/U1/U2, REL, C:, V)
+        prog("vdsuite", 8, ["", "1", "", "2"], ["D64 IMAGE: 44 PASSED, 0 FAILED"], wait=10.0)   # (the menu cleared setup's line)
+        m.jump(0xFE66); service(1.5, limit=15)          # leave its INPUT: RUN/STOP+RESTORE (tested on its own below); NEW closes the files
+        expect('NEW\r')
+        expect('OPEN15,8,15,"CD:/MOCK.D64":CLOSE15\r')
         expect('NEW\r')
 
     # --- RUN/STOP+RESTORE: the NMI routine's RESTOR / IOINIT / CINT / BASIC warm start ($FE66). IMAIN survives and hooks again ---

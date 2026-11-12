@@ -2,7 +2,20 @@
 
 ## v0.9.0.64
 
+### Changed
+- **One test program, `VDSUITE`.** The separate programs on `vdtest.d64` are folded into it: SEQTEST, DOSTEST, DOS2TEST, BLKTEST and
+  RELTEST were already its image sections; CDTEST's root header and missing-image (62) checks joined setup (`1`), GETRAW's byte-by-byte
+  `GET#` read joined each image section (now 44 checks; "run all" 191), and SOAK, STATUS and RENUM are menu items `15`-`17` (the soak saves
+  its own 4 KB file; renumber goes on with the new number). BUSTEST, LOADTEST, VAULTTEST and REUTEST are machine code appended to the
+  program (`tests/asm/suite.s`), items `11`-`14`; REUTEST's buffers moved to `$6000`/`$8000` (VDSUITE lowers the top of BASIC to `$6000`).
+  `DMATEST` stays separate. `vdtest.d64` now holds `VDSUITE`, `DMATEST`, `HELLO`, `BIG`, `LDA000`, `LDD000`, `VDCOPY`, `VDCONFIG`.
+  VICE (`make test`): every item but `12` (its `LDD000` overwrites the mock's mailbox), with a 512 KB REU in the `basic` run; the agent run
+  takes VDSUITE's setup and D64 sections. **Not on hardware** in this form (the checks themselves are the hardware-run ones). `tests/basic/README.md`.
+
 ### Build
+- The release workflow is now **"build artifacts"** (`.github/workflows/artifacts.yml`, was `release.yml`): besides the three firmware
+  hex files it builds the test files `vdtest.d64`, `vdbad.d64` and `vdplain.prg` and attaches them to a published release too. It now
+  runs only on demand (a published release or a manual run), no longer on pushes that touch the firmware. Not run in CI yet.
 - GitHub Actions updated off the deprecated Node 20 versions: `checkout` v7, `setup-python` v7, `setup-node` v7, `cache` v6,
   `upload-artifact` v7, `download-artifact` v8 (all Node 24). No change to what the workflows do; not run in CI yet.
 

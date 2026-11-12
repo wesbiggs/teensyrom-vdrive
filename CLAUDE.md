@@ -52,10 +52,13 @@ Firmware integration and usage: `firmware/README.md`.
 * **Not yet checked on hardware** (VDSUITE's hand checks): `STATUS` compared with a real drive, IRQ/STOP-key interplay during loads, `LOAD` with no device number,
   VDrive+REU (REU-checker 512 KB with an image mounted), the VDCOPY machine-code rewrite (SD to 1541 and back), `S:` on a read-only image file (26);
   the same hand checks on a C128 in C64 mode (its "run all" passes, see above).
-* **BASIC test programs** (`tests/basic/`, built into `build/testdisk/vdtest.d64` by `make testdisk`) run inside VICE in `make test` and on the C64; they
-  found two real bugs that unit tests missed: `CIOUT` must return `A` = the byte sent (CHROUT tail-jumps into it; BASIC's PRINT broke after a
+* **The test program is `VDSUITE`** (since 0.9.0.64 the only one besides `DMATEST`: the separate BASIC tests SEQTEST, DOSTEST, DOS2TEST, BLKTEST, RELTEST,
+  CDTEST, GETRAW, SOAK, STATUS, RENUM became its checks or menu items 15-17, and BUSTEST, LOADTEST, VAULTTEST, REUTEST are machine code appended to it
+  (`tests/asm/suite.s`, linked after the BASIC text by `tools/suite_files.py`'s `build_vdsuite`; menu items 11-14; the build fails past `$5800`, and VDSUITE lowers the
+  top of BASIC to `$6000`). It is on `build/testdisk/vdtest.d64` (`make testdisk`) and runs inside VICE in `make test` (all but `12`, whose `LDD000` hits the mock's
+  mailbox) and on the C64. The old BASIC programs found two real bugs that unit tests missed: `CIOUT` must return `A` = the byte sent (CHROUT tail-jumps into it; BASIC's PRINT broke after a
   number), and `U0>` must also be accepted with PRINT#'s trailing CR.
-  `VDSUITE` (tests/basic/vdsuite.bas, the "Not yet checked" items in one menu program; 186 checks with the clean-up (`8`, `S:`/`RD:`), all pass in the `basic` VICE run and on hardware (SD and USB, see above)) also needs `vdbad.d64` and
+  `VDSUITE` (tests/basic/vdsuite.bas, the "Not yet checked" items in one menu program; 191 checks in "run all" with the clean-up (`8`, `S:`/`RD:`), all pass in the `basic` VICE run and on hardware (SD and USB, see above)) also needs `vdbad.d64` and
   `vdplain.prg` from `make testdisk` (`tools/suite_files.py`, shared with the mock) in the card root. It found a drive bug, fixed in 0.9.0.36: a successful command did not reset an error nobody
   read (a 1541 says `00, OK` after it), so a stale `62` from an earlier `LOAD` came back after a good `CD:/`. Now every OPEN and command starts at `00` (`VD_UNLSN` in `vdrive.c`; CLOSE keeps its own error).
 * **Lessons from bring-up (keep):** (1) a flat NTSC C128 in C64 mode did not reliably serve the replacement KERNAL (the Skoe HIRAM sense cannot work there; upstream's DMA sense, in since 0.9.0.37, fixes it: VDSUITE's "run all" passes on an NTSC C128 with 0.9.0.42): before that, use a real C64, and
@@ -85,7 +88,7 @@ Firmware integration and usage: `firmware/README.md`.
     and set validates an image and rewrites the sidecar, so the next start mounts it.
   * Auto-mount (0.9.0.2): a program launched from inside a `.d64`/`.d71`/`.d81` opened in the TR menu (the menu browses all three; owner tried `.d64` and `.d81`) (`DriveDirPath` ends in `*`, menu source SD/USB) gets that image mounted by `VDrive_PreStart()` on the matching unit (SD=8, USB=9), its folder as the `CD:` directory.
   * Remembered mounts (0.9.0.3): each unit keeps `/.vdrive` (dot-named, so TR 0.9+ and our listing hide it) on its own card, holding the last mounted image path. Written on every successful mount, removed on any unmount (`CD:_`, `CD:/`), read in `VDrive_PreStart()` when the launch did not come from a disk image on that unit. A missing/invalid image just starts unmounted.
-* **Bus timing margin (found with `tests/asm/bustest.s`, BUSTEST on the test disk):** on a real C64 the IO1/IO2 handlers answered late about once in 8000 (IO1) / 30000 (IO2)
+* **Bus timing margin (found with `tests/asm/bustest.s`, BUSTEST; VDSUITE `11` since 0.9.0.64):** on a real C64 the IO1/IO2 handlers answered late about once in 8000 (IO1) / 30000 (IO2)
   reads, giving bit-mixed or `$00` bytes (corrupt `SEQTEST`/`GETRAW`/directory listings); the stock ROM path was clean, so the cause is the number of cycles before the
   data lines are driven. 0.9.0.11 reads IO1 registers straight from the struct (about 10x fewer errors) and the KERNAL reads ST/DATA, the fast-LOAD header and every
   window byte twice in a row until two reads agree, and reads back window writes. `VD_TRACE` is off by default (it prints right after the answer, but was not the cause).
@@ -137,7 +140,7 @@ Firmware integration and usage: `firmware/README.md`.
   PR #85 branch, pushed 2026-11-08): with the PIT masked (0.9.0.14 / #85) a wait could not receive the rest of a payload. Builds; fw_host passes. The DMATEST time-outs it was
   meant for turned out to be WiFi loss on the host's path (DESIGN 48: `--nodelay` 300 rounds passed from the Mac, steady from a wired Pi); not shown to fix anything seen.
 * 0.9.0.53: **no VDrive data in RAM2** (docs/DESIGN.md 50). Our ~9.4 KB of `DMAMEM` statics shrank the heap the REU takes its 8 KB banks from: 63 banks, rounded to 256 KB, under VDrive+REU *and* the plain "512KB REU" (owner, 0.9.0.51; stock 512 KB). Now plain `static` (DTCM). **Never add `DMAMEM` statics to VDrive code.**
-  `REUTEST` (`tests/asm/reutest.s`, test disk): the REU's real size by bank wrap plus a full data check; VICE 128/256/512/none; on hardware 0.9.0.51 VDrive+Swift+REU 128 KB clean. On hardware (owner, 0.9.0.53): plain "512KB REU" 512 KB again; VDrive+REU still 256 KB (62 banks); fixed in 0.9.0.55, below.
+  `REUTEST` (`tests/asm/reutest.s`; VDSUITE `14` since 0.9.0.64, buffers moved to `$6000`/`$8000`): the REU's real size by bank wrap plus a full data check; VICE 128/256/512/none; on hardware 0.9.0.51 VDrive+Swift+REU 128 KB clean. On hardware (owner, 0.9.0.53): plain "512KB REU" 512 KB again; VDrive+REU still 256 KB (62 banks); fixed in 0.9.0.55, below.
   0.9.0.54: VDrive frees Kernal Replace's 8 KB heap `KernalBin` after copying it to `KernalFast` (one bank); prints `VDrive: RAM2 free before the REU`. On hardware (owner): 512 KB from F2, still 256 KB (63 banks) when launched from the SD browser.
   0.9.0.55: the menu's 64 KB directory listing (`DriveDirMenu`), freed by `AllocRAMBanks()` only after VDrive's PreStart had opened its `File`s above it, left a hole; `KERNALPreStart()` now frees it first for the two REU handlers (`make_tr_patch.sh`). `RAM2BytesFree()` only measures above the heap top. **Works on hardware (owner, 2026-11-09): VDrive+REU 512 KB launched from the SD browser.**
   0.9.0.56: the 0.9.0.54 free left `KernalBin` NULL, which upstream's `InitHndlr_KernalReplace()` reads as "nothing loaded", so it never re-hooked `KernalCheck` after the PRG transfer: every VDrive menu launch ran on the C64's own KERNAL (VDrive Config hung after going lower case; owner, 0.9.0.55). Now a `KernalFastOnly` flag counts as loaded. Firmware builds, fw_host passes; **works on hardware (owner, 2026-11-09): VDrive Config launches from the TR menu again.**
@@ -267,6 +270,7 @@ tests/          test_d64*.py, test_vdrive.py, test_vio.py, test_vvec.py (unit), 
                 test_vdconfig.py + c64_sim.py (VDrive Config's PRG in py65, KERNAL calls answered in Python), test_vdcopy.py (VDCOPY in py65 against vdrive.c),
                 test_irq_border.py, test_banner.py, test_reset_hook.py, test_vcall_gate.py, test_dmatest.py (py65),
                 menuprobe_vice.py (the menu's probe routine in VICE with true-drive 1541s), variants_vice.py (the patch on each whitelisted ROM in VICE)
+                basic/vdsuite.bas (VDSUITE, the test program), asm/ (suite.s = VDSUITE's machine code: bustest, loadtest, vaulttest, reutest; dmatest.s stand-alone)
 build/          generated, git-ignored (kernal images derived from the ROM, libd64.dylib, disassembly)
 ```
 
@@ -308,8 +312,8 @@ The full `make test`, VICE runs included, works in a cloud session; do not skip 
 * Still say in the pull request what was not run: a VICE run is not a hardware run.
 * **GitHub Actions** (`.github/workflows/test.yml`) runs the same setup and `make test` on every push to `main`/`bleeding-edge` and every pull request,
   plus `make build/kernal-tr.bin` and `make util`. `cloud_setup.sh` uses `sudo` when not root; py65 comes from `actions/setup-python` (`python3 -I` skips the user site).
-* **Releases** (`.github/workflows/release.yml`): publishing a GitHub release builds `tr`, `tr-plus` and `tr-plus-dma` with `tools/build_firmware.sh` and attaches
-  `TeensyROM_<ver>_full.hex`, `TeensyROM+_<ver>_full.hex` and `TeensyROM+_<ver>-DMA_full.hex`; a tag `v<ver>` must match the built version (bump `firmware/REV` first). A manual run, or a push touching `firmware/`, `d64/` or the build script, builds all three as an artifact only.
+* **Releases** (`.github/workflows/artifacts.yml`, "build artifacts"; `release.yml` until 0.9.0.64): publishing a GitHub release builds `tr`, `tr-plus` and `tr-plus-dma` with `tools/build_firmware.sh` and the test files with `tools/make_testdisk.py`, and attaches
+  `TeensyROM_<ver>_full.hex`, `TeensyROM+_<ver>_full.hex`, `TeensyROM+_<ver>-DMA_full.hex`, `vdtest.d64`, `vdbad.d64` and `vdplain.prg`; a tag `v<ver>` must match the built version (bump `firmware/REV` first). It never runs on a push: a manual run (Actions tab) builds them all as artifacts only, e.g. to check the patch still builds before a release.
 
 ## Gotchas
 * **Firmware version stamp:** our builds are `<stock>.<REV>` (stock 0.9 -> `0.9.0.1`), written into `TRVersion` by `tools/make_tr_patch.sh` from
