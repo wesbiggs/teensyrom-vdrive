@@ -752,6 +752,11 @@ FLASHMEM void VDrive_PreStart(bool agent)
    vdNoMenuProbe = false;
 }
 
+// Where a BORDER request (Alt-button disk switching) goes besides the register: NULL for the KERNAL handlers, whose IRQ routine reads
+// it; the agent's DMA writer on the TR+ (IOH_VDriveAgent.c). false = not done now (I/O not mapped in, the C64 held by the host, ...):
+// VD_AltPoll() asks again while the request is current.
+static bool (*vdBorderOut)(uint8_t reg) = NULL;
+
 #ifdef Fab04_VDrive
 // ---- the menu's bus probe before launch (MainMenu.asm, VDriveProbe; docs/DESIGN.md 37) -------------------------------------
 // Only the 6502 can see which numbers real drives hold. The TR menu probes the bus right after this PreStart, so DEV0/DEV1
@@ -969,6 +974,7 @@ FLASHMEM void InitHndlr_VDrive()
       vio_publish_devices(vio);
    }
    InitHndlr_KernalReplace();
+   vdBorderOut = NULL;              // the KERNAL's IRQ routine flashes the border
    VD_AltButtonInit();
    vdDrivePoll = &PollingHndlr_VDrive;
 }
@@ -1230,7 +1236,8 @@ FLASHMEM int VDrive_RemoteIdleSet(int unit, const char *path, char *msg, size_t 
 // stick that is missing, an unreadable list or no usable image in it flashes red quickly for 2 s. An image that has disappeared is
 // skipped. With nothing mounted (or an image that is not in the list) the first usable image is picked.
 // Wired to the TR's Alt button only when its setting (TR menu, settings) is "None": a chosen action is never taken over.
-// The border change itself is done by the KERNAL's IRQ routine (patches/vdrive.s, irq_border), driven by the BORDER register.
+// The border change itself is done by the KERNAL's IRQ routine (patches/vdrive.s, irq_border), driven by the BORDER register; under
+// the agent, which has no IRQ hook, by DMA on the TR+ (vdBorderOut, IOH_VDriveAgent.c).
 #define VD_CfgBufSize    2048
 #define VD_CfgMaxEntries 32
 #define VD_TapWindowMs   1000
@@ -1302,12 +1309,14 @@ struct stcVDFlash
    uint16_t qOnMs, qOffMs;
 };
 static stcVDFlash vdFlash;
+static bool vdBorderRetry = false;
 
 FLASHMEM static void VD_FlashPhase(uint8_t phase, uint8_t reg)
 {
    vdFlash.phase = phase;
    vdFlash.since = millis();
    vioHot.border = reg;
+   vdBorderRetry = vdBorderOut && reg != VIO_BRD_IDLE && !vdBorderOut(reg);
 }
 
 FLASHMEM static void VD_FlashBegin(uint8_t color, uint8_t count, uint16_t onMs, uint16_t offMs)
@@ -1414,6 +1423,7 @@ FLASHMEM void SpecialBtn_VDrive(bool Up_nDn)
 
 FLASHMEM void VD_AltPoll()
 {
+   if (vdBorderRetry && vdBorderOut) vdBorderRetry = !vdBorderOut(vioHot.border);
    VD_FlashPoll();
    if (vdTaps == 0 || vdSwitching) return;
    if (vdTaps < 2 && millis() - vdTapFirstMs < VD_TapWindowMs) return;     // a second tap may still come
@@ -1427,7 +1437,7 @@ FLASHMEM void VD_AltPoll()
 extern void (*fSpecialBtnChange)(bool Up_nDn);
 FLASHMEM void VD_AltButtonInit()
 {
-   vdTaps = 0; vdFlash.phase = VDF_Idle; vdFlash.queued = false;
+   vdTaps = 0; vdFlash.phase = VDF_Idle; vdFlash.queued = false; vdBorderRetry = false;
 #ifdef Fab04_SpecialButton
    if ((IO1[rwRegPwrUpDefaults2] & rpud2AltBtnActionMask) == rpud2AltBtnNone) fSpecialBtnChange = &SpecialBtn_VDrive;
 #endif

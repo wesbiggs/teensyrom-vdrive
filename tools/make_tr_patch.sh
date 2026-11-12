@@ -194,9 +194,18 @@ edit("Source/C64/MainMenuCRT/source/PRGLoadStartReloc.s",
 edit("Source/Teensy/C128Prg.ino",
      '   SendMsgPrintfln(PSTR("Starting C128 mode"));\n',
      '#ifdef VDrive_Agent\n'
-     '   VDrive_C128Launch(); //teensyrom-vdrive: with a VDrive Special IO this launch runs the agent (IOH_VDriveAgent.c)\n'
+     '   const bool VDriveAgent = VDrive_C128Launch(); //teensyrom-vdrive: with a VDrive Special IO this launch runs the agent (IOH_VDriveAgent.c)\n'
      '#endif\n'
      '   SendMsgPrintfln(PSTR("Starting C128 mode"));\n')
+# ... and Exit to C128 BASIC (an empty program) then goes through the boot ROM as well, whose loader installs the agent (no RUN typed)
+edit("Source/Teensy/C128Prg.ino",
+     '   if (IsEmptyBasicPrg(Prg))\n   {\n      ExitToC128Basic();\n',
+     '#ifdef VDrive_Agent\n'
+     '   if (IsEmptyBasicPrg(Prg) && !VDriveAgent) //teensyrom-vdrive: with the agent, the boot ROM\'s loader installs it, so it runs this too\n'
+     '#else\n'
+     '   if (IsEmptyBasicPrg(Prg))\n'
+     '#endif\n'
+     '   {\n      ExitToC128Basic();\n')
 # ... and the boot ROM's loader hooks the KERNAL's vectors through the agent once the handler swap is done, in the system bank
 # (I/O in), before it types RUN: the same check and call as PRGLoadStartReloc.s above.
 edit("Source/C64/C128PrgBoot/C128PrgBoot.asm",
@@ -204,7 +213,10 @@ edit("Source/C64/C128PrgBoot/C128PrgBoot.asm",
      "        lda #SYSTEM_BANK\n        sta MMU_CR\n"
      "        ; VDrive agent (teensyrom-vdrive, docs/DESIGN.md 56): let it hook the KERNAL's vectors now that the program is in memory\n"
      "        lda $df09\n        cmp #$d6\n        bne +\n        lda $df0a\n        cmp #$64\n        bne +\n"
-     "        lda $de14\n        cmp #$20\n        bne +\n        lda #$a5\n        jsr $de14\n+\n")
+     "        lda $de14\n        cmp #$20\n        bne +\n        lda #$a5\n        jsr $de14\n+\n"
+     "        lda prgEnd              ; an empty program (Exit to C128 BASIC with the agent): BASIC without RUN\n"
+     "        cmp #<(BASIC_START + 2)\n        bne +\n        lda prgEnd + 1\n        cmp #>(BASIC_START + 2)\n        bne +\n"
+     "        jmp (BASIC_RESTART)\n+\n")
 edit("Source/C64/MainMenuCRT/source/MainMenu.asm",
      ";Check for Kernal Replace Special IO and start it now\n   lda #rCtlKERNALPreStartWAIT\n   sta wRegControl+IO1Port\n"
      "   jsr WaitForTRDots ;use WaitForTRWaitMsg instead?\n",

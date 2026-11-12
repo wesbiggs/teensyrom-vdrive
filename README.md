@@ -287,11 +287,12 @@ hooks the KERNAL's RAM vectors (`$0314-$0333`) instead of patching the serial ro
 In 128 mode a cartridge cannot replace the C128's KERNAL, so there VDrive always runs the RAM-vector version above (the agent), on the TR
 and the TR+, whichever VDrive Special IO is the default. **VICE only so far** (`x128` with its own ROMs); nothing of it has run on a real C128 in 128 mode.
 - **Starting it.** A C128 BASIC program (one that loads at `$1C01`) picked in the TR menu starts in 128 mode (upstream TeensyROM since PR 96), with the drives
-  installed before `RUN`, the image it was picked from mounted. After **Exit to C128 BASIC** (Utilities), or after a reset: `SYS 56852`.
+  installed before `RUN`, the image it was picked from mounted. **Exit to C128 BASIC** (Utilities) installs them too (since 0.9.0.63). After a reset: `SYS 56852`.
 - **BASIC 7.0's disk statements** go through the KERNAL and reach the drives: `DIRECTORY`/`CATALOG`, `DLOAD`, `DSAVE`, `DVERIFY`, `BLOAD`/`BSAVE`
   (any bank), `DOPEN`/`DCLOSE`/`APPEND`, `DS`/`DS$`, `HEADER` (`N:`), `SCRATCH`, `RENAME`, `COPY`, `CONCAT`, `COLLECT`, `BOOT`, and `LOAD`/`SAVE`/`OPEN`/`PRINT#`/`INPUT#` as on the C64.
   Paths, `CD:`, `U0>` and the other drive commands are the same.
 - **RUN/STOP+RESTORE** keeps the drives; a reset needs `SYS 56852` again.
+- **Alt button** (TR+, setting "None"): switches disks as on the C64; the border flashes in 40 columns only (done by DMA, since 0.9.0.63).
 - **FAST (2 MHz)** works in VICE; whether the TR's answers keep up at 2 MHz on real hardware is not known yet. Use `SLOW` if the drives misbehave in FAST mode.
 - Everything in the TR column above applies too (programs that call the serial routines directly, or `RESTOR`, do not see the drives), and memory under
   `$D000-$DFFF` in banks 0 and 1 cannot be loaded into. REU and SwiftLink combinations are not offered in 128 mode.

@@ -50,8 +50,11 @@ writes and is refreshed at init. The mailbox registers are at IO2 `$DF00-$DF0A` 
 - **C128 in 128 mode** (0.9.0.62, VICE only): upstream's `LaunchC128BasicPrg()` (`C128Prg.ino`) calls `VDrive_C128Launch()`, which with any
   VDrive Special IO as the default sets the agent for that launch and runs the drive's PreStart; the C128 boot ROM's loader
   (`C128PrgBoot.asm`) calls INSTALL before it types RUN. The engine tells the C128's KERNAL from the C64's at INSTALL (`$FFD5`).
+  Since 0.9.0.63 Exit to C128 BASIC goes through the boot ROM too when `VDrive_C128Launch()` chose the agent (no RUN typed for it).
+- **Alt button under the agent** (TR+, 0.9.0.63): `InitHndlr_VDriveAgent()` wires disk switching; the border flash is `VD_AgentBorder()`
+  (`vdBorderOut`), one `HoldC64()` per step, `$D020` written only when `$D020-$D03F` read as the VIC.
 
-`docs/DESIGN.md` sections 52-56.
+`docs/DESIGN.md` sections 52-57.
 
 ## Device numbers
 `pin[]` (user, two EEPROM bytes `eepAdVDriveDevs`; 0 or an invalid value = automatic) and `dev[]` (current, 0 = none). Build-time defaults of the

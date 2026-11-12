@@ -50,6 +50,23 @@ bool PerformDMA(DMA_Trans_RnW RnW, uint16_t StartAddr, uint8_t *Buffer, uint32_t
     return true;
 }
 bool CloseDMA() { return true; }
+// held transfers (the agent's border flash): $D020-$D02E behave like the VIC's colour registers (the top nibble reads back set)
+DmaStateStub DMA_State;
+bool isFrozen = false;
+static struct { bool rnw; uint16_t a; uint8_t *b; uint32_t n; } g_held;
+static int g_holds = 0, g_held_writes = 0;
+void SetUpDMA(DMA_Trans_RnW RnW, uint16_t StartAddr, uint8_t *Buffer, uint32_t Length, DMA_Addr_Mode)
+{ g_held.rnw = RnW == DMA_READ; g_held.a = StartAddr; g_held.b = Buffer; g_held.n = Length; }
+bool HoldC64() { g_holds++; DMA_State.v = DMA_S_TransferReady; return true; }
+void DmaStubRun()
+{
+    for (uint32_t i = 0; i < g_held.n; i++) {
+        uint16_t a = (uint16_t)(g_held.a + i);
+        if (g_held.rnw) g_held.b[i] = g_c64_ram[a];
+        else { g_c64_ram[a] = (a >= 0xD020 && a <= 0xD02E) ? (uint8_t)(g_held.b[i] | 0xF0) : g_held.b[i]; g_held_writes++; }
+    }
+    DMA_State.v = DMA_S_TransferComplete;
+}
 
 #include "glue.c"          // = firmware/IOH_VDrive.c (../vdrive/*.c and ../../../DiskImage laid out by run.py)
 
@@ -1240,15 +1257,52 @@ int main(int argc, char **argv)
     for (uint8_t def : {IOH_VDrive, IOH_VDriveSwift, IOH_VDriveSwiftREU, IOH_VDriveREU, IOH_VDriveAgent}) {
         EEPROM.write(eepAdNextIOHndlr, def); IO1[rwRegNextIOHndlr] = def; vioReady = false;
         memset(KernalFast, 0x5A, 64);
-        VDrive_C128Launch();
+        bool agent = VDrive_C128Launch();
         char what[120];
         snprintf(what, sizeof what, "C128 launch, default %d: the agent, after the drive's PreStart (no KERNAL banner bytes)", def);
-        check(what, IO1[rwRegNextIOHndlr] == IOH_VDriveAgent && vioReady && KernalFast[0] == 0x5A && IO1[rwRegScratch] == 0);
+        check(what, agent && IO1[rwRegNextIOHndlr] == IOH_VDriveAgent && vioReady && KernalFast[0] == 0x5A && IO1[rwRegScratch] == 0);
     }
     EEPROM.write(eepAdNextIOHndlr, IOH_Other); IO1[rwRegNextIOHndlr] = IOH_Other; vioReady = false;
-    VDrive_C128Launch();
-    check("C128 launch, default not VDrive: untouched, no PreStart", IO1[rwRegNextIOHndlr] == IOH_Other && !vioReady);
+    check("C128 launch, default not VDrive: untouched, no PreStart (an empty program: upstream's plain reset)",
+          !VDrive_C128Launch() && IO1[rwRegNextIOHndlr] == IOH_Other && !vioReady);
     EEPROM.write(eepAdNextIOHndlr, IOH_None);
+
+    // ---- the Alt button under the agent (TR+): disk switching as under the KERNAL handlers, the border flash by DMA (DESIGN.md 57) ----
+    {
+        IO1[rwRegPwrUpDefaults2] = rpud2AltBtnNone; fSpecialBtnChange = nullptr;
+        InitHndlr_VDrive();
+        check("KERNAL handler: its IRQ routine flashes the border (no DMA writer)", vdBorderOut == nullptr);
+        InitHndlr_VDriveAgent();
+        check("agent: the Alt button switches disks, the border flash goes by DMA",
+              fSpecialBtnChange == &SpecialBtn_VDrive && vdBorderOut == &VD_AgentBorder);
+        auto vic = [](uint8_t border) {                         // what DMA reads at $D020-$D03F with I/O mapped in
+            for (int i = 0; i < 0x20; i++) g_c64_ram[0xD020 + i] = 0xFF;
+            for (int i = 0; i <= 0x0E; i++) g_c64_ram[0xD020 + i] = (uint8_t)(0xF0 | i);
+            g_c64_ram[0xD020] = border;
+        };
+        vic(0xF6);
+        std::vector<uint8_t> seen;
+        auto run = [&](int ms) { for (int t = 0; t < ms; t += 5) { g_ms += 5; PollingHndlr_VDriveAgent();
+                                 if (seen.empty() || seen.back() != g_c64_ram[0xD020]) seen.push_back(g_c64_ram[0xD020]); } };
+        g_holds = 0; g_held_writes = 0;
+        VD_Flash(5, 2, 250, 750);
+        run(2500);
+        check("agent flash: blue border -> green, back, green, back (two flashes), one hold per change",
+              seen == std::vector<uint8_t>({0xF6, 0xF5, 0xF6, 0xF5, 0xF6}) && g_held_writes == 4 && g_holds == 5);
+        g_c64_ram[0xD031] = 0x00;                               // I/O banked out: RAM (or the character ROM) at $D000
+        g_held_writes = 0; seen.clear();
+        VD_Flash(2, 1, 250, 750);
+        run(400);
+        check("agent flash: I/O not mapped in: nothing written", g_held_writes == 0 && g_c64_ram[0xD020] == 0xF6);
+        vic(0xF6);
+        run(2000);
+        check("... and once it is, the flash still happens and ends on the saved colour", g_held_writes >= 1 && g_c64_ram[0xD020] == 0xF6);
+        isFrozen = true; g_holds = 0;
+        VD_Flash(2, 1, 250, 750); run(2000);
+        check("agent flash: never while the host holds the C64", g_holds == 0);
+        isFrozen = false; run(2000);
+        IO1[rwRegPwrUpDefaults2] = 0; fSpecialBtnChange = nullptr;
+    }
 
     printf("%s\n", fails ? "FAILED" : "ALL OK");
     return fails ? 1 : 0;

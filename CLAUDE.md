@@ -8,7 +8,7 @@ real IEC code, so physical drives keep working. LOAD/SAVE have block-transfer fa
 second, the first free numbers from 8 up: the KERNAL probes the real bus on the first disk access of a run) or fixed from BASIC with
 `OPEN15,8,15,"U0>"+CHR$(n)` (kept in EEPROM, `CHR$(0)` = automatic, no reflash). Names and `CD` take paths: `LOAD"$/GAMES/G.D64",8`.
 
-Full design and per-milestone notes: `docs/DESIGN.md` (sections 1-56, in order of construction).
+Full design and per-milestone notes: `docs/DESIGN.md` (sections 1-57, in order of construction).
 Firmware integration and usage: `firmware/README.md`.
 
 ## Status (read this first)
@@ -179,6 +179,10 @@ Firmware integration and usage: `firmware/README.md`.
   That found three drive bugs, fixed: `R0:NEW=0:OLD` and `S0:A,0:B` kept the `0:` on later names, and `C0:A=0:A,0:B` (CONCAT) was 63 where a 1541 appends (checked on the true-drive 1541).
   The VICE mock keeps the mailbox at `$3F00/$3F80` mirrored into both RAM banks; reset it by jumping to `$E000`, not with VICE's reset command (its monitor then stops on every request).
   **First on hardware:** the IO-execution soak test on a C128 at 1 and 2 MHz (FAST): every agent opcode is a Teensy IO answer.
+* **0.9.0.63 (docs/DESIGN.md 57; host tests, nothing on hardware):** Exit to C128 BASIC with a VDrive default goes through the boot ROM (`VDrive_C128Launch()` returns
+  true; the patch's `if (IsEmptyBasicPrg(Prg) && !VDriveAgent)`), whose loader installs the agent and skips `RUN` for an empty program. The Alt button works under the agent
+  (TR+): `InitHndlr_VDriveAgent()` calls `VD_AltButtonInit()`, and the flash goes through `vdBorderOut` = `VD_AgentBorder()`: one `HoldC64()` per request, read `$D020-$D03F`,
+  write `$D020` only if it reads as the VIC (I/O banked out: retried from `VD_AltPoll()`). fw_host stubs a held transfer (`DmaStateStub`). No VDC flash.
 * Default device 8 for `LOAD`/`SAVE`/`VERIFY` without a number, as on the SX-64 (`P_E1DA` in `patches/vdrive.s`, docs/DESIGN.md 33). KERNAL only; VICE `basic` run; **not on hardware yet**. Rebuild `kernal-tr.bin`.
 * 0.9.0.32: bad sectors from the image's error table (the trailing error-info bytes): reads of a sector marked bad fail with its DOS code (`d64_t.errtab`, `D64_E_BADSEC`, `d64_t.bad`, `read_err()` in `vdrive.c`; the firmware keeps a RAM2 copy only when the table marks something bad; docs/DESIGN.md 35). Write errors (25/26/28) not emulated; a write does not repair a bad sector. Unit and glue host tests; VICE and hardware through VDSUITE `5` (reads only).
 * 0.9.0.34: SwiftLink Tx fix to upstream (was `firmware/swiftlink-tx-fix.patch`; merged upstream as PR #80 in `6518b966`, patch dropped). NativeEthernet's `client.write()` busy-waits for send-buffer space;

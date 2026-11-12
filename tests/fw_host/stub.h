@@ -180,6 +180,18 @@ enum DMA_Trans_RnW { DMA_READ = true, DMA_WRITE = false };
 enum DMA_Addr_Mode { DMA_ADDR_FIXED = true, DMA_ADDR_INCREMENT = false };
 bool PerformDMA(DMA_Trans_RnW RnW, uint16_t StartAddr, uint8_t *Buffer, uint32_t Length, DMA_Addr_Mode FixC64Addr);
 bool CloseDMA();
+// a held transfer (HoldC64, SetUpDMA, DMA_State = DMA_S_TransferExecuting): main.cpp runs it when the state is set, as isrPHI2 would
+enum { DMA_S_DisableReady = 0, DMA_S_TransferReady, DMA_S_TransferExecuting, DMA_S_TransferComplete };
+void SetUpDMA(DMA_Trans_RnW RnW, uint16_t StartAddr, uint8_t *Buffer, uint32_t Length, DMA_Addr_Mode FixC64Addr);
+bool HoldC64();
+void DmaStubRun();
+struct DmaStateStub {
+    uint8_t v = DMA_S_DisableReady;
+    DmaStateStub &operator=(int x) { v = (uint8_t)x; if (x == DMA_S_TransferExecuting) DmaStubRun(); return *this; }
+    operator int() const { return v; }
+};
+extern DmaStateStub DMA_State;
+extern bool isFrozen;
 
 inline bool IsDotfile(const char *n) { return n[0] == '.'; }
 bool SDFullInit();

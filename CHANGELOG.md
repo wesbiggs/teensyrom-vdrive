@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.9.0.63
+
+### Added
+- **Exit to C128 BASIC installs the drives** when a VDrive Special IO is the default: it now starts through the C128 boot ROM, like a
+  C128 program, whose loader installs the agent (no `SYS 56852`, no `RUN` typed). Upstream's plain reset is kept otherwise. Upstream's
+  boot-ROM test and a one-off run of the loader in its 6502 emulator; **not on hardware**. `docs/DESIGN.md` section 57.
+- **The Alt button switches disks under VDrive Agent** (TR+; on a C64 and on a C128 in 128 mode), as it does under the KERNAL
+  handlers, with the border flash done by DMA (`$D020`) since the agent has no IRQ hook: only when the VIC is really mapped in at
+  that moment, never in 80 columns. Host tests (`tests/fw_host`); firmware builds; **not on hardware**. `docs/DESIGN.md` section 57.
+
 ## v0.9.0.62
 
 ### Added

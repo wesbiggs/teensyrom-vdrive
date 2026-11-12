@@ -1,8 +1,8 @@
 diff --git a/Source/C64/C128PrgBoot/C128PrgBoot.asm b/Source/C64/C128PrgBoot/C128PrgBoot.asm
-index 3ad4ded..7a0ba84 100644
+index 3ad4ded..d3614cb 100644
 --- a/Source/C64/C128PrgBoot/C128PrgBoot.asm
 +++ b/Source/C64/C128PrgBoot/C128PrgBoot.asm
-@@ -91,6 +91,19 @@ loaded  lda prgEnd
+@@ -91,6 +91,27 @@ loaded  lda prgEnd
  
          lda #SYSTEM_BANK
          sta MMU_CR
@@ -18,6 +18,14 @@ index 3ad4ded..7a0ba84 100644
 +        bne +
 +        lda #$a5
 +        jsr $de14
+++
++        lda prgEnd              ; an empty program (Exit to C128 BASIC with the agent): BASIC without RUN
++        cmp #<(BASIC_START + 2)
++        bne +
++        lda prgEnd + 1
++        cmp #>(BASIC_START + 2)
++        bne +
++        jmp (BASIC_RESTART)
 ++
          ldx #runKeysEnd - runKeys - 1
  -       lda runKeys,x
@@ -115,19 +123,27 @@ index 53998d0..3e33320 100644
     lda #0    ;set to non-zero to skip printing MsgRunning
     bne +
 diff --git a/Source/Teensy/C128Prg.ino b/Source/Teensy/C128Prg.ino
-index 0e90f4c..b4b9836 100644
+index 0e90f4c..2139ee7 100644
 --- a/Source/Teensy/C128Prg.ino
 +++ b/Source/Teensy/C128Prg.ino
-@@ -82,6 +82,9 @@ FLASHMEM void LaunchC128BasicPrg(uint8_t *Prg, uint32_t Size)
+@@ -82,10 +82,17 @@ FLASHMEM void LaunchC128BasicPrg(uint8_t *Prg, uint32_t Size)
        SendMsgPrintfln(PSTR("Too big for C128 BASIC"));
        return;
     }
 +#ifdef VDrive_Agent
-+   VDrive_C128Launch(); //teensyrom-vdrive: with a VDrive Special IO this launch runs the agent (IOH_VDriveAgent.c)
++   const bool VDriveAgent = VDrive_C128Launch(); //teensyrom-vdrive: with a VDrive Special IO this launch runs the agent (IOH_VDriveAgent.c)
 +#endif
     SendMsgPrintfln(PSTR("Starting C128 mode"));
     BootComplete = true;
     doReset = true;
++#ifdef VDrive_Agent
++   if (IsEmptyBasicPrg(Prg) && !VDriveAgent) //teensyrom-vdrive: with the agent, the boot ROM's loader installs it, so it runs this too
++#else
+    if (IsEmptyBasicPrg(Prg))
++#endif
+    {
+       ExitToC128Basic();
+       IOHandlerSelectInit();
 diff --git a/Source/Teensy/IOHandlers.ino b/Source/Teensy/IOHandlers.ino
 index 2055a5d..826f854 100644
 --- a/Source/Teensy/IOHandlers.ino
@@ -183,7 +199,7 @@ index 75cea2d..465ffc3 100644
       rtFilePrg  , IOH_TR_BASIC     , (char*)"BASIC with TeensyROM Commands"    , (uint8_t*)TRCBC_prg                  , sizeof(TRCBC_prg) ,
       rtFileCrt  , IOH_None         , (char*)"Super Expander 64"                , (uint8_t*)super_expander_64_crt      , sizeof(super_expander_64_crt) ,
 diff --git a/Source/Teensy/MinimalBoot/Common/Common_Defs.h b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
-index 2c5d19a..c21e4e2 100644
+index 2c5d19a..33d2d8b 100644
 --- a/Source/Teensy/MinimalBoot/Common/Common_Defs.h
 +++ b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
 @@ -14,9 +14,13 @@
@@ -205,7 +221,7 @@ index 2c5d19a..c21e4e2 100644
  
  
 -#define TRVersion              "0.9"    //*VERSION*
-+#define TRVersion              "0.9.0.62"    //*VERSION*  (stock 0.9 + VDrive rev 62)
++#define TRVersion              "0.9.0.63"    //*VERSION*  (stock 0.9 + VDrive rev 63)
  // Special builds: tools/build-firmware.mjs --tag <name> defines TRVersionSuffix as "-<name>",
  // and a build with uncommitted edits to the image sources adds "*". Arduino IDE builds have
  // none. Leave TRVersion to releases: it names the hex and the browser's User-Agent.
@@ -375,10 +391,10 @@ index 90cd86e..b59600e 100644
              TxMsgOffset = 0;
 diff --git a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c
 new file mode 100644
-index 0000000..2f3f438
+index 0000000..01a4f84
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c
-@@ -0,0 +1,1470 @@
+@@ -0,0 +1,1480 @@
 +// The VDrive Special IOs: the virtual IEC drive and its SD / USB glue. On the TeensyROM+ (Fab04_VDrive) "VDrive KERNAL" and its
 +// combined handlers serve a replacement KERNAL; on both boards (VDrive_Agent) IOH_VDriveAgent.c reaches the same drive through the
 +// KERNAL's RAM vectors and a 6502 agent (docs/DESIGN.md 53). The KERNAL-only parts are under Fab04_VDrive.
@@ -1133,6 +1149,11 @@ index 0000000..2f3f438
 +   vdNoMenuProbe = false;
 +}
 +
++// Where a BORDER request (Alt-button disk switching) goes besides the register: NULL for the KERNAL handlers, whose IRQ routine reads
++// it; the agent's DMA writer on the TR+ (IOH_VDriveAgent.c). false = not done now (I/O not mapped in, the C64 held by the host, ...):
++// VD_AltPoll() asks again while the request is current.
++static bool (*vdBorderOut)(uint8_t reg) = NULL;
++
 +#ifdef Fab04_VDrive
 +// ---- the menu's bus probe before launch (MainMenu.asm, VDriveProbe; docs/DESIGN.md 37) -------------------------------------
 +// Only the 6502 can see which numbers real drives hold. The TR menu probes the bus right after this PreStart, so DEV0/DEV1
@@ -1350,6 +1371,7 @@ index 0000000..2f3f438
 +      vio_publish_devices(vio);
 +   }
 +   InitHndlr_KernalReplace();
++   vdBorderOut = NULL;              // the KERNAL's IRQ routine flashes the border
 +   VD_AltButtonInit();
 +   vdDrivePoll = &PollingHndlr_VDrive;
 +}
@@ -1611,7 +1633,8 @@ index 0000000..2f3f438
 +// stick that is missing, an unreadable list or no usable image in it flashes red quickly for 2 s. An image that has disappeared is
 +// skipped. With nothing mounted (or an image that is not in the list) the first usable image is picked.
 +// Wired to the TR's Alt button only when its setting (TR menu, settings) is "None": a chosen action is never taken over.
-+// The border change itself is done by the KERNAL's IRQ routine (patches/vdrive.s, irq_border), driven by the BORDER register.
++// The border change itself is done by the KERNAL's IRQ routine (patches/vdrive.s, irq_border), driven by the BORDER register; under
++// the agent, which has no IRQ hook, by DMA on the TR+ (vdBorderOut, IOH_VDriveAgent.c).
 +#define VD_CfgBufSize    2048
 +#define VD_CfgMaxEntries 32
 +#define VD_TapWindowMs   1000
@@ -1683,12 +1706,14 @@ index 0000000..2f3f438
 +   uint16_t qOnMs, qOffMs;
 +};
 +static stcVDFlash vdFlash;
++static bool vdBorderRetry = false;
 +
 +FLASHMEM static void VD_FlashPhase(uint8_t phase, uint8_t reg)
 +{
 +   vdFlash.phase = phase;
 +   vdFlash.since = millis();
 +   vioHot.border = reg;
++   vdBorderRetry = vdBorderOut && reg != VIO_BRD_IDLE && !vdBorderOut(reg);
 +}
 +
 +FLASHMEM static void VD_FlashBegin(uint8_t color, uint8_t count, uint16_t onMs, uint16_t offMs)
@@ -1795,6 +1820,7 @@ index 0000000..2f3f438
 +
 +FLASHMEM void VD_AltPoll()
 +{
++   if (vdBorderRetry && vdBorderOut) vdBorderRetry = !vdBorderOut(vioHot.border);
 +   VD_FlashPoll();
 +   if (vdTaps == 0 || vdSwitching) return;
 +   if (vdTaps < 2 && millis() - vdTapFirstMs < VD_TapWindowMs) return;     // a second tap may still come
@@ -1808,7 +1834,7 @@ index 0000000..2f3f438
 +extern void (*fSpecialBtnChange)(bool Up_nDn);
 +FLASHMEM void VD_AltButtonInit()
 +{
-+   vdTaps = 0; vdFlash.phase = VDF_Idle; vdFlash.queued = false;
++   vdTaps = 0; vdFlash.phase = VDF_Idle; vdFlash.queued = false; vdBorderRetry = false;
 +#ifdef Fab04_SpecialButton
 +   if ((IO1[rwRegPwrUpDefaults2] & rpud2AltBtnActionMask) == rpud2AltBtnNone) fSpecialBtnChange = &SpecialBtn_VDrive;
 +#endif
@@ -1851,10 +1877,10 @@ index 0000000..2f3f438
 +}
 diff --git a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDriveAgent.c b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDriveAgent.c
 new file mode 100644
-index 0000000..21baf92
+index 0000000..6f0793b
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDriveAgent.c
-@@ -0,0 +1,116 @@
+@@ -0,0 +1,168 @@
 +// "VDrive" Special IO for the plain TeensyROM (and "VDrive Agent" on the TR+): the virtual drive without Kernal Replace
 +// (docs/DESIGN.md 52-53). The C64 keeps its own KERNAL; its RAM vectors point into a 246-byte 6502 agent (vector/vdagent.s,
 +// vd_agent.h) that this handler serves from IO1, and the agent reports every call to the vector engine (d64/vdrive_vec.c),
@@ -1914,12 +1940,15 @@ index 0000000..21baf92
 +// in 128 mode; that also keeps their bus hook off the C128's own ROM), after the drive's PreStart, as KERNALPreStart() does for a
 +// C64 launch. Overrides the Special IO for this launch only, as upstream's own line above the call does for Kernal Replace:
 +// InitHndlr_TeensyROM() reads the default back from EEPROM on the next return to the menu.
-+FLASHMEM void VDrive_C128Launch()
++// true: the agent runs this launch. Then an empty program (Exit to C128 BASIC) goes through the boot ROM too, not a plain reset,
++// so its loader installs the agent; the loader leaves out the RUN for an empty program (C128Prg.ino, C128PrgBoot.asm).
++FLASHMEM bool VDrive_C128Launch()
 +{
-+   if (!VD_IsHandler(VDriveSwift_Remap(IO1[rwRegNextIOHndlr]))) return;
++   if (!VD_IsHandler(VDriveSwift_Remap(IO1[rwRegNextIOHndlr]))) return false;
 +   IO1[rwRegNextIOHndlr] = IOH_VDriveAgent;
 +   VDrive_PreStart(true);
 +   Serial.println("VDrive: C128 mode, the agent");
++   return true;
 +}
 +
 +#define VD_AgentOfs (VD_AgentBase & 0xFF)
@@ -1929,6 +1958,50 @@ index 0000000..21baf92
 +static vvec_t vvecStore;            // the engine's contexts (~1.2 KB), main loop only; never DMAMEM (RAM2 statics shrink the REU's heap, DESIGN.md 50)
 +static vvec_t *vvec = NULL;
 +
++#ifdef Fab04_VDrive
++// ---- the Alt button's border flash (TR+): the agent has no IRQ hook, so the Teensy sets the border itself, by DMA (docs/DESIGN.md 57) ----
++// One hold of the CPU per request: read $D020-$D03F and write $D020 only if those bytes are the VIC's (the colour registers read
++// back with their top nibble set, $D031-$D03F read $FF; the same on a C64 and on a C128's VIC-IIe). A program with I/O banked out at
++// that moment (the RAM or the character ROM at $D000) is not written to: the request is tried again from VD_AltPoll(). Nothing can
++// change the banks between the check and the write, since the CPU stays held. 80 columns (the VDC) are not flashed.
++extern bool isFrozen;               // Teensy.ino: the host holds the C64 (a hold of ours would end theirs)
++static uint8_t vdAgentBorder = 0xFF;   // the colour saved by VIO_BRD_SAVE; 0xFF = none
++
++FLASHMEM static bool VD_HeldDMA(DMA_Trans_RnW RnW, uint16_t addr, uint8_t *buf, uint32_t len)
++{  // one transfer inside HoldC64() ... CloseDMA(): what FinishDMA() does after its start handshake
++   SetUpDMA(RnW, addr, buf, len, DMA_ADDR_INCREMENT);
++   DMA_State = DMA_S_TransferExecuting;
++   uint32_t t0 = millis();
++   while (DMA_State != DMA_S_TransferComplete) if (millis() - t0 > 50) return false;
++   return true;
++}
++
++FLASHMEM static bool VD_LooksLikeVIC(const uint8_t *r)   // r = $D020-$D03F
++{
++   for (int i = 0; i <= 0x0E; i++) if ((r[i] & 0xF0) != 0xF0) return false;     // $D020-$D02E: colour registers
++   for (int i = 0x11; i < 0x20; i++) if (r[i] != 0xFF) return false;           // $D031-$D03F: unused
++   return true;
++}
++
++FLASHMEM static bool VD_AgentBorder(uint8_t reg)
++{
++   if (isFrozen) return false;
++   uint8_t color;
++   if (reg == VIO_BRD_RESTORE) { if (vdAgentBorder == 0xFF) return true; color = vdAgentBorder; }
++   else if ((reg & 0xF0) == VIO_BRD_SET) { if (vdAgentBorder == 0xFF) return true; color = reg & 0x0F; }   // not saved: never flash
++   else if (reg != VIO_BRD_SAVE) return true;
++   uint8_t vic[0x20];
++   bool ok = HoldC64() && VD_HeldDMA(DMA_READ, 0xD020, vic, sizeof vic) && VD_LooksLikeVIC(vic);
++   if (ok)
++   {
++      if (reg == VIO_BRD_SAVE) vdAgentBorder = vic[0] & 0x0F;
++      else ok = VD_HeldDMA(DMA_WRITE, 0xD020, &color, 1);
++   }
++   CloseDMA();
++   return ok;                       // the saved colour stays for the next flash of the sequence; the next SAVE replaces it
++}
++#endif
++
 +FLASHMEM void InitHndlr_VDriveAgent()
 +{
 +   memset(vdAgentPage, 0, sizeof vdAgentPage);
@@ -1936,6 +2009,11 @@ index 0000000..21baf92
 +   if (vio == NULL) return;         // PreStart did not run (out of memory): nothing answers, the agent's vectors are never set
 +   vvec = &vvecStore;
 +   vvec_init(vvec, vio, VD_AgentBase);
++#ifdef Fab04_VDrive
++   vdAgentBorder = 0xFF;
++   vdBorderOut = &VD_AgentBorder;    // the Alt button switches disks under the agent too (TR+), its flash by DMA
++   VD_AltButtonInit();
++#endif
 +   vdDrivePoll = &PollingHndlr_VDriveAgent;
 +}
 +
@@ -4953,10 +5031,10 @@ index e6c5128..7beba22 100644
  {
     uint32_t RecDrive;
 diff --git a/Source/Teensy/TRMenuFiles/ROMs/C128PrgBoot.bin.h b/Source/Teensy/TRMenuFiles/ROMs/C128PrgBoot.bin.h
-index 1074097..dd13350 100644
+index 1074097..d4db7b7 100644
 --- a/Source/Teensy/TRMenuFiles/ROMs/C128PrgBoot.bin.h
 +++ b/Source/Teensy/TRMenuFiles/ROMs/C128PrgBoot.bin.h
-@@ -12,11 +12,11 @@ PROGMEM static const unsigned char C128PrgBoot_bin[] = {
+@@ -12,13 +12,13 @@ PROGMEM static const unsigned char C128PrgBoot_bin[] = {
  	0xff, 0xe6, 0x02, 0xd0, 0xdf, 0xe6, 0x03, 0x4c, 0x17, 0x13, 0xad, 0x00,
  	0x13, 0x8d, 0x10, 0x12, 0xad, 0x01, 0x13, 0x8d, 0x11, 0x12, 0xa9, 0x00,
  	0x8d, 0x04, 0xde, 0xa9, 0x05, 0x8d, 0x04, 0xde, 0xad, 0xfe, 0xde, 0xc9,
@@ -4965,11 +5043,15 @@ index 1074097..dd13350 100644
 -	0x00, 0x0a, 0x52, 0x55, 0x4e, 0x0d, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
 -	0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
 -	0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+-	0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+-	0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
 +	0xff, 0xd0, 0xf9, 0xa9, 0x00, 0x8d, 0x00, 0xff, 0xad, 0x09, 0xdf, 0xc9,
 +	0xd6, 0xd0, 0x13, 0xad, 0x0a, 0xdf, 0xc9, 0x64, 0xd0, 0x0c, 0xad, 0x14,
-+	0xde, 0xc9, 0x20, 0xd0, 0x05, 0xa9, 0xa5, 0x20, 0x14, 0xde, 0xa2, 0x03,
-+	0xbd, 0x8b, 0x13, 0x9d, 0x4a, 0x03, 0xca, 0x10, 0xf7, 0xa9, 0x04, 0x85,
-+	0xd0, 0x6c, 0x00, 0x0a, 0x52, 0x55, 0x4e, 0x0d, 0xff, 0xff, 0xff, 0xff,
++	0xde, 0xc9, 0x20, 0xd0, 0x05, 0xa9, 0xa5, 0x20, 0x14, 0xde, 0xad, 0x00,
++	0x13, 0xc9, 0x03, 0xd0, 0x0a, 0xad, 0x01, 0x13, 0xc9, 0x1c, 0xd0, 0x03,
++	0x6c, 0x00, 0x0a, 0xa2, 0x03, 0xbd, 0x9c, 0x13, 0x9d, 0x4a, 0x03, 0xca,
++	0x10, 0xf7, 0xa9, 0x04, 0x85, 0xd0, 0x6c, 0x00, 0x0a, 0x52, 0x55, 0x4e,
++	0x0d, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
  	0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
  	0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
  	0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,

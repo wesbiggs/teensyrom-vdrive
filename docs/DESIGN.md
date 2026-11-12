@@ -1081,7 +1081,8 @@ to the shared engine's `d64_copy`, which stays byte-identical to the fork's `Dis
 - The boot ROM's loader (`C128PrgBoot.asm`) calls INSTALL (`$DE14`, A = `$A5`) once the handler swap is done and the system bank is
   back, before it types RUN, with the same ID check as `PRGLoadStartReloc.s`. `make_tr_patch.sh` edits it and rebuilds
   `C128PrgBoot.bin.h` with the TR's `build-c64.mjs`. The loader still fits its page.
-- **Exit to C128 BASIC** (an empty program, no boot ROM) gets the agent and the PreStart, but nothing calls INSTALL: `SYS 56852`.
+- **Exit to C128 BASIC** (an empty program, no boot ROM) got the agent and the PreStart, but nothing called INSTALL: `SYS 56852`. Since
+  0.9.0.63 it goes through the boot ROM as well (section 57).
 - REU and SwiftLink combinations are not offered in 128 mode (the agent has none, section 54): a VDrive+REU default runs the agent alone.
 - The patch applies on the fork's `7b3c3294` (section 55), which has upstream's #96 and #97 but not #98 (plain Kernal Replace dropped for
   a 128-mode launch); the `VDrive_C128Launch()` hunk anchors on the `"Starting C128 mode"` line, so it applies with or without #98.
@@ -1115,3 +1116,41 @@ to the shared engine's `d64_copy`, which stays byte-identical to the fork's `Dis
 - A program that calls the KERNAL with the character ROM banked in (bank 14) crashes into it, as on the C64 (section 52's table).
 - The 318020-03 KERNAL (1985) and other BASIC 7 revisions; JiffyDOS-128 and other replaced C128 KERNALs.
 - A real 1571's burst mode on the same bus (`agent128scan` has a 1541): our devices never reach the stock serial code, theirs is chained.
+
+## 57. Exit to C128 BASIC installs the agent; the Alt button under the agent (0.9.0.63; host tests and the boot ROM in upstream's 6502 emulator; not on hardware)
+
+**Exit to C128 BASIC.** Upstream's Utilities entry is an empty `$1C01` program (`01 1C 00 00`); `LaunchC128BasicPrg()` sends it to
+`ExitToC128Basic()`, a reset with no ROM, so nothing ran the agent's INSTALL after it (section 56: `SYS 56852`). `VDrive_C128Launch()` now
+returns whether it chose the agent, and with the agent the empty program takes the program path instead (`StartC128Prg()`, the boot
+ROM): the loader streams the two zero bytes (BASIC 7's text then ends at `$1C03`, as after `NEW`), waits for the handler swap, calls
+INSTALL, and for an empty program goes straight to BASIC's warm start without typing `RUN`. Without a VDrive default upstream's path is
+unchanged. Two edits in `make_tr_patch.sh`: the `if` in `LaunchC128BasicPrg()` (both forms under `VDrive_Agent`) and three compares in
+`C128PrgBoot.asm` after the INSTALL call (`prgEnd` = `BASIC_START + 2`).
+Tests: upstream's `tools/c128/c128prgboot-run.test.mjs` (4) passes on the patched ROM; a one-off variant of it (not committed: it is
+upstream's file) with the agent's ID answered: the empty program calls `$DE14` with A = `$A5` and `$FF00` = `$00`, leaves `$1C01` = 0,
+`$1210` = `$1C03` and an empty keyboard buffer; a 300-byte program gets INSTALL and `RUN`. `tests/fw_host`: the return value.
+
+**The Alt button under the agent (TR+).** Disk switching (section 22) was only wired by `InitHndlr_VDrive()`, so under VDrive Agent
+(on a C64, and on a C128 in 128 mode, where the agent is the only VDrive) the button did nothing. `InitHndlr_VDriveAgent()` now calls
+`VD_AltButtonInit()` as well (the button's setting must be "None", as before); the taps are counted in `VD_AltPoll()`, which the
+agent's poll already reached through `VD_PollCommon()`. The plain TR has no Alt button.
+
+**The flash by DMA.** The KERNAL handlers' flash is done by the patched KERNAL's IRQ routine (`irq_border`), which reads the BORDER
+register; the agent has no IRQ hook. So the sequencer got an output hook, `vdBorderOut` (NULL for the KERNAL handlers, which
+`InitHndlr_VDrive()` sets), and the agent's `VD_AgentBorder()` carries out each request on the TR+ by DMA:
+- one hold of the CPU (`HoldC64()`) per request, two transfers inside it (`SetUpDMA`, `DMA_State = DMA_S_TransferExecuting`, wait for
+  `DMA_S_TransferComplete`, as `FinishDMA()` does after its start handshake), then `CloseDMA()`;
+- read `$D020-$D03F`; write `$D020` only if it is the VIC: `$D020-$D02E` with the top nibble set (the colour registers read back
+  that way) and `$D031-$D03F` = `$FF` (unused, on a C64 and on a C128's VIC-IIe). With I/O banked out (`$01` on a C64; on a C128 a
+  configuration with RAM or the character ROM at `$D000`, which BASIC 7 itself uses through PCRC) nothing is written; the request is
+  tried again on every `VD_AltPoll()` while it is the current one. The CPU stays held between the check and the write, so the
+  configuration cannot change in between;
+- SAVE reads the colour (low nibble); SET and RESTORE write; nothing is flashed until a SAVE has worked; never while the host holds
+  the C64 (`isFrozen`).
+Upstream writes `$D011` by DMA the same way (`FileParsers.ino`); DMA writes while a program runs passed DMATEST (section 48), but DMA
+*reads* of a running program have crashed some programs (CLAUDE.md, remote commands), and each flash step is one. 80 columns (the VDC)
+are not flashed: its address register cannot be read back, and a write between a program's `$D600` and `$D601` accesses would corrupt
+its next VDC access. On a C128 in FAST mode the VIC is off and the TR+'s DMA timing is untested.
+Tests (`tests/fw_host`): the button wired under the agent and the KERNAL handler's hook NULL; a two-flash sequence with a VIC-like
+`$D020-$D03F` (`$F6` -> `$F5` -> `$F6` -> `$F5` -> `$F6`, one hold per change); with I/O banked out nothing written, and once it is back the
+flash completes and ends on the saved colour; no hold while `isFrozen`. Not on hardware.

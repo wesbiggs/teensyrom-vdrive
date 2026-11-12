@@ -70,11 +70,9 @@ int main(int argc, char **argv)
 
     // a launch into C128 mode (upstream's C128Prg.ino calls VDrive_C128Launch, docs/DESIGN.md 55)
     EEPROM.write(eepAdNextIOHndlr, IOH_Swiftlink); IO1[rwRegNextIOHndlr] = IOH_Swiftlink; vioReady = false;
-    VDrive_C128Launch();
-    check("C128 launch, default not VDrive: the Special IO stays, no PreStart", IO1[rwRegNextIOHndlr] == IOH_Swiftlink && !vioReady);
+    check("C128 launch, default not VDrive: the Special IO stays, no PreStart", !VDrive_C128Launch() && IO1[rwRegNextIOHndlr] == IOH_Swiftlink && !vioReady);
     EEPROM.write(eepAdNextIOHndlr, IOH_VDriveAgent); IO1[rwRegNextIOHndlr] = IOH_VDriveAgent;
-    VDrive_C128Launch();
-    check("C128 launch, default VDrive: the agent, after the drive's PreStart", IO1[rwRegNextIOHndlr] == IOH_VDriveAgent && vioReady
+    check("C128 launch, default VDrive: the agent, after the drive's PreStart", VDrive_C128Launch() && IO1[rwRegNextIOHndlr] == IOH_VDriveAgent && vioReady
           && vio->vd.unit[0].present);
 
     printf("%s: %d failure(s)\n", fails ? "FAIL" : "PASS", fails);
