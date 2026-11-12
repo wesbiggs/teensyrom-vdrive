@@ -279,7 +279,8 @@ build/          generated, git-ignored (kernal images derived from the ROM, libd
 
 ## Commands
 * `make test` — everything (rebuilds `build/libd64.dylib`, runs unit tests, device-number check, firmware host test, VDrive Config in py65, three VICE runs: `basic`,
-  `scan` (true-drive 1541s at 8 and 10, with two VDCOPY whole-disk runs over tracks 17-19, about 2 minutes of it) and the menu's bus probe; about 13 minutes in all on the owner's Mac, measured 2026-10-31).
+  `scan` (true-drive 1541s at 8 and 10, with two VDCOPY whole-disk runs over tracks 17-19, about 2 minutes of it) and the menu's bus probe; about 13 minutes in all on the owner's Mac, measured 2026-10-31; since 0.9.0.64 the VICE runs together take about 13 minutes
+  locally against ~26 in CI before: `vdrive_mock.py` no longer waits fixed pauses).
 * `make test-gate` — the mailbox gate `vd_here` in py65 (no handler: no IO write, the real bus at once; late ID reads; skipped without py65; also part of `make test`).
 * `make test-agent` — the plain-TeensyROM agent (`build/vdagent-vice.prg`, in GeoRAM) and `d64/vdrive_vec.c` on the stock KERNAL in VICE, mock scenarios `agent` and `agentscan`, then on a C128 in 128 mode in `x128` (`build/vdagent128-vice.prg`, mailbox at `$3F00`; `agent128`, `agent128scan`; skipped without `x128`) (part of `make test`); `tests/test_vvec.py` (in `test-d64`) covers the engine's edge cases, the C128's against a model of its MMU.
 * `make test-reset` — the cold-start hook `rst_hook` (SYS64738 back to the menu) in py65 (skipped without py65; also part of `make test`).
@@ -338,6 +339,10 @@ The full `make test`, VICE runs included, works in a cloud session; do not skip 
 * **Published KERNAL hash:** the README's Installing section lists the SHA-256 of `kernal-tr.bin` built from the 901227-03 ROM; `make test-hash` (part of `make test`) fails when a patch or `tools/build.py` changes the image and the "from this revision" row was not updated. Update the "last run on a real C64" row only when the owner reports a hardware run of that image.
 * **No Commodore ROM bytes in the repo.** Only patches. `build/` is ignored for that reason; keep it that way. The firmware's `vd_kpatch.h` holds our segments only
   (`tools/build.py --table` never reads a ROM); the firmware's ROM whitelist is CRC-32s. Adding a ROM to `VD_KnownKernals` means adding it to `tests/variants_vice.py` too (it checks both lists agree).
+* **The mock waits by polling** (`settle()` in `tools/vdrive_mock.py`, since 0.9.0.64): after typing it serves the mailbox until the keyboard buffer is empty
+  and the screen editor's cursor flag is on (`$C6`/`$CC`; `$D0`/`$0A27` on a C128: 0 only in the editor's input loop), twice 0.1 s apart. Programs that wait in
+  GETIN (VDCOPY, VDSUITE's soak) never look idle: wait for their text instead. Resets go through `jump_settle()`, which blanks the screen first (a stale `READY.`
+  passed for the new one). Every monitor command stops the CPU and the mock answers CMD on any stop, so a "dead handler" needs `menu["dead"]`, not just the checkpoint deleted.
 * **Two background VICE runs collide**: every mock run uses VICE's binary monitor on port 6502, and a second mock connects to the first one's VICE.
   Run `vdrive_mock.py` / `variants_vice.py` / `menuprobe_vice.py` one after another. Another checkout's tests (a worktree session) can hold 6502 too: `VD_MONITOR_PORT=6510 make test` keeps out of their way.
 * **The ctypes tests load `build/libd64.dylib`.** After editing `d64/*.c` run `make build/libd64.dylib` (or `make test`) first, or you

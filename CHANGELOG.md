@@ -19,6 +19,11 @@
   takes VDSUITE's setup and D64 sections. **Not on hardware** in this form (the checks themselves are the hardware-run ones). `tests/basic/README.md`.
 
 ### Build
+- **The VICE mock polls instead of waiting fixed pauses** (`tools/vdrive_mock.py`): after each typed command it serves the mailbox until
+  the machine waits for keyboard input again (keyboard buffer empty, the screen editor's cursor flag on). Locally the VICE runs went from
+  about 26 minutes (the last CI run) to about 13 (`basic` 9 to 5 minutes, the agent runs 2-3 minutes to under one). Resets blank the screen
+  first, so an old `READY.` cannot pass for the new one. The dead-handler check was passing on a stale `DEVICE NOT PRESENT`: the mock answered
+  the mailbox on every monitor stop, so the drive never went away; now it does, and the KERNAL's time-out to the real bus is really checked.
 - The release workflow is now **"build artifacts"** (`.github/workflows/artifacts.yml`, was `release.yml`): besides the three firmware
   hex files it builds the test files `vdtest.d64`, `vdbad.d64` and `vdplain.prg` and attaches them to a published release too. It now
   runs only on demand (a published release or a manual run), no longer on pushes that touch the firmware. Not run in CI yet.

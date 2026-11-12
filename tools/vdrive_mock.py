@@ -290,7 +290,7 @@ def main(kernal, scenario="basic", vecprg=None):
                 if typ == 0x62:  # stopped
                     regs = m.read(MBX, 6)
                     c, a, ln = regs[0], regs[1], regs[5]
-                    if 1 <= c <= 19:
+                    if 1 <= c <= 19 and not menu.get("dead"):   # dead: the handler is gone, a stop for any other reason answers nothing
                         if c in (9, 11, 12, 19):                # commands that consume the window
                             io.win_write(bytes(m.read(WIN, WIN_SIZE)))
                         nm, d, st = io.call(c, a, ln, allow_scan=True)
@@ -321,6 +321,25 @@ def main(kernal, scenario="basic", vecprg=None):
                         mw(CMD, [0])
                     m.go()
 
+        idle_at = (0xD0, 0x0A27) if c128 else (0xC6, 0xCC)
+        def settle(limit=30.0, want=None):
+            """serve the mailbox until the machine waits for keyboard input (READY. or a program's INPUT) with no key left to type: the
+            keyboard buffer empty and the screen editor's cursor flag on ($C6/$CC; $D0/$0A27 on a C128: 0 only in the editor's input
+            loop), seen twice 0.1 s apart; and `want` on the screen when given (a reset clears both bytes before the editor runs).
+            At most `limit` s. Not for programs that wait in GETIN: they never look idle."""
+            t_end = time.time() + limit; n = 0
+            while time.time() < t_end:
+                service(0.1, limit=0.5)
+                idle = m.read(idle_at[0], 1, m.screen_bank)[0] == 0 and m.read(idle_at[1], 1, m.screen_bank)[0] == 0
+                n = n + 1 if idle and (want is None or any(want in r for r in m.screen())) else 0
+                if n >= 2: break
+            service(0.05)                       # the reads stopped the CPU: let it go again
+        def jump_settle(pc, want="READY.", limit=15.0):
+            """jump to a reset / warm-start routine and settle; the screen is blanked first, so the READY. still on it does not count"""
+            m.write(0x0400, [0x20] * 1000, m.screen_bank); m.jump(pc); settle(limit, want)
+        service.settle = settle                 # for agent_tests / agent128_tests, which get `service`
+        service.jump = jump_settle
+
         mw(MBX, [0] * 5)
         mw(MBX + 9, [0xD6, 0x64])               # the ID registers (VIO_ID0 / VIO_ID1): the KERNAL's reset hook asks for the TR menu
         cp = m.req(0x12, struct.pack("<HHBBBB", CMD, CMD, 1, 1, 2, 0))  # store checkpoint on CMD
@@ -328,9 +347,9 @@ def main(kernal, scenario="basic", vecprg=None):
         time.sleep(0.5); service(1.0)       # boot
 
         ok = True
-        def run(keys, expect=None, absent=None):
+        def run(keys, expect=None, absent=None, limit=30.0):
             nonlocal ok
-            m.keys(keys); service(1.5)
+            m.keys(keys); settle(limit)
             scr = m.screen()
             hit = expect is None or any(expect in r for r in scr)
             if absent: hit = hit and not any(absent in r for r in scr)
@@ -344,7 +363,7 @@ def main(kernal, scenario="basic", vecprg=None):
             """SHIFT+RUN/STOP ($83 in the keyboard buffer): LOAD"*",8,1 then RUN; "*" = TEST, the disk's first file (10 PRINT"HI")"""
             run('POKE43,1:POKE44,8:NEW:PRINTCHR$(147);\r')          # BASIC at $0801 again (the BIG2 save moved it)
             col = m.read(0x0286, 1)
-            m.write(0x0277, [0x83]); m.write(0xC6, [1]); service(1.5)        # straight into the buffer (the monitor's key feed maps characters)
+            m.write(0x0277, [0x83]); m.write(0xC6, [1]); settle(want="HI")        # straight into the buffer (the monitor's key feed maps characters)
             scr = [r.rstrip() for r in m.screen()]
             i = next((k for k, r in enumerate(scr) if r == 'LOAD"*",8,1'), None)
             check("SHIFT+RUN: LOAD\"*\",8,1 typed, the first file loaded and RUN (screen %r)" % [r for r in scr if r][-8:],
@@ -487,10 +506,10 @@ def main(kernal, scenario="basic", vecprg=None):
             run('OPEN15,8,15,"S:VARIANT":CLOSE15\r')
             shift_run()
             n0 = len(log)
-            run('SYS64738\r', "SYS64738")
+            run('SYS64738\r', "SYS64738", limit=2)                             # waits for the Teensy's reset: never idle
             check("SYS64738: VIO_MENU sent (calls %r)" % [e[0] for e in log[n0:]], [e[0] for e in log[n0:]] == [16] and menu["asked"] == 1)
             m.write(MBX + 9, [0x10, 0x03])          # no ID (the menu's handler during a launch): the stock cold start
-            m.jump(0xFCE2); service(1.5, limit=15)   # what a reset does; no `go` while VICE runs (it leaves the monitor stopping after every command)
+            jump_settle(0xFCE2)   # what a reset does; no `go` while VICE runs (it leaves the monitor stopping after every command)
             check("reset without the ID: the stock cold start, banner and READY.", banner in m.screen() and any("READY." in r for r in m.screen()))
             m.write(MBX + 9, [0xD6, 0x64])          # the VDrive handler again (the launch is over)
             run('LOAD"$",8\r', "SEARCHING FOR $"); run('LIST\r', '0 "MOCKDISK')      # the drive still answers after it
@@ -542,19 +561,13 @@ def main(kernal, scenario="basic", vecprg=None):
         # --- the shipped BASIC test program (VDSUITE), run for real inside VICE ---
         def on_screen(text):
             return any(" ".join(text.split()) in " ".join(r.split()) for r in m.screen())
-        def answer(a, wait=3.0):
-            """a = keys (RETURN added), or (keys, a text to wait for, at most s) for machine code that makes no mailbox calls"""
-            if isinstance(a, tuple):
-                m.keys(a[0] + '\r'); t_end = time.time() + a[2]
-                while time.time() < t_end and not on_screen(a[1]): service(0.5, limit=2)
-            else:
-                m.keys(a + '\r'); service(wait)
-        def prog(name, answers, expect, wait=3.0, dev=8):
+        def prog(name, answers, expect, limit=600.0, dev=8):
+            """run the program, typing each answer (RETURN added) when it waits for input; at most `limit` s for each"""
             run('NEW\r')
             run('LOAD"%s",%d\r' % (name.upper(), dev), "READY.")
-            m.keys('RUN\r'); service(1.0)
+            m.keys('RUN\r'); settle(limit)
             for a in answers:
-                answer(a, wait)
+                m.keys(a + '\r'); settle(limit)
             scr = m.screen()
             norm = [" ".join(r.split()) for r in scr]
             ok_ = all(any(" ".join(e.split()) in r for r in norm) for e in expect)
@@ -667,26 +680,31 @@ def main(kernal, scenario="basic", vecprg=None):
         def quit_suite():
             """RETURN to VDSUITE's menu, 0 = quit: SYS 64738 asks for the TR menu; then the Teensy's reset (no ID: the stock cold start)"""
             n0 = len(log)
-            m.keys('\r'); service(1.0); m.keys('0\r'); service(3.0)
+            m.keys('\r'); settle(); m.keys('0\r'); t_end = time.time() + 10
+            while not menu["asked"] and time.time() < t_end: service(0.1, limit=0.5)   # waits for the reset after VIO_MENU: never idle
+            service(0.2)
             check("vdsuite: 0 asks for the TR menu (calls %r)" % [e[0] for e in log[n0:]], 16 in [e[0] for e in log[n0:]] and menu["asked"] == 1)
-            m.write(MBX + 9, [0x10, 0x03]); m.jump(0xFCE2); service(1.5, limit=15)
+            m.write(MBX + 9, [0x10, 0x03]); jump_settle(0xFCE2)
             check("vdsuite: then the reset, banner and READY.", banner in m.screen() and any("READY." in r for r in m.screen()))
             m.write(MBX + 9, [0xD6, 0x64]); menu["asked"] = 0
             run('OPEN15,8,15,"CD:/MOCK.D64":CLOSE15\r')                       # the suite ends at the card root
             run('PRINT CHR$(147)\r')                                            # no banner left for the later SYS64738 check
 
-        ok = prog("vdsuite", ["", "1", "", "6", "", "6"], ["CARD FILES: 20 PASSED, 0 FAILED"], wait=10.0) and ok   # 6 twice: T2/E.D64 left by the first
+        ok = prog("vdsuite", ["", "1", "", "6", "", "6"], ["CARD FILES: 20 PASSED, 0 FAILED"])  and ok   # 6 twice: T2/E.D64 left by the first
         quit_suite()
-        ok = prog("vdsuite", ["", "9"], ["TOTAL 191 PASSED, 0 FAILED"], wait=10.0) and ok
+        ok = prog("vdsuite", ["", "9"], ["TOTAL 191 PASSED, 0 FAILED"])  and ok
         quit_suite()
         check("vdsuite: its clean-up left no VDSCRATCH folder", not (sdroot / "vdscratch").exists() and (sdroot / "vdplain.prg").exists())
         # the machine-code checks appended to VDSUITE (BUSTEST on the RAM mailbox, VAULTTEST, REUTEST with VICE's 512 KB REU; LOADTEST
         # is not run: its LDD000 overwrites the mock's mailbox at $C800), the soak, the status probe and the renumbering
-        def step(keys, text, limit, label, enter=True):
-            """keys (RETURN added unless enter is False), then wait up to limit s for text on the screen and check it"""
-            m.keys(keys + ('\r' if enter else '')); t_end = time.time() + limit
-            service(0.5, limit=2)                                       # at least once: a text still on the screen may be an old one
-            while time.time() < t_end and not on_screen(text): service(0.5, limit=2)
+        def step(keys, text, limit, label, enter=True, loops=False):
+            """keys (RETURN added unless enter is False), then wait up to limit s until it waits for input again (loops: until text
+            is on the screen, for the soak's GET loop) and check text"""
+            m.keys(keys + ('\r' if enter else ''))
+            if loops:
+                t_end = time.time() + limit
+                while time.time() < t_end and not on_screen(text): service(0.5, limit=2)
+            else: settle(limit)
             good = on_screen(text); check("vdsuite: " + label, good)
             if not good: print("\n".join(m.screen()))
         ok = prog("vdsuite", [""], ["CHOICE"]) and ok
@@ -697,7 +715,7 @@ def main(kernal, scenario="basic", vecprg=None):
         step("14", "REU: 2 PASSED, 0 FAILED", 240, "14 REUTEST")
         check("vdsuite: ... it found 512 KB", on_screen("REU, 512 KB"))
         step("", "CHOICE", 10, "back to the menu")
-        step("15", "PASS 3 ERRORS 0", 120, "15 soak, 3 loads without an error")
+        step("15", "PASS 3 ERRORS 0", 120, "15 soak, 3 loads without an error", loops=True)
         step(" ", "SOAK: 2 PASSED, 0 FAILED", 60, "any key ends the soak, clean", enter=False)
         step("", "CHOICE", 10, "back to the menu")
         step("16", "STATUS TEXT: 0 PASSED, 0 FAILED", 30, "16 status text")
@@ -722,12 +740,12 @@ def main(kernal, scenario="basic", vecprg=None):
 
         # --- SYS64738 while the handler answers: the cold start asks for the TR menu (VIO_MENU) and waits for the Teensy's reset ---
         n0 = len(log)
-        run('SYS64738\r', "SYS64738")
+        run('SYS64738\r', "SYS64738", limit=2)                                 # waits for the Teensy's reset: never idle
         check("SYS64738: VIO_MENU sent, nothing else (calls %r)" % [e[0] for e in log[n0:]], [e[0] for e in log[n0:]] == [16] and menu["asked"] == 1)
         check("SYS64738: the KERNAL waits for the reset (no banner, no READY.)", not any("38911" in r for r in m.screen()))
         # without the ID (the TR menu's handler during a launch, or no VDrive) the cold start is the stock one
         m.write(MBX + 9, [0x10, 0x03])          # what the menu's $DE19/$DE1A hold after a tune with init $1003
-        m.jump(0xFCE2); service(1.5, limit=15)   # through the RESET vector's target, as a reset (not the monitor's reset command, nor a `go` while VICE runs: both leave it stopping after every command)
+        jump_settle(0xFCE2)   # through the RESET vector's target, as a reset (not the monitor's reset command, nor a `go` while VICE runs: both leave it stopping after every command)
         check("reset without the ID: banner and READY. (calls %r)" % [e[0] for e in log[n0 + 1:]],
               banner in m.screen() and any("READY." in r for r in m.screen()) and menu["asked"] == 1)
         m.write(MBX + 9, [0xD6, 0x64])          # the VDrive handler again (the launch is over)
@@ -747,11 +765,13 @@ def main(kernal, scenario="basic", vecprg=None):
 
         # --- handler absent (BUSY never clears): KERNAL must time out and use the real IEC code ---
         m.req(0x13, struct.pack("<I", cp_num))                  # delete the checkpoint: nobody answers any more
+        menu["dead"] = True                                     # (every monitor stop used to answer CMD as well: the drive never went away)
         m.write(STAT, [0x80])
-        run('LOAD"X",8\r', "DEVICE NOT PRESENT")
-        run('SAVE"X",8\r')                                       # same for the SAVE hook
-        run('OPEN1,8,15:PRINT"ST=";ST', None)
-        run('LOAD"X",8\r', "DEVICE NOT PRESENT")
+        run('\x93LOAD"X",8\r', "DEVICE NOT PRESENT", limit=60)
+        run('\x93SAVE"X",8\r', "DEVICE NOT PRESENT", limit=60)    # same for the SAVE hook
+        run('\x93OPEN1,8,15:PRINT"ST=";ST\r', "ST=", limit=60)
+        run('\x93LOAD"X",8\r', "DEVICE NOT PRESENT", limit=60)
+        menu["dead"] = False
 
         # --- the resulting disk must be a valid D64 that c1541 can read ---
         img = workdir / "after.d64"; img.write_bytes(disk.dump())
@@ -788,11 +808,11 @@ def agent_tests(m, run, check, service, log, disk, big, workdir, vec, real):
         good = (want is None or any(want in r for r in scr)) and not (absent and any(absent in r for r in scr))
         res["ok"] = res["ok"] and good
         return log[n:]
-    def prog(name, dev, answers, want, wait=3.0):
+    def prog(name, dev, answers, want, limit=600.0):
         expect('NEW\r'); expect('LOAD"%s",%d\r' % (name.upper(), dev), "READY.")
-        m.keys('RUN\r'); service(1.0)
+        m.keys('RUN\r'); service.settle(limit)
         for a in answers:
-            m.keys(a + '\r'); service(wait)
+            m.keys(a + '\r'); service.settle(limit)
         norm = [" ".join(r.split()) for r in m.screen()]
         good = all(any(" ".join(e.split()) in r for r in norm) for e in want)
         chk("BASIC program %s: %s" % (name, want), good)
@@ -829,9 +849,7 @@ def agent_tests(m, run, check, service, log, disk, big, workdir, vec, real):
         expect('LOAD"X",12\r', "DEVICE NOT PRESENT")
         expect('NEW\r')
         m.keys('\x93LOAD"RPRG",8,1\r')                      # the stock load from the true drive sends nothing to the mailbox:
-        for _ in range(60):                                 # wait for its READY. on a cleared screen
-            service(1.0, limit=1)
-            if any("READY." in r for r in m.screen()): break
+        service.settle(60, want="READY.")                   # its READY. on a cleared screen
         chk("RPRG (5000 bytes) from the real 1541 through the chained stock LOAD", bytes(m.read(0x4000, 5000)) == real["rprg"][2:])
         expect('LOAD"$",11\r', "SEARCHING FOR $")
         expect('LIST\r', '0 "USBDISK')
@@ -844,9 +862,7 @@ def agent_tests(m, run, check, service, log, disk, big, workdir, vec, real):
             expect('40 CLOSE2:CLOSE3:PRINT"COPIED";S\r')
             n = len(log)
             m.keys('RUN\r')
-            for _ in range(60):
-                service(1.0, limit=3)
-                if any("COPIED" in r for r in m.screen()): break
+            service.settle(60, want="COPIED")
             good = any("COPIED 64" in r for r in m.screen())
             chk("BASIC copy %s,%d -> %s,%d ends at EOI" % (sname, src, dname, dst), good)
             if not good:      # what the C64 shows and the mailbox calls of the run (cmd, arg, data, st, not-mine)
@@ -896,20 +912,20 @@ def agent_tests(m, run, check, service, log, disk, big, workdir, vec, real):
 
     if not real:
         # VDSUITE on device 8: setup (CD, MD, N: of three images) and the D64 section (SEQ, DOS commands, B-/U1/U2, REL, C:, V)
-        prog("vdsuite", 8, ["", "1", "", "2"], ["D64 IMAGE: 44 PASSED, 0 FAILED"], wait=10.0)   # (the menu cleared setup's line)
-        m.jump(0xFE66); service(1.5, limit=15)          # leave its INPUT: RUN/STOP+RESTORE (tested on its own below); NEW closes the files
+        prog("vdsuite", 8, ["", "1", "", "2"], ["D64 IMAGE: 44 PASSED, 0 FAILED"])   # (the menu cleared setup's line)
+        service.jump(0xFE66)          # leave its INPUT: RUN/STOP+RESTORE (tested on its own below); NEW closes the files
         expect('NEW\r')
         expect('OPEN15,8,15,"CD:/MOCK.D64":CLOSE15\r')
         expect('NEW\r')
 
     # --- RUN/STOP+RESTORE: the NMI routine's RESTOR / IOINIT / CINT / BASIC warm start ($FE66). IMAIN survives and hooks again ---
-    m.jump(0xFE66); service(1.5, limit=15)
+    service.jump(0xFE66)
     chk("RUN/STOP+RESTORE: READY. and ILOAD is ours again (%r)" % bytes(m.read(0x0330, 2)),
         any("READY." in r for r in m.screen()) and bytes(m.read(0x0330, 2)) == v_load)
     expect('LOAD"$",%d\r' % D, "SEARCHING FOR $")
     expect('LIST\r', '0 "MOCKDISK')
     # --- a reset ($FCE2): INITV resets IMAIN too, so the drives are gone until SYS ---
-    m.jump(0xFCE2); service(1.5, limit=15)
+    service.jump(0xFCE2)
     chk("reset: READY., the stock vectors", any("READY." in r for r in m.screen()) and bytes(m.read(0x0330, 2)) != v_load)
     n0 = len(log)
     expect('LOAD"$",%d\r' % D, "DEVICE NOT PRESENT")
@@ -932,8 +948,8 @@ def agent128_tests(m, run, check, service, log, disk, big, workdir, vec, real, m
     ram0, ram1 = mirror
     def chk(label, cond):
         check(label, cond); res["ok"] = res["ok"] and bool(cond)
-    def expect(keys, want=None, absent=None, wait=1.5):
-        n = len(log); m.keys(keys); service(wait)
+    def expect(keys, want=None, absent=None, limit=30.0):
+        n = len(log); m.keys(keys); service.settle(limit)
         scr = m.screen()
         good = (want is None or any(want in r for r in scr)) and not (absent and any(absent in r for r in scr))
         print(("PASS" if good else "FAIL"), repr(keys), "| expect", want)
@@ -949,9 +965,7 @@ def agent128_tests(m, run, check, service, log, disk, big, workdir, vec, real, m
         subprocess.run(["c1541", "-attach", str(img), "-read", name, str(out)], capture_output=True)
         return out.read_bytes() if out.exists() else b""
 
-    for _ in range(20):                   # x128's cold start
-        service(0.5, limit=1)
-        if any("READY." in r for r in m.screen()): break
+    service.settle(10, want="READY.")      # x128's cold start
     D = 9 if real else 8
     start = struct.unpack_from("<H", vec, 0)[0]
     sys_at = start + 12
@@ -970,23 +984,19 @@ def agent128_tests(m, run, check, service, log, disk, big, workdir, vec, real, m
 
     if real:
         typed(['10 OPEN1,8,15:INPUT#1,A,B$:CLOSE1:OPEN2,9,15,"UI":INPUT#2,C,D$:CLOSE2', '20 PRINT A;B$;"/";C;D$'])
-        expect('RUN\r', "CBM DOS V2.6 1541/ 73 TRVDRIVE", wait=4)
-        expect('LOAD"X",8\r', "FILE NOT FOUND", absent="DEVICE NOT PRESENT", wait=4)
+        expect('RUN\r', "CBM DOS V2.6 1541/ 73 TRVDRIVE")
+        expect('LOAD"X",8\r', "FILE NOT FOUND", absent="DEVICE NOT PRESENT")
         expect('LOAD"X",10\r', "FILE NOT FOUND", absent="DEVICE NOT PRESENT")   # the USB unit
         expect('LOAD"X",11\r', "DEVICE NOT PRESENT")
         expect('NEW\r')
         m.keys('\x93BLOAD"RPRG",U8,B0,P16384\r')
-        for _ in range(60):
-            service(1.0, limit=1)
-            if any("READY." in r for r in m.screen()): break
+        service.settle(60, want="READY.")
         chk("RPRG (5000 bytes) from the real 1541 through the chained stock LOAD", bytes(m.read(0x4000, 5000, ram0)) == real["rprg"][2:])
         def copy(src, sname, dst, dname):
             typed(['10 OPEN2,%d,2,"%s,S,R":OPEN3,%d,3,"%s,S,W"' % (src, sname, dst, dname),
                    '20 GET#2,A$:S=ST:IFA$=""THENA$=CHR$(0)', '30 PRINT#3,A$;:IFS=0THEN20', '40 CLOSE2:CLOSE3:PRINT"COPIED";S'])
             m.keys('\x93RUN\r')                       # a clear screen: the last copy's COPIED must not count
-            for _ in range(60):
-                service(1.0, limit=3)
-                if any("COPIED" in r for r in m.screen()): break
+            service.settle(60, want="COPIED")
             chk("BASIC copy %s,%d -> %s,%d ends at EOI" % (sname, src, dname, dst), any("COPIED 64" in r for r in m.screen()))
         copy(8, "RSML", 9, "CP")
         chk("real -> ours: CP == RSML", file_on(disk, "cp,s") == real["rsml"])
@@ -1031,10 +1041,10 @@ def agent128_tests(m, run, check, service, log, disk, big, workdir, vec, real, m
     expect('PRINT DS$\r', "00, OK,00,00")
     typed(['10 DOPEN#2,"DATA",U%d,W:PRINT#2,"HELLO":PRINT#2,"WORLD":DCLOSE#2' % D,
            '20 DOPEN#3,"DATA",U%d:INPUT#3,A$,B$:DCLOSE#3:PRINT"GOT:";A$;B$' % D])
-    expect('RUN\r', "GOT:HELLOWORLD", wait=3)
+    expect('RUN\r', "GOT:HELLOWORLD")
     chk("DOPEN/PRINT#/DCLOSE wrote a SEQ file", file_on(disk, "data,s") == b"HELLO\rWORLD\r")
     typed(['10 APPEND#4,"DATA",U%d:PRINT#4,"MORE":DCLOSE#4:PRINT DS' % D])
-    expect('RUN\r', " 0", wait=3)
+    expect('RUN\r', " 0")
     data = b"HELLO\rWORLD\rMORE\r"
     chk("APPEND# added to it (,A)", file_on(disk, "data,s") == data)
     typed(['10 OPEN2,%d,2,"NUMTST,S,W":PRINT#2,1;"A";2:PRINT#2,12;34:CLOSE2:PRINT"DONE"' % D])
@@ -1042,32 +1052,29 @@ def agent128_tests(m, run, check, service, log, disk, big, workdir, vec, real, m
     # --- the DOS statements (through the command channel) ---
     typed(['10 COPY"DATA" TO "DATA2",U%d:PRINT DS' % D, '20 RENAME"DATA2" TO "DATA3",U%d:PRINT DS' % D,
            '30 CONCAT"DATA" TO "DATA3",U%d:PRINT DS' % D, '40 SCRATCH"NUMTST",U%d:PRINT DS' % D, '50 PRINT"DOSDONE"'])
-    expect('RUN\r', "DOSDONE", wait=4)
+    expect('RUN\r', "DOSDONE")
     chk("COPY, RENAME, CONCAT, SCRATCH (BASIC 7 sends 0: on every name): DATA3 = DATA twice, NUMTST gone",
         file_on(disk, "data3,s") == data * 2 and file_on(disk, "numtst,s") == b"")
-    expect('COLLECT U%d\r' % D, "READY.", wait=3)
+    expect('COLLECT U%d\r' % D, "READY.")
     expect('PRINT DS$\r', "00, OK")
     expect('CATALOG U%d\r' % D, '"DATA3"')
     # --- FAST (2 MHz): VICE only; on hardware the IO timing at 2 MHz is the open question (DESIGN.md 56) ---
     expect('FAST:DIRECTORY U%d:SLOW\r' % D, '0 "MOCKDISK')
     # --- BOOT: the KERNAL's boot call reads 1/0 through the drive and runs its code ---
     m.write(0x0C00, [0], ram0)
-    expect('BOOT U%d\r' % D, "BOOTING VDBOOT", wait=3)
+    expect('BOOT U%d\r' % D, "BOOTING VDBOOT")
     chk("BOOT ran the boot sector's code ($0C00 = $5A)", m.read(0x0C00, 1, ram0) == b"\x5a")
     expect('NEW\r')
 
     # --- RUN/STOP+RESTORE: the NMI routine's STOP path ($FA53: RESTOR, IOINIT, CINT, JMP ($0A00)) in the system bank, as its
     #     trampoline at $FF05 leaves it. RESTOR leaves $0A00, ours, alone: hooked again on the way to BASIC 7's warm start ---
-    m.write(0xFF00, [0]); m.jump(0xFA53); service(1.5, limit=15)
+    m.write(0xFF00, [0]); service.jump(0xFA53)
     chk("RUN/STOP+RESTORE: READY. and ILOAD is ours again (%r)" % bytes(m.read(0x0330, 2, ram0)),
         any("READY." in r for r in m.screen()) and bytes(m.read(0x0330, 2, ram0)) == v_load)
     expect('DIRECTORY U%d\r' % D, '0 "MOCKDISK')
     # --- a reset (the KERNAL's reset routine; VICE's own reset command leaves its monitor stopping on every request): BASIC 7's cold
     #     start sets $0A00 back to its warm start, so the drives are gone until SYS ---
-    m.jump(0xE000)
-    for _ in range(20):
-        service(0.5, limit=1)
-        if any("BYTES FREE" in r for r in m.screen()) and any("READY." in r for r in m.screen()): break
+    service.jump(0xE000, "BYTES FREE")
     chk("reset: READY., the stock vectors, $0A00 = BASIC 7's warm start (%r)" % bytes(m.read(0x0A00, 2, ram0)),
         any("READY." in r for r in m.screen()) and bytes(m.read(0x0330, 2, ram0)) != v_load and bytes(m.read(0x0A00, 2, ram0)) == b"\x03\x40")
     n0 = len(log)
@@ -1077,7 +1084,7 @@ def agent128_tests(m, run, check, service, log, disk, big, workdir, vec, real, m
     expect('DIRECTORY U%d\r' % D, '0 "MOCKDISK')
     # --- HEADER (N:, in a program: no ARE YOU SURE?) last, as it empties the image ---
     typed(['10 HEADER"FRESH",I01,U%d:PRINT"HD";DS' % D])
-    expect('RUN\r', "HD 0", wait=3)
+    expect('RUN\r', "HD 0")
     expect('DIRECTORY U%d\r' % D, '0 "FRESH           " 01')
 
     if not res["ok"]: print("\n".join(m.screen()))
