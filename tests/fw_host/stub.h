@@ -44,8 +44,11 @@ struct File {
     }
 };
 
+struct FS;
+struct FsVolume { FS *fs; };                        // SdFat's volume: SD.sdfs, firstPartition.mscfs
 struct FS {
     fs_::path root;
+    FsVolume sdfs{this}, mscfs{this};
     // FAT is case-insensitive; so are the macOS hosts this was written on. Resolve each component by a case-insensitive match
     // so the same tests run on a case-sensitive host file system. A missing last component keeps the requested spelling.
     fs_::path resolve(const char *path) const {
@@ -95,6 +98,32 @@ struct FS {
     }
 };
 extern FS SD, firstPartition;
+
+// SdFat's FsFile, as the glue uses it for a mounted image: sync() and close() say whether the writes reached the card
+#define O_RDONLY 0
+#define O_RDWR 2
+extern bool g_sync_fail;                               // test hook: the card fails every sync
+struct FsFile {
+    FILE *f = nullptr;
+    FsFile() = default;
+    FsFile(const FsFile &) = delete;
+    FsFile &operator=(const FsFile &) = delete;
+    ~FsFile() { close(); }
+    bool open(FsVolume *vol, const char *path, int oflag) {
+        close();
+        if (!vol) return false;
+        fs_::path p = vol->fs->resolve(path);
+        if (!fs_::is_regular_file(p)) return false;          // no O_CREAT here: a missing file is not created
+        f = fopen(p.c_str(), oflag == O_RDWR ? "r+b" : "rb");
+        return f != nullptr;
+    }
+    bool isOpen() const { return f != nullptr; }
+    bool seekSet(uint64_t o) { return f && fseek(f, (long)o, SEEK_SET) == 0; }
+    int read(void *b, size_t n) { return f ? (int)fread(b, 1, n, f) : -1; }
+    size_t write(const void *b, size_t n) { return f ? fwrite(b, 1, n, f) : 0; }
+    bool sync() { return f && fflush(f) == 0 && !g_sync_fail; }
+    bool close() { if (!f) return true; bool ok = sync(); fclose(f); f = nullptr; return ok; }
+};
 
 struct SerialStub { void println(const char *s) { puts(s); } template <class... A> void printf(const char *f, A... a) { ::printf(f, a...); } };
 extern SerialStub Serial;

@@ -7,6 +7,12 @@ set -e
 VD_DMA_LOAD="${VD_DMA_LOAD:-1}"; export VD_DMA_LOAD
 TR="$1"; [ -d "$TR/Source/Teensy/MinimalBoot/Common" ] || { echo "usage: $0 /path/to/TeensyROM"; exit 1; }
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
+# The D64/D71/D81 engine is TeensyROM's own (Source/Teensy/DiskImage, shared with GEOS, the TR block device and the menu): the patch
+# carries no copy. d64/d64.c, d64.h, DiskImage.h and WriteBack.h here are copies of it for the host tests, and must match the tree's exactly.
+for f in d64.c d64.h DiskImage.h WriteBack.h; do
+   [ -f "$TR/Source/Teensy/DiskImage/$f" ] || { echo "$TR has no Source/Teensy/DiskImage/$f: VDrive needs a tree with the shared disk image engine" >&2; exit 1; }
+   cmp -s "$HERE/d64/$f" "$TR/Source/Teensy/DiskImage/$f" || { echo "d64/$f differs from $TR/Source/Teensy/DiskImage/$f: copy the tree's into d64/ (or the change to the tree) and re-test" >&2; exit 1; }
+done
 C=Source/Teensy/MinimalBoot/Common
 W="$(mktemp -d)"; trap 'rm -rf "$W"' EXIT
 mkdir -p "$W/$C/IO_Handlers"
@@ -15,8 +21,9 @@ mkdir -p "$W/Source/Teensy"; cp "$TR/Source/Teensy/Teensy.ino" "$TR/Source/Teens
 M=Source/C64/MainMenuCRT/source; mkdir -p "$W/$M" "$W/Source/Teensy/TRMenuFiles/ROMs"
 cp "$TR/$M/MainMenu.asm" "$TR/$M/PRGLoadStartReloc.s" "$W/$M/"; cp "$TR/Source/Teensy/TRMenuFiles/ROMs/TeensyROMC64.h" "$W/Source/Teensy/TRMenuFiles/ROMs/"
 cd "$W"; git init -q; git add -A; git -c user.name=x -c user.email=x@x commit -qm base
-# fixes to upstream Kernal Replace (fast image copy, late-ISR counters): applied before the edits below
-git apply "$HERE/firmware/kernalreplace-fixes.patch"
+# fixes to upstream Kernal Replace (fast image copy, late-ISR counters): applied before the edits below, unless the tree has them
+# (the kernalreplace-fixes branch of the TeensyROM fork, which VDrive builds on, carries them as a commit of their own)
+if git apply --reverse --check "$HERE/firmware/kernalreplace-fixes.patch" 2>/dev/null; then :; else git apply "$HERE/firmware/kernalreplace-fixes.patch"; fi
 
 python3 -I - "$C" "$HERE/firmware/REV" "$HERE/firmware/vdrive_remote.inc" "$HERE/firmware/vdrive_probe.asm" <<'PY'
 import os, sys
@@ -242,8 +249,11 @@ cp "$M/MainMenu.asm" "$M/PRGLoadStartReloc.s" "$B/$M/"
 cmp -s "$B/$M/Menu_Regs.i" "$TR/$M/Menu_Regs.i" || { echo "Menu_Regs.i would change: carry it in the patch" >&2; exit 1; }
 rm -rf "$B"
 mkdir -p "$C/vdrive"
-cp "$HERE"/d64/d64.c "$HERE"/d64/d64.h "$HERE"/d64/vdrive.c "$HERE"/d64/vdrive.h \
+cp "$HERE"/d64/vdrive.c "$HERE"/d64/vdrive.h \
    "$HERE"/d64/vdrive_io.c "$HERE"/d64/vdrive_io.h "$HERE"/d64/vdrive_vec.c "$HERE"/d64/vdrive_vec.h "$HERE"/d64/vd_cfg.h "$C/vdrive/"
+# d64.h from the shared engine (tests/fw_host/run.py lays its tree out the same way)
+sed -i.bak 's|^#include "d64.h"$|#include "../../../DiskImage/d64.h"|' "$C/vdrive/vdrive.h"; rm "$C/vdrive/vdrive.h.bak"
+grep -q '^#include "../../../DiskImage/d64.h"$' "$C/vdrive/vdrive.h" || { echo "vdrive.h: no d64.h include to point at DiskImage" >&2; exit 1; }
 # the KERNAL patches as a table for VD_KernalPatchApply (our bytes only; the firmware lays them over the C64's own ROM)
 python3 -I "$HERE/tools/build.py" --table "$C/vdrive/vd_kpatch.h" -D "VD_DMA_LOAD=$VD_DMA_LOAD"
 # the plain TR's agent (vector/vdagent.s) for IOH_VDriveAgent.c: linked at $DE08, registers at $DF00, window at $DF80

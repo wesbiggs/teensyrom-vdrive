@@ -7,7 +7,7 @@ for fn in ("d64_sizeof_d64", "d64_sizeof_mem", "d64_sizeof_dir", "d64_sizeof_fil
     getattr(LIB, fn).restype = ctypes.c_size_t
 LIB.d64_blocks_free.restype = ctypes.c_int
 LIB.d64_sizeof_wfile.restype = ctypes.c_size_t
-LIB.d64_build_dir.restype = ctypes.c_size_t
+LIB.d64_build_dir.restype = ctypes.c_int
 LIB.d64_build_dir.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_void_p, ctypes.c_size_t]
 
 
@@ -79,7 +79,7 @@ class Disk:
     def listing(self, pat=None):
         buf = ctypes.create_string_buffer(8192)
         n = LIB.d64_build_dir(self.d, pat, buf, 8192)
-        return buf.raw[:n]
+        return buf.raw[:n] if n > 0 else b""
 
 
 LIB.vdrive_sizeof.restype = ctypes.c_size_t

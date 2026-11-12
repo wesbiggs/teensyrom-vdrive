@@ -6,6 +6,7 @@
 #include <set>
 
 FS SD, firstPartition;
+bool g_sync_fail = false;
 SerialStub Serial;
 static uint8_t io1_mem[256];
 volatile uint8_t *IO1 = io1_mem;
@@ -50,7 +51,7 @@ bool PerformDMA(DMA_Trans_RnW RnW, uint16_t StartAddr, uint8_t *Buffer, uint32_t
 }
 bool CloseDMA() { return true; }
 
-#include "glue.c"          // = firmware/IOH_VDrive.c (with ../vdrive/*.c resolved by the build script)
+#include "glue.c"          // = firmware/IOH_VDrive.c (../vdrive/*.c and ../../../DiskImage laid out by run.py)
 
 // stand-ins for IOH_Swiftlink.c: record which entry points the combined handler reaches
 static int g_sw_io1 = 0, g_sw_init = 0, g_sw_poll = 0, g_sw_cycle = 0; static uint8_t g_sw_last = 0xEE;
@@ -572,8 +573,25 @@ int main(int argc, char **argv)
 #endif
         cmd15("S:DMAFILE"); status15();
     }
-    g_ms += 1000; PollingHndlr_VDrive();                       // > VD_FlushIdleMs since last write
-    check("dirty flag flushed", !vdUnit[0].dirty);
+    g_ms += 1000; PollingHndlr_VDrive();                       // > IMAGE_WRITEBACK_IDLE_MS since last write
+    check("dirty flag flushed", !vdUnit[0].wb.Dirty);
+    {   // a sync the card fails stays dirty and is tried again after the next idle period (DiskImage/WriteBack.h)
+        std::string pay(300, 'w'); int r2;
+        check("write-back: a save to retry", fast_save(8, "WBFILE", pay) == 0 && vdUnit[0].wb.Dirty);
+        g_sync_fail = true;
+        g_ms += 100; PollingHndlr_VDrive();
+        check("write-back: nothing synced before the idle period", vdUnit[0].wb.Dirty && !vdUnit[0].wb.FailureReported);
+        g_ms += 1000; PollingHndlr_VDrive();
+        check("write-back: a failed sync stays dirty and is reported once", vdUnit[0].wb.Dirty && vdUnit[0].wb.FailureReported);
+        g_ms += 1000; PollingHndlr_VDrive();
+        check("write-back: ... and tried again", vdUnit[0].wb.Dirty && vdUnit[0].wb.FailureReported);
+        g_sync_fail = false;
+        g_ms += 1000; PollingHndlr_VDrive();
+        check("write-back: the card back: synced, the failure cleared", !vdUnit[0].wb.Dirty && !vdUnit[0].wb.FailureReported);
+        check("write-back: the file reads back", fast_load(8, "WBFILE", &r2).substr(2) == pay && r2 == 0);
+        cmd15("S:WBFILE"); status15();
+        g_ms += 1000; PollingHndlr_VDrive();
+    }
 
     // unmount, directory navigation
     cmd15("CD:_");

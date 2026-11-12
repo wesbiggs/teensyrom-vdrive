@@ -8,7 +8,7 @@ real IEC code, so physical drives keep working. LOAD/SAVE have block-transfer fa
 second, the first free numbers from 8 up: the KERNAL probes the real bus on the first disk access of a run) or fixed from BASIC with
 `OPEN15,8,15,"U0>"+CHR$(n)` (kept in EEPROM, `CHR$(0)` = automatic, no reflash). Names and `CD` take paths: `LOAD"$/GAMES/G.D64",8`.
 
-Full design and per-milestone notes: `docs/DESIGN.md` (sections 1-54, in order of construction).
+Full design and per-milestone notes: `docs/DESIGN.md` (sections 1-55, in order of construction).
 Firmware integration and usage: `firmware/README.md`.
 
 ## Status (read this first)
@@ -142,6 +142,8 @@ Firmware integration and usage: `firmware/README.md`.
   0.9.0.55: the menu's 64 KB directory listing (`DriveDirMenu`), freed by `AllocRAMBanks()` only after VDrive's PreStart had opened its `File`s above it, left a hole; `KERNALPreStart()` now frees it first for the two REU handlers (`make_tr_patch.sh`). `RAM2BytesFree()` only measures above the heap top. **Works on hardware (owner, 2026-11-09): VDrive+REU 512 KB launched from the SD browser.**
   0.9.0.56: the 0.9.0.54 free left `KernalBin` NULL, which upstream's `InitHndlr_KernalReplace()` reads as "nothing loaded", so it never re-hooked `KernalCheck` after the PRG transfer: every VDrive menu launch ran on the C64's own KERNAL (VDrive Config hung after going lower case; owner, 0.9.0.55). Now a `KernalFastOnly` flag counts as loaded. Firmware builds, fw_host passes; **works on hardware (owner, 2026-11-09): VDrive Config launches from the TR menu again.**
   0.9.0.60 (numbered 0.9.0.58 before the renumbering): 0.9.0.55's early `FreeDriveDirMenu()` also reset the menu source and `DriveDirPath` (upstream's `RedirectEmptyDriveDirMenu()` / `MenuChange()`), so under the two REU handlers a launch from inside an image mounted the `/.vdrive` one (0.9.0.55-0.9.0.59). `VDrive_NoteLaunch()` copies both first (`make_tr_patch.sh`); fw_host test; builds; **works on hardware (owner, 2026-11-10, C128 in C64 mode; that build had neither 0.9.0.57's DMA SAVE nor 0.9.0.58's agent)**.
+* 0.9.0.61: **the shared disk image engine** (docs/DESIGN.md 55): the patch builds on the fork's `kernalreplace-fixes` (`7b3c3294`: upstream `d1a7ab79` + the `DiskImage` engine stack + `kernalreplace-fixes.patch`, which `make_tr_patch.sh` now skips when the tree has it) and carries no `d64.c`/`d64.h`.
+  Engine changes the drive inherits: `@:` keeps the old file until the new one closes (`72` when both do not fit, `26` for a locked old file), allocation wraps to the first track, `d64_build_dir` returns `int` (negative = error). The image write-back is `DiskImage/WriteBack.h` (shared with the TR block device): `img` is an `FsFile` on `SD.sdfs` / `firstPartition.mscfs`, so a failed sync stays dirty and is retried. Unit tests, fw_host, TR+ firmware build; **not on hardware**.
 * 0.9.0.52: **DMA LOAD** (docs/DESIGN.md 49): the KERNAL's LOAD loop sends `VIO_FLOAD_DMA` (17) with the address in ARG/LEN; the Teensy writes up to 2 KB (`VD_DmaPart`) into RAM by
   DMA and the new end into `$AE/$AF`, or answers a window block where DMA is not used (below `$0200`, `$D000-$DFFF`). A failed DMA: DEVICE NOT PRESENT. VERIFY / SAVE unchanged.
   `test_vio`, `fw_host`, VICE `basic` with DMA on (monitor writes); **on hardware (owner, 2026-11-08, C128 in C64 mode): a 48 KB LOAD in 13-14 jiffies against 85 on 0.9.0.51** (about 6-8x); `LOADTEST` (under BASIC and across `$D000`) passes on the build then numbered 0.9.0.57-DMA, now 0.9.0.59 without DMA SAVE (owner, 2026-11-10, C128: 2 and 6 jiffies; one unexplained error 4 on the first run from the TR menu, not reproduced); still open: a C64, CCGMS with DMA LOAD. Rebuild `kernal-tr.bin`; an older firmware fails every LOAD with this KERNAL.
@@ -226,7 +228,9 @@ Firmware integration and usage: `firmware/README.md`.
 ## Layout
 ```
 d64/            portable C99 library, also compiled as C++ by the firmware (keep it C++-clean!)
-  d64.c/.h        D64/D71/D81 engine: geometry, BAM, directory, file chains, create/write/scratch/rename/format, BASIC listing builder
+  d64.c/.h        D64/D71/D81 engine: geometry, BAM, directory, file chains, create/write/scratch/rename/format, BASIC listing builder.
+  DiskImage.h     d64.c/.h/DiskImage.h/WriteBack.h are byte-identical copies of TeensyROM's Source/Teensy/DiskImage (the fork's kernalreplace-fixes branch),
+                  the shared engine: change them there and copy back (make_tr_patch.sh refuses a mismatch; docs/DESIGN.md 55)
   vdrive.c/.h     virtual IEC drive: channel pool, OPEN/LOAD/SAVE/command channel, CD:/path walking/mount hooks, U0> pins, bus-scan numbers
   vdrive_io.c/.h  mailbox register engine (ISR-side O(1) accessors + vio_poll), the fast LOAD/SAVE commands and the bus-scan protocol
   vdrive_vec.c/.h the plain TR's vector engine: answers the agent (vector/vdagent.s), OPEN..SAVE and the file table in C (vvec_poll)
@@ -274,7 +278,7 @@ build/          generated, git-ignored (kernal images derived from the ROM, libd
   it and stamps the version `<ver>-DMA`. **Update `firmware/UPSTREAM`
   whenever the patch is rebased** onto another upstream commit. The plain `tr` hex has no VDrive yet (`Fab04_VDrive` sits under `Fab04_Features`; a TR port is on its own branch).
 * `tools/make_tr_patch.sh /path/to/TeensyROM` — regenerate `firmware/teensyrom-vdrive.patch` after changing `firmware/IOH_VDrive.c`
-  or anything in `d64/` (the patch embeds copies of those files). Always re-run it, then `git apply --check` on a clean checkout. Run it against a *pristine* upstream tree (`git archive HEAD` of the TeensyROM checkout), not the owner's already-patched one: its edits assert on unpatched text. It also reads `firmware/vdrive_remote.inc` (the remote-control dispatcher inserted into `SerUSBIO.ino`) and `firmware/vdrive_probe.asm`, and rebuilds the menu header with the TR's own `tools/build-c64.mjs` (needs `acme` 0.97 and `node`).
+  or anything in `d64/` (the patch embeds copies of those files, except the engine `d64.c`/`d64.h`, which the tree's `Source/Teensy/DiskImage` supplies; `vdrive.h`'s `#include "d64.h"` is pointed there). Always re-run it, then `git apply --check` on a clean checkout. Run it against a *pristine* tree of the fork's `kernalreplace-fixes` branch (`git archive kernalreplace-fixes` in the TeensyROM checkout; `firmware/UPSTREAM` names the commit and the repository), not the owner's already-patched one: its edits assert on unpatched text. It also reads `firmware/vdrive_remote.inc` (the remote-control dispatcher inserted into `SerUSBIO.ino`) and `firmware/vdrive_probe.asm`, and rebuilds the menu header with the TR's own `tools/build-c64.mjs` (needs `acme` 0.97 and `node`).
 * Requires: `ca65/ld65` (cc65), VICE (`x64sc`, `c1541`), a C/C++ compiler, Python 3; `acme` 0.97 for `make test-menuprobe` and, with `node`, for `make_tr_patch.sh`.
 
 ## Testing in the cloud (Linux container, no Mac)

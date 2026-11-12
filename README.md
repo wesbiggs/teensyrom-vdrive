@@ -37,12 +37,14 @@ and SHIFT+RUN/STOP types `LOAD"*",8,1` and `RUN` (the first file on the disk in 
 The C64's ability to read the 8 KB of RAM under KERNAL ROM ($E000-$FFFF) is used in many games and advanced programs. When the TR+ is in the Kernal Replace mode (as required by this software), late ISRs can cause bad reads at the byte level, leading to potential memory corruption. VDrive avoids this by running the Ethernet stack from the main loop instead of a timer interrupt once a program starts (under any VDrive or Kernal Replace Special IO). Rare glitches remain while the network is busy (seen early in a CCGMS BBS receive). Other TR+ functionality (NFC readers, etc.) may similarly affect reads, but has not been fully tested.
 
 ## Installing
-1. Patch the firmware source (TeensyROM checkout, FW ≥ 0.9 layout) and build the TR+ target:
+1. Patch the firmware source and build the TR+ target. The patch applies on the commit in [`firmware/UPSTREAM`](firmware/UPSTREAM), the
+   `kernalreplace-fixes` branch of [wesbiggs/TeensyROM](https://github.com/wesbiggs/TeensyROM), which has the D64/D71/D81 engine VDrive
+   shares with GEOS and the menu (`Source/Teensy/DiskImage`):
    ```
    cd /path/to/TeensyROM && git apply /path/to/teensyrom-vdrive/firmware/teensyrom-vdrive.patch
    ```
    The patch adds `Fab04_VDrive` (enabled next to `Fab04_KernalReplace` in `Common_Defs.h`), a new Special IO
-   `IOH_VDrive` ("VDrive KERNAL"), `IOH_VDriveSwift` ("VDrive+SwiftLink") and `IOH_VDriveSwiftREU` ("VDrive+Swift+REU"), `IOH_VDriveREU` ("VDrive+REU"), the library under `MinimalBoot/Common/vdrive/`, and a few lines in
+   `IOH_VDrive` ("VDrive KERNAL"), `IOH_VDriveSwift` ("VDrive+SwiftLink") and `IOH_VDriveSwiftREU` ("VDrive+Swift+REU"), `IOH_VDriveREU` ("VDrive+REU"), the library under `MinimalBoot/Common/vdrive/` (on top of the shared engine in `Source/Teensy/DiskImage`), and a few lines in
    `KERNALPreStart()` and the Kernal Replace start so these Special IOs serve their own KERNAL image.
 
    Build with `arduino-cli` and the Teensy core `teensy:avr@1.61.0` (library `CRC32@2.0.1`). **Do not use Teensyduino 1.62.0**: SD reads

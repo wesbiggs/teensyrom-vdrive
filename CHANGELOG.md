@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.9.0.61
+
+### Changed
+- **The D64/D71/D81 engine is now TeensyROM's shared one** (`Source/Teensy/DiskImage`, which GEOS, the TR block device and the menu's
+  image browser also use): the patch no longer carries its own `vdrive/d64.c` and `d64.h`. The glue includes `DiskImage/DiskImage.h`, and
+  the patch now applies on the fork's `kernalreplace-fixes` branch (`7b3c3294`, which already holds `kernalreplace-fixes.patch`), not on
+  upstream `main`; `firmware/UPSTREAM` names that commit and the fork, and `tools/build_firmware.sh` fetches from it.
+  `d64/d64.c`, `d64.h` and `DiskImage.h` here are byte-identical copies for the host tests; `tools/make_tr_patch.sh` refuses a tree whose
+  copies differ. What the newer engine changes for the drive: `@:` (save with replace) keeps the old file until the new one closes, as a
+  1541 does (so a disk too full for both gives `72` and leaves the old file; a locked old file gives `26`); a write that runs off the last
+  track starts over from the first instead of reporting the disk full; a failed close removes the half-written file.
+- **Image writes reach the card the way the TR block device's do** (`DiskImage/WriteBack.h`, shared with it): a mounted image is now an
+  SdFat `FsFile` on the unit's volume (`SD.sdfs`, the USB stick's `mscfs`) instead of an SD.h `File`, whose `flush()` dropped whether the
+  sync worked. A sync the card fails now leaves the image dirty and is tried again after the next idle quarter second (it used to be
+  counted as done); the serial console says `VDrive n: writes are not reaching the card; retrying` once, and `last writes did not reach
+  the card` when an unmount's close fails. Unmount, and a new launch, close the image (which syncs) instead of leaving it open until the
+  next mount. Host test (`tests/fw_host`: a failing card, the retry, the recovery).
+  Unit tests, `tests/fw_host` (both DMA builds) and the TR+ firmware build; **not on hardware**. `docs/DESIGN.md` section 55.
+
 ## v0.9.0.60
 
 ### Fixed

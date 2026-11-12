@@ -15,13 +15,16 @@ BOARD="${TARGET%-dma}"
 case "$OUT" in --*) OUT=build/firmware ;; esac
 INSTALL=0; for a in "$@"; do [ "$a" = --install-toolchain ] && INSTALL=1; done
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-SHA="$(tr -d ' \n' < "$HERE/firmware/UPSTREAM")"
+# firmware/UPSTREAM: the commit, then the repository that has it (default: SensoriumEmbedded's; VDrive builds on the fork's
+# kernalreplace-fixes branch, which carries the shared disk image engine, Source/Teensy/DiskImage, ahead of upstream)
+read -r SHA REPO < "$HERE/firmware/UPSTREAM"
+REPO="${REPO:-https://github.com/SensoriumEmbedded/TeensyROM.git}"
 TR="$HERE/build/teensyrom-$TARGET"
 mkdir -p "$OUT"; OUT="$(cd "$OUT" && pwd)"
 
 rm -rf "$TR"; mkdir -p "$TR"; cd "$TR"
 git init -q
-git fetch -q --depth 1 https://github.com/SensoriumEmbedded/TeensyROM.git "$SHA"
+git fetch -q --depth 1 "$REPO" "$SHA"
 git -c advice.detachedHead=false checkout -q FETCH_HEAD
 git apply "$HERE/firmware/teensyrom-vdrive.patch"
 C=Source/Teensy/MinimalBoot/Common

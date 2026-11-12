@@ -4,6 +4,7 @@
 #include <unistd.h>
 
 FS SD, firstPartition;
+bool g_sync_fail = false;
 SerialStub Serial;
 static uint8_t io1_mem[256];
 volatile uint8_t *IO1 = io1_mem;

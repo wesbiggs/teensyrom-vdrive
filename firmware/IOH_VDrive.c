@@ -19,7 +19,8 @@
 
 #include <strings.h>               // strcasecmp
 #define VD_COLD FLASHMEM          // everything except the bus-ISR register accessors lives in flash
-#include "../vdrive/d64.c"
+#include "../../../DiskImage/DiskImage.h"   // the D64/D71/D81 engine shared with GEOS, the TR block device and the menu
+#include "../../../DiskImage/WriteBack.h"   // when an image's writes are synced to the card (shared with the TR block device)
 #include "../vdrive/vdrive.c"
 #include "../vdrive/vdrive_io.c"
 
@@ -63,23 +64,22 @@ stcIOHandlers IOHndlr_VDrive =
 #define VD_MboxBase    0x10  // mailbox at $DE10-$DE1A: $DE00-$DE07 stays free for the SwiftLink ACIA (see IOH_VDriveSwift.c)
 #define VD_CwdLen      96
 #define VD_PathLen     (2 * VD_CwdLen + 4)   // folder + '/' + a host name (imgName: under VD_CwdLen characters)
-#define VD_FlushIdleMs 250   // write the image back this long after the last sector write
 
 struct stcVDUnit
 {
    FS      *fs;              // SD or USB file system
-   File     img;             // mounted .d64
+   FsVolume *vol;            // the same file system's SdFat volume, for img
+   FsFile   img;             // mounted .d64: an FsFile, not an SD.h File, whose flush() discards whether the sync reached the card
    File     dir;             // host directory being listed
    File     plain;           // plain file being read with nothing mounted (LOAD"GAME.PRG")
    d64_t    d;
    uint8_t *errTab;          // the image's error table (malloc, RAM2) when it marks any sector bad; NULL = none
    bool     mounted;
-   bool     dirty;
+   struct ImageWriteBack wb; // img's unsynced writes (DiskImage/WriteBack.h)
    bool     quiet;           // temporary selection for a listing by path: leave the /.vdrive sidecar alone
    char     imgName[VD_CwdLen];   // host (ASCII) name of the mounted image, in cwd (the C64 may have used its alias)
    char     snapCwd[VD_CwdLen];   // folder / image selected before a listing by path (push / pop)
    char     snapImg[VD_CwdLen];   // "" = nothing was mounted
-   uint32_t lastWriteMs;
    char     cwd[VD_CwdLen];  // "" = root
 };
 
@@ -179,7 +179,7 @@ static int VD_ReadSector(void *ctx, uint8_t t, uint8_t s, uint8_t *buf)
 {
    stcVDUnit *u = (stcVDUnit *)ctx;
    long off = d64_sector_offset(&u->d, t, s);
-   if (off < 0 || !u->img.seek((uint32_t)off)) return -1;
+   if (off < 0 || !u->img.seekSet((uint32_t)off)) return -1;
    return u->img.read(buf, D64_SECTOR) == D64_SECTOR ? 0 : -1;
 }
 
@@ -187,15 +187,24 @@ static int VD_WriteSector(void *ctx, uint8_t t, uint8_t s, const uint8_t *buf)
 {
    stcVDUnit *u = (stcVDUnit *)ctx;
    long off = d64_sector_offset(&u->d, t, s);
-   if (off < 0 || !u->img.seek((uint32_t)off)) return -1;
+   if (off < 0 || !u->img.seekSet((uint32_t)off)) return -1;
    if (u->img.write(buf, D64_SECTOR) != D64_SECTOR) return -1;
-   u->dirty = true; u->lastWriteMs = millis();
+   ImageWriteBackWrote(&u->wb, millis());
    return 0;
 }
 
+// A sync the card fails leaves the image dirty, so the next idle period tries again; the first failure in a row is reported
 FLASHMEM static void VD_Flush(stcVDUnit *u)
 {
-   if (u->mounted && u->dirty) { u->img.flush(); u->dirty = false; }
+   if (!u->mounted || !u->wb.Dirty) return;
+   if (ImageWriteBackSynced(&u->wb, u->img.sync(), millis()))
+      Serial.printf("VDrive %d: writes are not reaching the card; retrying\n", (int)(u - vdUnit) + 8);
+}
+
+FLASHMEM static void VD_CloseImage(stcVDUnit *u)
+{
+   if (u->img.isOpen() && !u->img.close()) Serial.printf("VDrive %d: last writes did not reach the card\n", (int)(u - vdUnit) + 8);
+   ImageWriteBackForget(&u->wb);
 }
 
 // ---- remembered mount: "/.vdrive" on each unit's own file system holds the last mounted image's path --------
@@ -226,7 +235,7 @@ FLASHMEM static void VD_LoadErrTab(stcVDUnit *u, uint32_t size)
 {
    u->errTab = NULL; u->d.errtab = NULL;
    long off = d64_errtab_offset(&u->d, size);
-   if (off < 0 || !u->img.seek((uint32_t)off)) return;
+   if (off < 0 || !u->img.seekSet((uint32_t)off)) return;
    int n = d64_sectors(&u->d), nbad = 0;
    uint8_t *t = (uint8_t *)malloc(n);
    if (!t) return;
@@ -240,8 +249,7 @@ FLASHMEM static void VD_LoadErrTab(stcVDUnit *u, uint32_t size)
 FLASHMEM static void VD_Unmount(void *ctx, int unit)
 {
    stcVDUnit *u = &vdUnit[unit];
-   VD_Flush(u);
-   if (u->mounted) u->img.close();
+   VD_CloseImage(u);                                     // close() syncs: any unsynced writes go to the card now
    u->mounted = false;
    free(u->errTab); u->errTab = NULL; u->d.errtab = NULL;
    VD_SidecarClear(u);                                   // an explicit unmount forgets the image (a new mount re-writes it)
@@ -263,13 +271,12 @@ FLASHMEM static int VD_MountHost(int unit, const char *path, d64_t **out)
    probe.close();
    if (size < 174848) return 74;                                                  // DRIVE NOT READY: not a D64
    bool writable = true;
-   u->img = u->fs->open(path, FILE_WRITE);                                        // exists now, so nothing is created
-   if (!u->img) { writable = false; u->img = u->fs->open(path, FILE_READ); }
-   if (!u->img) return 62;
+   if (!u->img.open(u->vol, path, O_RDWR))                                        // no O_CREAT: nothing is created
+   { writable = false; if (!u->img.open(u->vol, path, O_RDONLY)) return 62; }
    if (d64_open_size(&u->d, VD_ReadSector, u, size)) { u->img.close(); return 74; }   // format (d64 / d71 / d81) comes from the size
    u->d.write = writable ? VD_WriteSector : NULL;
    VD_LoadErrTab(u, size);
-   u->mounted = true; u->dirty = false;
+   u->mounted = true; ImageWriteBackForget(&u->wb);
    strlcpy(u->imgName, leaf, sizeof u->imgName);
    *out = &u->d;
    VD_SidecarSave(u, path);
@@ -713,10 +720,10 @@ FLASHMEM void VDrive_PreStart(bool agent)
    vdrive_set_host(&vio->vd, &host);
    VD_LoadDevices();
 
-   for (int i = 0; i < 2; i++) { vdUnit[i].mounted = false; vdUnit[i].dirty = false; vdUnit[i].quiet = false; vdUnit[i].cwd[0] = 0;
+   for (int i = 0; i < 2; i++) { VD_CloseImage(&vdUnit[i]); vdUnit[i].mounted = false; vdUnit[i].quiet = false; vdUnit[i].cwd[0] = 0;
                                  free(vdUnit[i].errTab); vdUnit[i].errTab = NULL; }
-   vdUnit[0].fs = &SD;
-   vdUnit[1].fs = &firstPartition;
+   vdUnit[0].fs = &SD;              vdUnit[0].vol = &SD.sdfs;
+   vdUnit[1].fs = &firstPartition;  vdUnit[1].vol = &firstPartition.mscfs;
    vdrive_attach(&vio->vd, 0, NULL, SDFullInit());
    vdrive_attach(&vio->vd, 1, NULL, USBFileSystemWait());
    uint8_t menu = vdLaunchMenu != 0xFF ? vdLaunchMenu : IO1[rWRegCurrMenuWAIT];
@@ -1022,14 +1029,14 @@ FLASHMEM static void VD_PollCommon(bool did)
    }
    if (vio_take_menu(vio))          // VIO_MENU (VDrive Config's Q): write back what is unsaved, then the main loop resets into the menu
    {
-      for (int i = 0; i < 2; i++) if (vdUnit[i].dirty) VD_Flush(&vdUnit[i]);
+      for (int i = 0; i < 2; i++) VD_Flush(&vdUnit[i]);
       BtnPressed = true;
    }
    // Write back only when both the last sector write and the last mailbox command are old: SD access can mask
    // interrupts, and the C64 must not be mid-LOAD (reading our registers) when that happens.
    uint32_t now = millis();
    for (int i = 0; i < 2; i++)
-      if (vdUnit[i].dirty && now - vdUnit[i].lastWriteMs > VD_FlushIdleMs && now - lastActivityMs > VD_FlushIdleMs)
+      if (ImageWriteBackDue(&vdUnit[i].wb, now) && now - lastActivityMs > IMAGE_WRITEBACK_IDLE_MS)
          VD_Flush(&vdUnit[i]);
 }
 

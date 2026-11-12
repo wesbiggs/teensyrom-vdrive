@@ -5,46 +5,53 @@ usage: run.py [STOCK.bin]   with a stock KERNAL the patched image the glue build
                             tools/build.py's; without one (or with a ROM the glue does not know) only the other KERNAL checks run"""
 import pathlib, shutil, subprocess, sys, tempfile
 
+SHARED = {"d64.c", "d64.h", "DiskImage.h", "WriteBack.h"}   # copies of TeensyROM's Source/Teensy/DiskImage (tools/make_tr_patch.sh checks)
+
 ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
 tmp = pathlib.Path(tempfile.mkdtemp())
 try:
-    # build tree mirrors the firmware layout: IO_Handlers/IOH_VDrive.c + vdrive/*.c
-    (tmp / "IO_Handlers").mkdir(); (tmp / "vdrive").mkdir()
-    shutil.copy(ROOT / "firmware/IOH_VDrive.c", tmp / "IO_Handlers/glue.c")
-    shutil.copy(ROOT / "firmware/IOH_VDriveSwift.c", tmp / "IO_Handlers/swift.c")
-    shutil.copy(ROOT / "firmware/IOH_VDriveREU.c", tmp / "IO_Handlers/vdreu.c")
-    shutil.copy(ROOT / "firmware/IOH_VDriveSwiftREU.c", tmp / "IO_Handlers/swiftreu.c")
-    shutil.copy(ROOT / "firmware/IOH_VDriveAgent.c", tmp / "IO_Handlers/agent.c")
+    # build tree mirrors the firmware layout: Common/IO_Handlers/IOH_VDrive.c + Common/vdrive/*.c, and the shared disk image
+    # engine (d64.c, d64.h, DiskImage.h) in Source/Teensy/DiskImage, where the patch finds it in the TeensyROM tree
+    base, di = tmp / "Source/Teensy/MinimalBoot/Common", tmp / "Source/Teensy/DiskImage"
+    (base / "IO_Handlers").mkdir(parents=True); (base / "vdrive").mkdir(); di.mkdir(parents=True)
+    shutil.copy(ROOT / "firmware/IOH_VDrive.c", base / "IO_Handlers/glue.c")
+    shutil.copy(ROOT / "firmware/IOH_VDriveSwift.c", base / "IO_Handlers/swift.c")
+    shutil.copy(ROOT / "firmware/IOH_VDriveREU.c", base / "IO_Handlers/vdreu.c")
+    shutil.copy(ROOT / "firmware/IOH_VDriveSwiftREU.c", base / "IO_Handlers/swiftreu.c")
+    shutil.copy(ROOT / "firmware/IOH_VDriveAgent.c", base / "IO_Handlers/agent.c")
     for f in (ROOT / "d64").iterdir():
-        if f.suffix in (".c", ".h"): shutil.copy(f, tmp / "vdrive" / f.name)
-    subprocess.run([sys.executable, "-I", str(ROOT / "tools/build.py"), "--table", str(tmp / "vdrive/vd_kpatch.h")], check=True)
-    subprocess.run([sys.executable, "-I", str(ROOT / "tools/build_agent.py"), str(tmp / "vdrive/vd_agent.h")], check=True)
+        if f.name in SHARED: shutil.copy(f, di / f.name)
+        elif f.suffix in (".c", ".h"): shutil.copy(f, base / "vdrive" / f.name)
+    vh = base / "vdrive/vdrive.h"                                       # as tools/make_tr_patch.sh rewrites it
+    vh.write_text(vh.read_text().replace('#include "d64.h"', '#include "../../../DiskImage/d64.h"'))
+    subprocess.run([sys.executable, "-I", str(ROOT / "tools/build.py"), "--table", str(base / "vdrive/vd_kpatch.h")], check=True)
+    subprocess.run([sys.executable, "-I", str(ROOT / "tools/build_agent.py"), str(base / "vdrive/vd_agent.h")], check=True)
     stock = pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else None
     kstock, kpatched = tmp / "kstock.bin", tmp / "kpatched.bin"
     if stock and stock.exists():
         shutil.copy(stock, kstock)
         subprocess.run([sys.executable, "-I", str(ROOT / "tools/build.py"), str(stock), str(kpatched)], check=True, capture_output=True)
-    shutil.copy(ROOT / "tests/fw_host/stub.h", tmp / "stub.h")
+    shutil.copy(ROOT / "tests/fw_host/stub.h", base / "stub.h")
     main = (ROOT / "tests/fw_host/main.cpp").read_text().replace('#include "glue.c"', '#include "IO_Handlers/glue.c"')
     # the glue expects vdrive_io.h's VIO_/VD_ symbols; vdrive.h/d64.h arrive through the .c includes' headers
-    (tmp / "main.cpp").write_text(main)
+    (base / "main.cpp").write_text(main)
     exe = tmp / "fwhost"
-    r = subprocess.run(["c++", "-std=gnu++17", "-Wall", "-Wextra", "-Wno-unused-parameter", "-Werror", "-I", str(tmp / "vdrive"),
-                        "-o", str(exe), str(tmp / "main.cpp")], capture_output=True, text=True)
+    r = subprocess.run(["c++", "-std=gnu++17", "-Wall", "-Wextra", "-Wno-unused-parameter", "-Werror", "-I", str(base / "vdrive"),
+                        "-o", str(exe), str(base / "main.cpp")], capture_output=True, text=True)
     if r.returncode:
         print(r.stdout + r.stderr); sys.exit(1)
     print("PASS firmware glue compiles as C++ (-Wall -Wextra -Werror) against host stubs")
     for flag in ("-DVD_TRACE", "-DVD_NO_TRACE", "-DVD_ALLOC_HEAP"):
-        r = subprocess.run(["c++", "-std=gnu++17", "-Wall", "-Wextra", "-Wno-unused-parameter", "-Werror", flag, "-I", str(tmp / "vdrive"),
-                            "-fsyntax-only", str(tmp / "main.cpp")], capture_output=True, text=True)
+        r = subprocess.run(["c++", "-std=gnu++17", "-Wall", "-Wextra", "-Wno-unused-parameter", "-Werror", flag, "-I", str(base / "vdrive"),
+                            "-fsyntax-only", str(base / "main.cpp")], capture_output=True, text=True)
         if r.returncode:
             print(r.stdout + r.stderr); sys.exit(1)
         print("PASS glue also compiles with", flag)
     # the plain TeensyROM: no Fab04_*, only the agent handler (tests/fw_host/plain.cpp)
-    shutil.copy(ROOT / "tests/fw_host/plain.cpp", tmp / "plain.cpp")
+    shutil.copy(ROOT / "tests/fw_host/plain.cpp", base / "plain.cpp")
     plain = tmp / "fwplain"
-    r = subprocess.run(["c++", "-std=gnu++17", "-Wall", "-Wextra", "-Wno-unused-parameter", "-Werror", "-DPLAIN_TR", "-I", str(tmp / "vdrive"),
-                        "-o", str(plain), str(tmp / "plain.cpp")], capture_output=True, text=True)
+    r = subprocess.run(["c++", "-std=gnu++17", "-Wall", "-Wextra", "-Wno-unused-parameter", "-Werror", "-DPLAIN_TR", "-I", str(base / "vdrive"),
+                        "-o", str(plain), str(base / "plain.cpp")], capture_output=True, text=True)
     if r.returncode:
         print(r.stdout + r.stderr); sys.exit(1)
     print("PASS glue + agent compile for the plain TeensyROM (-DPLAIN_TR, no Fab04_*)")
@@ -93,8 +100,8 @@ try:
 
     # without Fab04_VDriveDMALoad (the upstream build): no DMA hook, every LOAD part through the window, all other checks the same
     exe2 = tmp / "fwhost_nodma"
-    r = subprocess.run(["c++", "-std=gnu++17", "-Wall", "-Wextra", "-Wno-unused-parameter", "-Werror", "-DVD_TEST_NO_DMA", "-I", str(tmp / "vdrive"),
-                        "-o", str(exe2), str(tmp / "main.cpp")], capture_output=True, text=True)
+    r = subprocess.run(["c++", "-std=gnu++17", "-Wall", "-Wextra", "-Wno-unused-parameter", "-Werror", "-DVD_TEST_NO_DMA", "-I", str(base / "vdrive"),
+                        "-o", str(exe2), str(base / "main.cpp")], capture_output=True, text=True)
     if r.returncode:
         print(r.stdout + r.stderr); sys.exit(1)
     r = subprocess.run([str(exe2), str(sd2), str(usb2), str(expect), str(kstock), str(kpatched)], capture_output=True, text=True)

@@ -961,3 +961,54 @@ On the plain TR, RAM1 variables include the served page (256 bytes), the registe
 - the RAM-budget numbers against stock.
 
 The NativeEthernet late-ISR fix (the `loop()` poll, PR #85) is TR+ only: on a plain TR with Ethernet initialized, late phi2 interrupts could hit the agent's opcode fetches.
+
+## 55. The shared disk image engine (0.9.0.61; host tests and the TR+ firmware build; not on hardware)
+
+The engine in `d64/` went into the TeensyROM fork as `Source/Teensy/DiskImage` (from `b74ce37`), where GEOS's installer and boot-file reader,
+the TR block device and the menu's D64/D71/D81 browser and loader use it. It grew there: placement macros (`VD_COLD`, `D64_FLASH`) in
+`d64.h` with `DiskImage.h` setting them for the firmware and including `d64.c` once for the unity build; `d64_open_exact`; the pre-write checks
+`d64_blocks_allocatable`, `d64_dir_check`, `d64_dir_room`; `d64_alloc_next`; and three behaviour changes. VDrive's patch still carried its own
+older copy in `vdrive/`, so a tree with both had two definitions of every engine function in the one translation unit.
+
+Now the fork's `kernalreplace-fixes` branch (`7b3c3294`: upstream `d1a7ab79`, the five `shared-disk-*` commits, then
+`kernalreplace-fixes.patch` as a commit) is the base (`firmware/UPSTREAM` holds the commit and the fork's URL; `build_firmware.sh` reads both).
+- `d64/d64.c`, `d64.h` and `DiskImage.h` here are byte-identical copies of the tree's, for the ctypes tests, the VICE mock and `fw_host`.
+  `make_tr_patch.sh` stops unless all three match the tree. A change to the engine is made in TeensyROM and copied back.
+- `IOH_VDrive.c` includes `../../../DiskImage/DiskImage.h` in place of `../vdrive/d64.c`; the patch's `vdrive.h` includes
+  `../../../DiskImage/d64.h` (rewritten by `make_tr_patch.sh`; in this repository it stays `"d64.h"`). `tests/fw_host/run.py` lays out the same
+  tree (`Source/Teensy/MinimalBoot/Common/{IO_Handlers,vdrive}` and `Source/Teensy/DiskImage`) and makes the same rewrite.
+- `make_tr_patch.sh` applies `kernalreplace-fixes.patch` only when the tree does not already have it (`git apply --reverse --check`).
+
+What the drive inherits:
+- `@:` (`d64_create` with replace) no longer scratches the old file first: it stays until the new one closes (`d64_wfile_t.rep`), as on a
+  1541. Both need room at once, so a nearly full disk gives `72` where scratching first would have fitted, and the old file is left as it was.
+  A locked old file is `26` at the open.
+- The allocator, having run past the last track from a file's current track, searches from the first data track once more before `72`.
+- A failed `d64_close_write` removes the file (an append: puts it back).
+- `d64_build_dir` returns `int`: the length, `D64_E_BUF` or the read error (VDrive builds its own listings and does not call it;
+  `tools/d64py.py` returns `b""` for an error). The new codes `D64_E_BUF` / `D64_E_BAM` map to `74` in `err_from` (only the pre-write checks
+  return `D64_E_BAM`, and VDrive does not call them yet).
+
+**Writes reach the card through `DiskImage/WriteBack.h`**, the policy the TR block device uses. The unit's own copy of it (`dirty`,
+`lastWriteMs`, `VD_FlushIdleMs` = 250 ms) is gone. The mounted image is an SdFat `FsFile` opened on the unit's `FsVolume`
+(`stcVDUnit.vol`: `SD.sdfs`, or `firstPartition.mscfs` for the USB stick; both public, and the same volumes the `FS` objects use): SD.h's
+`File::flush()` returns nothing, so a failed sync used to count as done. Now:
+- `VD_WriteSector` calls `ImageWriteBackWrote`; the poll syncs when `ImageWriteBackDue` and the mailbox has also been quiet that long (as before:
+  SD access can mask interrupts, so not in the middle of a LOAD).
+- `VD_Flush` passes `img.sync()` to `ImageWriteBackSynced`: a failure stays dirty, is retried after the next idle period and is reported once
+  on the serial console.
+- `VD_CloseImage` (unmount, and `InitHndlr` for an image a previous run left open) closes, which syncs, reports a failed close and forgets
+  the state. Before, an unmounted or abandoned `File` stayed open until the next mount's assignment closed it.
+- The mount opens with `O_RDWR`, else `O_RDONLY`: no `O_CREAT`, so (as with the old `FILE_READ` probe first) nothing is created.
+Everything else on the card (listings, plain files, the sidecar, `hf` files) stays on SD.h's `File`. `tests/fw_host/stub.h` has an `FsFile`
+whose `sync()` fails on `g_sync_fail`.
+
+Nothing else in the base commits duplicates the patch: the GEOS, block device and menu commits touch no file the patch edits, and the
+Kernal Replace commit is `kernalreplace-fixes.patch` itself. `MenuDisk.h` is the menu's read-only view (it also opens short D64s down
+to 171520 bytes); VDrive keeps `d64_open_size` and its 174848-byte minimum.
+
+Tested: the unit tests (`make test-d64`), `tests/fw_host` (both DMA builds, with the stock ROM), `make test`, the regenerated patch
+applied to a `git archive` of `kernalreplace-fixes` and to a fresh fetch of `firmware/UPSTREAM`, and the TR+ build from it
+(`TeensyROM+_0.9.0.61_full.hex`; main image RAM1 free for locals 54940). Against the TeensyROM `vdrive` branch the patched tree differs
+only in the two engine files gone, the includes, and the write-back.
+
