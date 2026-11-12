@@ -1220,3 +1220,41 @@ unit test (the mock types its `SYS` at a READY prompt, where the cursor rule say
 
 **Not done.** Hardware. The 80-column case in VICE through the real boot ROM. The C128's banner text of other BASIC 7 revisions is not
 checked (VICE's 318018-04 / 318019-04: `(C)1986`); only the last line is matched.
+
+## 60. The border flash by DMA crashed running programs; back to the IRQ routine (0.9.0.66; host tests; the cause found by reading the ISR, not on hardware)
+
+**Report (owner, hardware, 0.9.0.65).** Every Alt-button disk switch under VDrive crashed the machine: the screen got corrupted first, then
+the TeensyROM went back to its menu, with nothing on the serial console. Seen on C64 BASIC and in a program under the VDrive KERNAL
+handlers, and in C128 BASIC (128 mode, the agent). The disk switch itself is not involved: the crash comes from the flash's DMA holds
+(sections 57-58), one `HoldC64()` per flash step while the program runs.
+
+**One cause, under the KERNAL handlers (Kernal Replace in general).** `HoldC64()` sets `DMA_S_StartAsynch`, and `isrPHI2` (ISRs.c)
+picks the moment to assert `/DMA` by Gideon Zweijtzer's safe-freeze rule: watch R/W cycle by cycle and assert on the first read that
+directly follows a write (after a write, the next read is an opcode or vector fetch, and the cycle after that is always a read again,
+so the 6510, which only halts on reads, cannot be in the middle of a write sequence). But that state machine sits at the end of the
+ISR, after
+
+    if (fBusSnoop != NULL) if (fBusSnoop(Address, R_Wn)) return;
+
+and `KernalCheck` returns true for every CPU read of `$E000-$FFFF` (BA high): the ISR leaves before the state machine sees the cycle.
+In KERNAL code most cycles are such reads. So the machine can see a write (a zero-page store), miss the KERNAL fetches after it, and
+take a later read for "the read after the write". Example: a `JSR` in the KERNAL. Opcode and low byte are KERNAL reads (skipped),
+the third cycle is a dummy read of the stack page (seen: assert), and the next two cycles are the pushes of the return address. The
+6510 does not halt on writes; with `/DMA` low its bus is cut off (AEC), so both pushes are lost and the `RTS` later returns to whatever
+the stack held. The KERNAL's IRQ routine and the editor loop run all the time, so nearly every hold can hit this.
+DMA LOAD / SAVE / VERIFY (sections 49, 51) are not exposed: the CPU waits in the mailbox loop, which does not write, so their holds
+start on a badline read or after the read-loop time-out, both safe. The same flaw plausibly explains the remote DMA reads (`trmon`)
+that crashed programs under Kernal Replace (CLAUDE.md, remote commands).
+
+**Not explained: the agent (C128 128 mode).** The agent hooks no bus snoop, so the above does not apply, and its crash is still open.
+Candidates: the IO handlers still run on the cycles while the CPU is held and nobody drives the address bus (`DMA_S_TransferReady` /
+`TransferComplete`: the ISR decodes whatever the floating bus reads as, and a decoded IO2 write would land in the mailbox), or the
+safe-freeze rule itself on a C128 (badline starts, the 2 MHz / MMU hand-off).
+
+**0.9.0.66.** Back to 0.9.0.63's arrangement for the KERNAL handlers: `irq_border` in the KERNAL IRQ routine (`P_EA32`), the BORDER
+register `$DE18` (offset 8 again; ID0/ID1 stay at `$DE19/$DE1A`), the `vdBorderOut` hook (NULL: the IRQ routine reads the register).
+That path is the hardware-verified one (0.9.0.17). The agent keeps disk switching but has no flash: its DMA writer is removed.
+`kernal-tr.bin` is byte-identical to 0.9.0.63's again (SHA-256 `ea5518f3...`). Tests: `make test-border` (py65) is back, `tests/fw_host`
+checks the KERNAL handler's register sequence and that the agent never holds the C64.
+**Next (0.9.0.67, experimental branch `dma-border-isr`).** The ISR fix for the cause above, and the DMA flash again, with a debug trace,
+to be tried on hardware.

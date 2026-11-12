@@ -53,10 +53,10 @@ class VioTests(unittest.TestCase):
     def test_arg_reads_back(self):
         self.io.w(1, 0x5A); self.assertEqual(self.io.r(1), 0x5A)          # needed by the not-mine path
 
-    def test_offset_8_is_unused(self):
-        # the BORDER register until 0.9.0.63 (the flash is done by DMA now): a gap that keeps ID0/ID1 at $DE19/$DE1A
-        self.assertEqual(self.io.r(8), 0)
-        self.io.w(8, 0xC2); self.assertEqual(self.io.r(8), 0)
+    def test_border_register_idles_and_is_read_only(self):
+        # the KERNAL's IRQ routine reads it for the disk-switch border flash: idle is $80, only the firmware changes it
+        self.assertEqual(self.io.r(8), 0x80)
+        self.io.w(8, 0xC2); self.assertEqual(self.io.r(8), 0x80)
 
     def test_id_registers_are_constant_and_read_only(self):
         # the KERNAL's reset hook (P_F875 in patches/vdrive.s) asks for the TR menu only after reading these two

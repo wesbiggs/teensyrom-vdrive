@@ -1,5 +1,5 @@
 // "VDrive+REU" Special IO for TeensyROM+: the virtual-drive KERNAL (IOH_VDrive.c) and the REU (IOH_REU.c) at the same time.
-//   IO1 $DE10-$DE1A -> VDrive mailbox ($DE00-$DE0F unanswered)
+//   IO1 $DE10-$DE18 -> VDrive mailbox ($DE00-$DE0F unanswered)
 //   IO2 $DF00-$DF7F -> REU registers (11 registers, repeated every 32 bytes as on a real 1764/1750, but only 4 times)
 //   IO2 $DF80-$DFFF -> VDrive 128-byte window
 //   no per-cycle callback; init and polling run both.

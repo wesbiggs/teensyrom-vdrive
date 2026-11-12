@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.9.0.66
+
+### Fixed
+- **The Alt button's disk switch no longer crashes the machine.** Since 0.9.0.64 (0.9.0.63 under VDrive Agent) the border flash was
+  written by DMA, holding the running program for every flash step; on hardware that corrupted the screen and then sent the TeensyROM
+  back to its menu, in C64 BASIC, in programs and in C128 BASIC (owner, 0.9.0.65). The flash is the KERNAL IRQ routine's again, as in
+  0.9.0.63 and before (`irq_border`, the BORDER register `$DE18`), the way that worked on hardware since 0.9.0.17. Under VDrive Agent
+  (the plain-TR vectors, C128 mode) the disk still switches, but the border no longer flashes. **Rebuild `kernal-tr.bin`**: it is
+  byte-identical to the 0.9.0.63 image again (SHA-256 in the README). A cause, under the KERNAL handlers, is described in
+  `docs/DESIGN.md` section 60 (the bus ISR's safe-freeze logic does not see the cycles the KERNAL snoop takes); it is being tried
+  as an experimental 0.9.0.67. Host tests (`make test-border`, `tests/fw_host`); **not on hardware** in this form (the IRQ flash itself is).
+
 ## v0.9.0.65
 
 ### Added

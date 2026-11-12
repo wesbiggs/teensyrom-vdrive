@@ -26,7 +26,7 @@ Every change comes with tests, in the same pull request:
 * a bug fix gets a test that fails without the fix;
 * a feature gets tests for its normal path, its limits and its error cases;
 * firmware glue (`firmware/IOH_VDrive.c`) is exercised by `tests/fw_host`, the portable engine (`d64/`) by `tests/test_*.py`, the 6502 patches by the
-  VICE runs (`tools/vdrive_mock.py`) and, where VICE is not available, a simulator or a model (see `tests/test_reset_hook.py`, `tests/test_vdconfig.py`);
+  VICE runs (`tools/vdrive_mock.py`) and, where VICE is not available, a simulator or a model (see `tests/test_irq_border.py`, `tests/test_vdconfig.py`);
 * a C64 program (`util/`, `tests/basic/`, `tests/asm/`) needs a way to check it on the host if at all possible, and a note in its README on how to check it on hardware.
 
 Run `make test` before pushing (about 4 minutes; needs `cc65`, VICE with its ROMs, a C/C++ compiler, Python 3; `pip install py65` for the
