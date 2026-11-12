@@ -23,15 +23,15 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # setup-python, so py65 lands where `python3 -I` finds it (-I skips the user site that pip would use with the system Python)
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
 
       - name: Cache VICE ROMs
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.local/share/vice
           key: vice-roms-v2   # v2: + the C128 C64-mode KERNALs (make test-variants)

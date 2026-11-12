@@ -35,14 +35,14 @@ jobs:
       matrix:
         target: [tr, tr-plus, tr-plus-dma]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'   # TeensyROM's package.json: "node": ">=24"
 
       - name: Cache Arduino core and library
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.arduino15
@@ -71,7 +71,7 @@ jobs:
             *) echo "::warning::tag $TAG is not v<version>; not compared with $ver" ;;
           esac
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: firmware-${{ matrix.target }}
           path: build/release/*.hex
@@ -84,7 +84,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: firmware-*
           merge-multiple: true

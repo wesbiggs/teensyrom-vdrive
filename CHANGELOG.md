@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.9.0.64
+
+### Build
+- GitHub Actions updated off the deprecated Node 20 versions: `checkout` v7, `setup-python` v7, `setup-node` v7, `cache` v6,
+  `upload-artifact` v7, `download-artifact` v8 (all Node 24). No change to what the workflows do; not run in CI yet.
+
 ## v0.9.0.63
 
 ### Added
