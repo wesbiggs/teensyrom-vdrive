@@ -972,13 +972,19 @@ def agent128_tests(m, run, check, service, log, disk, big, workdir, vec, real, m
     expect('LOAD"$",%d\r' % D, "DEVICE NOT PRESENT")
     chk("not installed: BASIC 7's own KERNAL, nothing reached the mailbox", not log)
     expect('SYS%d,165\r' % sys_at, "READY.")                         # A = $A5: as the boot ROM's loader, against the ROM's tables
+    scr = m.screen()
+    line = " ALL RIGHTS RESERVED  VDRIVE " + ("SD 9 USB10" if real else "SD 8 NOUSB")
+    chk("the start-up message's last line: %r (docs/DESIGN.md 59)" % scr[4], scr[4] == line)
+    at = next((i for i, r in enumerate(scr) if r.startswith("SYS")), -1)
+    chk("the cursor put back: READY. where BASIC 7 prints it after any SYS (a blank line, then READY.), rows 5-6 untouched",
+        0 <= at < 23 and scr[at + 1:at + 3] == ["", "READY."] and scr[5:7] == ["", "READY."])
     v_load = bytes(m.read(0x0330, 2, ram0))
     chk("launch INSTALL (A=$A5, the C128 ROM's RESTOR and BASIC 7 tables): ILOAD points into the agent ($%04X)" % struct.unpack("<H", v_load)[0],
         start <= struct.unpack("<H", v_load)[0] < start + len(vec) - 2)
     expect('SYS%d\r' % sys_at, "READY.")
     expect('DIRECTORY U%d\r' % D, '0 "MOCKDISK')
     want_devs = bytes([9, 10]) if real else bytes([8, 0])            # scan: the 1541 holds 8, the SD unit takes 9, the USB stick 10
-    chk("the first OPEN ran the bus scan: DEV0/DEV1 %r" % bytes(m.read(DEV0, 2, ram0)), bytes(m.read(DEV0, 2, ram0)) == want_devs)
+    chk("the launch INSTALL ran the bus scan: DEV0/DEV1 %r" % bytes(m.read(DEV0, 2, ram0)), bytes(m.read(DEV0, 2, ram0)) == want_devs)
     expect('LOAD"$",%d\r' % D, "SEARCHING FOR $")
     expect('LIST\r', '0 "MOCKDISK')
 

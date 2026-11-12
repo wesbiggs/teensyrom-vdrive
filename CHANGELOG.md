@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.9.0.65
+
+### Added
+- **The C128's start-up message shows the drives** (128 mode, with a VDrive Special IO as the default): after Exit to C128 BASIC or a
+  128-mode program launch, its last line reads ` ALL RIGHTS RESERVED  VDRIVE SD 8 USB 9`, centered in 40 or 80 columns, with the same
+  `SD10` / `NOSD` / `NOUSB` forms as the C64 banner. The automatic numbers are settled by the bus scan at start-up now instead of on
+  the first disk access, so the line shows what the drives keep. Written only over the message itself (40 columns) or with the cursor
+  where the message leaves it (80 columns). Host tests (`tests/test_vvec.py`) and VICE `x128` (`make test-agent`, 40 columns); **not on
+  hardware**. `docs/DESIGN.md` section 59.
+
 ## v0.9.0.64
 
 ### Changed

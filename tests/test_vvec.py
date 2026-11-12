@@ -401,6 +401,91 @@ class C128Test(unittest.TestCase):
         t = m.call("CLOSE", a=15, p=0x20)
         self.assertEqual(m.mem[LAT128 + 20], 0xEF, "C clear: closed on the drive, the stock routine only drops the entry")
 
+    # ---- the drives in BASIC 7's start-up message (docs/DESIGN.md 59) ----
+    def screen_row(self, text, row=4, col=11):
+        """40 columns: `text` as screen codes on the screen at $0400"""
+        codes = bytes(c & 0x3F if 0x40 <= c < 0x60 else c for c in text.encode())
+        a = 0x0400 + 40 * row + col
+        self.ag.ram[0][a:a + len(codes)] = codes
+
+    def launch(self, cursor=(5, 0), mode=0x00, listen=None):
+        """the boot loader's INSTALL (A = $A5); plays PLOT / the editor's PRINT / LISTEN, SECOND, UNLSN. Returns (printed text by row,
+        the PLOT calls, the LISTENed devices, the final GO)"""
+        m = self.ag
+        m.mem[0xD7], m.mem[0xEB], m.mem[0xEC] = mode, cursor[0], cursor[1]
+        rows, plots, listened, pos = {}, [], [], None
+        t = m.call("INSTALL", a=0xA5)
+        while t[0] == CTRAMP:
+            r, a, x, y = m.w16(CTRAMP + 1), t[1], t[2], t[3]
+            m.zp["st"] = 0
+            if r == 0xFFF0:
+                self.assertFalse(t[4] & 1, "PLOT with C clear: set the cursor")
+                plots.append((x, y)); pos = [x, y]
+            elif r == 0xC00C:
+                rows.setdefault(pos[0], {})[pos[1]] = chr(a); pos[1] += 1
+            elif r == 0xFFB1:
+                listened.append(a)
+                if not (listen and listen(a)): m.zp["st"] = 0x80     # DEVICE NOT PRESENT
+            else:
+                self.assertIn(r, (0xFF93, 0xFFAE), "SECOND / UNLSN")
+            t = m.result()
+        m.zp["st"] = 0
+        text = {k: "".join(v[c] for c in sorted(v)) for k, v in rows.items()}
+        return text, plots, listened, t
+
+    def test_banner_40_columns(self):
+        self.screen_row("ALL RIGHTS RESERVED")
+        text, plots, listened, t = self.launch()
+        self.assertEqual((t[0], t[4] & 1), (RTS, 0), "hooked, C clear")
+        self.assertEqual(self.ag.w16(0x0330), ENTRIES + 3 * E["LOAD"])
+        self.assertEqual(text, {4: "ALL RIGHTS RESERVED  VDRIVE SD 8 NOUSB"})
+        self.assertEqual(len(text[4]), 38)
+        self.assertEqual(plots, [(4, 1), (5, 0)], "column 1 of row 4 (centered), then the cursor back where it was")
+        self.assertEqual(listened, [], "fixed numbers: no scan")
+
+    def test_banner_80_columns(self):
+        """the VDC's screen is not read: the cursor where the start-up message leaves it is the check"""
+        self.io.attach(1, None, present=True); self.io.set_devices(8, 11)
+        text, plots, _, _ = self.launch(cursor=(6, 0), mode=0x80)
+        self.assertEqual(text, {4: "ALL RIGHTS RESERVED  VDRIVE SD 8 USB11"})
+        self.assertEqual(plots, [(4, 21), (6, 0)], "column 21 of 80")
+
+    def test_no_banner_elsewhere(self):
+        m = self.ag
+        text, plots, _, t = self.launch()                             # 40 columns, row 4 not the message (cleared, scrolled)
+        self.assertEqual((plots, t[0], t[4] & 1), ([], RTS, 0), "hooked, nothing printed")
+        self.setUp()
+        text, plots, _, _ = self.launch(cursor=(12, 0), mode=0x80)   # 80 columns, the cursor moved on
+        self.assertEqual(plots, [])
+        self.setUp()
+        self.screen_row("ALL RIGHTS RESERVED")
+        self.ag.mem[0xD7] = 0
+        self.install()                                                # SYS 56852: no A = $A5
+        self.assertEqual(self.ag.w16(0x0330), ENTRIES + 3 * E["LOAD"])
+        self.setUp()
+        self.screen_row("ALL RIGHTS RESERVED")
+        self.ag.mem[0x0330:0x0332] = struct.pack("<H", 0x1300)       # the program's own LOAD: refused, nothing printed
+        text, plots, _, t = self.launch()
+        self.assertEqual((plots, t[4] & 1), ([], 1))
+        c64 = Agent(VVec(self.io, BASE), self.io)                     # a C64 (or C128 in C64 mode) launch: its banner is the KERNAL's
+        c64.mem[0x0400 + 171:0x0400 + 190] = bytes(c & 0x3F if c > 0x40 else c for c in b"ALL RIGHTS RESERVED")
+        self.assertEqual(c64.call("INSTALL", a=0xA5)[:1], (RTS,), "no PLOT")
+
+    def test_banner_after_the_bus_scan(self):
+        """automatic numbers: the scan runs at the launch INSTALL, so the line shows what the drives keep; the first OPEN does not scan again"""
+        self.io.attach(1, None, present=True)
+        self.io.set_devices(0, 0)
+        self.io.arm_scan()
+        self.screen_row("ALL RIGHTS RESERVED")
+        text, plots, listened, t = self.launch(listen=lambda d: d == 8)   # a real drive at 8
+        self.assertEqual(listened, [8, 9, 10])
+        self.assertEqual(text, {4: "ALL RIGHTS RESERVED  VDRIVE SD 9 USB10"})
+        self.assertEqual(self.ag.mem[0x90], 0, "ST as it was")
+        self.name(b"X")
+        self.ag.mem[0xBA], self.ag.mem[0xB9] = 9, 0
+        self.ag.call("LOAD", a=0)
+        self.assertEqual(self.ag.w16(CTRAMP + 1), 0xF50F, "straight to SEARCHING FOR: no second scan")
+
     def test_not_found_uses_the_c128s_error_exit(self):
         self.install()
         m = self.ag

@@ -41,6 +41,16 @@ static const vv_kernal_t vv_kernal[2] = {
 #define K_UNLSN     0xFFAE
 #define K_ERROR(n)  (uint16_t)(KN->error1 + 3 * ((n) - 1))
 
+/* C128 in 128 mode: the drives in BASIC 7's start-up message (docs/DESIGN.md 59). Its fourth line, "ALL RIGHTS RESERVED" (row 4, 40
+ * or 80 columns), becomes " ALL RIGHTS RESERVED  VDRIVE SD 8 USB 9", centered (column 1 / 21), like the C64 banner's second line. */
+#define K_PLOT      0xFFF0      /* C clear: the cursor to row X, column Y */
+#define ED_PRINT    0xC00C      /* the C128 editor's jump table: print A on the screen (what CHROUT does for device 3) */
+#define B_MODE      0xD7        /* bit 7: the 80-column screen is the active one */
+#define B_TBLX      0xEB        /* the cursor's row, then column ($EC) */
+#define B_ROW       4
+#define B_SCREEN40  0x0400      /* the 40-column screen as BASIC 7's start leaves it */
+static const char vv_banner_head[] = "ALL RIGHTS RESERVED";
+
 /* C128: the MMU's configuration register, and the value for each bank as the KERNAL's GETCFG table ($F7F0) has it, with I/O switched
  * in (bit 0 clear): the agent runs in I/O. Banks 0-3 are RAM, 14 and 15 the system bank. Both RAM banks hold the KERNAL's interrupt
  * trampolines at $FF05 and the CPU vectors, so an interrupt while bank 1 is switched in is served as usual. */
@@ -138,6 +148,36 @@ static int ours(vvec_t *e, uint8_t dev) { return dev >= 4 && vdrive_unit_for(&e-
 /* the zero page as PEEKed from $AE ($AE-$C4 on a C64; to $C7 on a C128: BA, FNBANK) */
 #define ZP(a) c->buf[(a) - 0xAE]
 
+/* " ALL RIGHTS RESERVED  VDRIVE SD 8 USB 9" without the leading space: each unit "SD 8" / "SD10" / "NOSD", "USB 9" / "USB11" /
+ * "NOUSB" (patches/vdbanner.s); returns its length (38) */
+VD_COLD static uint8_t banner_text(const vdrive_t *vd, uint8_t *t)
+{
+    static const char *const name[2] = { "SD", "USB" };
+    uint8_t n = 0;
+    for (const char *s = vv_banner_head; *s; s++) t[n++] = (uint8_t)*s;
+    for (const char *s = "  VDRIVE "; *s; s++) t[n++] = (uint8_t)*s;
+    for (int u = 0; u < 2; u++) {
+        uint8_t d = vd->unit[u].present ? vd->dev[u] : 0;
+        if (u) t[n++] = ' ';
+        if (!d) { t[n++] = 'N'; t[n++] = 'O'; }
+        for (const char *s = name[u]; *s; s++) t[n++] = (uint8_t)*s;
+        if (d) { t[n++] = d < 10 ? ' ' : (uint8_t)('0' + d / 10); t[n++] = (uint8_t)('0' + d % 10); }
+    }
+    return n;
+}
+
+/* 1 if a 40-column screen row (screen codes) holds "ALL RIGHTS RESERVED" */
+VD_COLD static int banner_on_row(const uint8_t *row)
+{
+    const int len = (int)sizeof vv_banner_head - 1;
+    for (int i = 0; i + len <= 40; i++) {
+        int j = 0;
+        while (j < len && (row[i + j] & 0x7F) == (vv_banner_head[j] == ' ' ? 0x20 : vv_banner_head[j] & 0x3F)) j++;
+        if (j == len) return 1;
+    }
+    return 0;
+}
+
 /* hook every vector that is not ours yet (c->buf = $0302-$0333 as PEEKed; c->mainv = main_vec's value where it is elsewhere), and
  * give the agent its fast paths' old vectors */
 VD_COLD static void install(vvec_t *e, vv_ctx_t *c)
@@ -181,22 +221,7 @@ VD_COLD static int vv_run(vvec_t *e, vv_ctx_t *c)
         c->addr = (uint16_t)(ZP(0xC1) | ZP(0xC2) << 8);           /* SAVE: start */
         c->end = (uint16_t)(ZP(0xAE) | ZP(0xAF) << 8);            /* SAVE: end */
         c->cadr = (uint16_t)(ZP(0xC3) | ZP(0xC4) << 8);           /* LOAD: the caller's address */
-        if (c->fa >= 4 && c->fnlen && v->scan_state == 1) {
-            /* which numbers are free on the real bus: LISTEN + SECOND as OPEN does it (DESIGN.md 16), through the KERNAL */
-            v->scan_state = 3;
-            c->n = (uint8_t)vdrive_scan_begin(&v->vd);
-            for (c->dev = 8; c->n && c->dev < 31; c->dev++) {
-                sc_poke1(e, 0x90, 0);
-                CALL(K_LISTEN, c->dev, 0, 0);
-                if (!(c->rst & 0x80)) {
-                    CALL(K_SECOND, 0x6F, 0, 0);
-                    if (!(c->rst & 0x80)) { CALL(K_UNLSN, 0, 0, 0); continue; }
-                }
-                c->n = (uint8_t)vdrive_scan_free(&v->vd, c->dev);
-            }
-            vio_publish_devices(v);
-            sc_poke1(e, 0x90, c->st);
-        }
+        c->scan = (uint8_t)(c->fa >= 4 && c->fnlen);              /* the bus scan below, when this run has not had one */
     }
 
     /* handlers (an if chain, not a switch: YIELD's case labels must belong to the protothread's switch) */
@@ -224,6 +249,42 @@ VD_COLD static int vv_run(vvec_t *e, vv_ctx_t *c)
             memcpy(c->buf, c->data, 0x32);
         }
         install(e, c);
+        /* C128, from the boot ROM's loader (Exit to C128 BASIC, a 128-mode launch): BASIC 7's start-up message is on the screen and READY
+         * not printed yet. The drives go into its last line, after the bus scan that would otherwise wait for the first OPEN / LOAD /
+         * SAVE, so the numbers shown are the ones the drives keep. 40 columns: only if the row reads "ALL RIGHTS RESERVED"; 80 columns
+         * (the VDC's memory is not read): only with the cursor where the message leaves it, column 0 of row 5 or 6. */
+        if (e->machine != VV_M_C128 || c->a != VV_LAUNCH) { sc_ret(e, c, c->a, c->x, c->y, 0); DONE(c); }
+        PEEK(B_MODE, B_TBLX + 2 - B_MODE);
+        c->b0 = c->buf[0] & 0x80;
+        c->b1 = c->buf[B_TBLX - B_MODE]; c->left = c->buf[B_TBLX + 1 - B_MODE];
+        if (!c->b0) { PEEK(B_SCREEN40 + 40 * B_ROW, 40); c->scan = (uint8_t)(banner_on_row(c->buf) ? 2 : 0); }
+        else c->scan = (uint8_t)((c->b1 == 5 || c->b1 == 6) && c->left == 0 ? 2 : 0);
+        if (!c->scan) { sc_ret(e, c, c->a, c->x, c->y, 0); DONE(c); }
+    }
+
+    /* which numbers are free on the real bus: LISTEN + SECOND as OPEN does it (DESIGN.md 16), through the KERNAL. On the first OPEN,
+     * LOAD or SAVE of a run, or at the C128's launch INSTALL (the banner above) */
+    if (c->scan && v->scan_state == 1) {
+        v->scan_state = 3;
+        c->n = (uint8_t)vdrive_scan_begin(&v->vd);
+        for (c->dev = 8; c->n && c->dev < 31; c->dev++) {
+            sc_poke1(e, 0x90, 0);
+            CALL(K_LISTEN, c->dev, 0, 0);
+            if (!(c->rst & 0x80)) {
+                CALL(K_SECOND, 0x6F, 0, 0);
+                if (!(c->rst & 0x80)) { CALL(K_UNLSN, 0, 0, 0); continue; }
+            }
+            c->n = (uint8_t)vdrive_scan_free(&v->vd, c->dev);
+        }
+        vio_publish_devices(v);
+        sc_poke1(e, 0x90, c->st);
+    }
+
+    if (c->scan == 2) {               /* the C128's banner: print through the editor at row 4, then the cursor back */
+        c->n = banner_text(&v->vd, c->data);
+        CALL(K_PLOT, 0, B_ROW, c->b0 ? 21 : 1);
+        for (c->idx = 0; c->idx < c->n; c->idx++) CALL(ED_PRINT, c->data[c->idx], 0, 0);
+        CALL(K_PLOT, 0, c->b1, c->left);
         sc_ret(e, c, c->a, c->x, c->y, 0);
         DONE(c);
     }

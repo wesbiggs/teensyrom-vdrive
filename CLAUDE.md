@@ -8,7 +8,7 @@ real IEC code, so physical drives keep working. LOAD/SAVE have block-transfer fa
 second, the first free numbers from 8 up: the KERNAL probes the real bus on the first disk access of a run) or fixed from BASIC with
 `OPEN15,8,15,"U0>"+CHR$(n)` (kept in EEPROM, `CHR$(0)` = automatic, no reflash). Names and `CD` take paths: `LOAD"$/GAMES/G.D64",8`.
 
-Full design and per-milestone notes: `docs/DESIGN.md` (sections 1-58, in order of construction).
+Full design and per-milestone notes: `docs/DESIGN.md` (sections 1-59, in order of construction).
 Firmware integration and usage: `firmware/README.md`.
 
 ## Status (read this first)
@@ -189,6 +189,10 @@ Firmware integration and usage: `firmware/README.md`.
 * 0.9.0.64: **the border flash by DMA under every handler** (docs/DESIGN.md 58): `VD_BorderDMA()` (was the agent's `VD_AgentBorder()`) in `IOH_VDrive.c`, no `vdBorderOut` hook;
   `irq_border` and `P_EA32` removed from the KERNAL (`P_F8E2` 643 of 683), register 8 (`$DE18`) removed but left as a gap: moving ID0/ID1 down would put them on the menu's search-letter and SID-init-high registers, which can read `$D6 $64`. `tests/fw_host` runs the flash checks under
   the KERNAL handler and the agent; **not on hardware**. Rebuild `kernal-tr.bin`.
+* **0.9.0.65 (docs/DESIGN.md 59; host tests and VICE `x128`, nothing on hardware):** the C128's start-up message shows the drives: its last line
+  becomes ` ALL RIGHTS RESERVED  VDRIVE SD 8 USB 9` (40 columns: column 1, 80: column 21), written by the engine at the boot loader's INSTALL
+  (A = `$A5`) through PLOT `$FFF0` and the editor's PRINT `$C00C`, after the bus scan (moved there from the first OPEN on a C128 launch).
+  Only when row 4 reads `ALL RIGHTS RESERVED` (40 columns) or the cursor is at column 0 of row 5/6 (80 columns: the VDC is not read).
 * Default device 8 for `LOAD`/`SAVE`/`VERIFY` without a number, as on the SX-64 (`P_E1DA` in `patches/vdrive.s`, docs/DESIGN.md 33). KERNAL only; VICE `basic` run; **not on hardware yet**. Rebuild `kernal-tr.bin`.
 * 0.9.0.32: bad sectors from the image's error table (the trailing error-info bytes): reads of a sector marked bad fail with its DOS code (`d64_t.errtab`, `D64_E_BADSEC`, `d64_t.bad`, `read_err()` in `vdrive.c`; the firmware keeps a RAM2 copy only when the table marks something bad; docs/DESIGN.md 35). Write errors (25/26/28) not emulated; a write does not repair a bad sector. Unit and glue host tests; VICE and hardware through VDSUITE `5` (reads only).
 * 0.9.0.34: SwiftLink Tx fix to upstream (was `firmware/swiftlink-tx-fix.patch`; merged upstream as PR #80 in `6518b966`, patch dropped). NativeEthernet's `client.write()` busy-waits for send-buffer space;

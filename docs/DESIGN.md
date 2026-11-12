@@ -1077,7 +1077,8 @@ to the shared engine's `d64_copy`, which stays byte-identical to the fork's `Dis
   `VDriveSwift_Remap`) it sets `rwRegNextIOHndlr` to the agent for this launch only (as #98 does; `InitHndlr_TeensyROM()` reads the
   default back from EEPROM on the next return to the menu) and runs the drive's PreStart (SD/USB, the auto-mount from the image the
   program was picked from, the remembered mounts), which `KERNALPreStart()` does for a C64 launch. That also keeps the KERNAL handlers'
-  bus hook off the C128's ROM. The menu's bus probe is not run; the engine scans on the first OPEN/LOAD/SAVE.
+  bus hook off the C128's ROM. The menu's bus probe is not run; the engine scans on the first OPEN/LOAD/SAVE (since
+  0.9.0.65 at the boot loader's INSTALL, for the start-up message: section 59).
 - The boot ROM's loader (`C128PrgBoot.asm`) calls INSTALL (`$DE14`, A = `$A5`) once the handler swap is done and the system bank is
   back, before it types RUN, with the same ID check as `PRGLoadStartReloc.s`. `make_tr_patch.sh` edits it and rebuilds
   `C128PrgBoot.bin.h` with the TR's `build-c64.mjs`. The loader still fits its page.
@@ -1179,3 +1180,43 @@ commands: DMA reads have crashed some programs) under the KERNAL handlers as wel
 flash waits until it is mapped in (the IRQ routine ran with I/O mapped in by definition).
 Tests: `tests/fw_host` runs the section-57 checks under both the KERNAL handler and the agent (two-flash sequence, I/O banked out, the
 host's hold); offset 8 reads 0 (`tests/test_vio.py`, `tests/fw_host`). `tests/test_irq_border.py` and `make test-border` are removed.
+
+## 59. The drives in the C128's start-up message (0.9.0.65; host tests and VICE `x128`; not on hardware)
+
+**What.** On a C64 the patched KERNAL prints the drives in the banner's second line (section 38). In 128 mode the KERNAL and BASIC 7 are
+the C128's own, so nothing printed them. Now the line BASIC 7's start-up message ends with, `ALL RIGHTS RESERVED` (row 4, centered),
+becomes
+
+```
+ ALL RIGHTS RESERVED  VDRIVE SD 8 USB 9
+```
+
+one space and 38 characters in 40 columns (column 1), column 21 in 80, with the C64 banner's unit fields: `SD 8` / `SD10` / `NOSD`,
+`USB 9` / `USB11` / `NOUSB` (absent, or no number left).
+
+**Who prints it.** The agent's engine (`d64/vdrive_vec.c`), at the launch INSTALL (A = `$A5`) that the C128 boot ROM's loader calls
+before BASIC's warm start prints READY (sections 56 and 57): Exit to C128 BASIC and every 128-mode program launch. Nothing changes in
+the agent, the boot ROM or the firmware glue. After the vectors are hooked:
+- PEEK `$D7` (MODE, bit 7 = 80 columns) to `$EC` (the cursor, `TBLX` `$EB` / `PNTR` `$EC`).
+- Is the message there? 40 columns: row 4 of the screen at `$0400` must read `ALL RIGHTS RESERVED` (screen codes). 80 columns: the VDC's
+  memory is not read (that takes register writes between the program's own `$D600`/`$D601` accesses, section 57), so the cursor must
+  be where the message leaves it, column 0 of row 5 or 6 (VICE: row 5 when the loader runs). Otherwise nothing is printed (a cleared or
+  scrolled screen, a hand-typed `SYS 56852,165` in 80 columns), and a C64's INSTALL never prints anything.
+- The bus scan runs here, not on the first OPEN / LOAD / SAVE, so the numbers shown are the ones the drives keep: the same LISTEN +
+  SECOND `$6F` probe through the KERNAL, moved into one block that the INSTALL (`c->scan = 2`) and OPEN / LOAD / SAVE (`c->scan = 1`)
+  share. It costs the launch the probe of the numbers up to the first free one (a few ms per absent device); a later OPEN does not scan
+  again (`scan_state` 3).
+- PLOT (`$FFF0`, C clear) to row 4, the column; the editor's PRINT (`$C00C`, what CHROUT does for the screen) for each of the 38
+  characters; PLOT back to the saved cursor. One agent round trip each, 41 in all: the C128 has no "print this string" routine the
+  agent could call (PRIMM reads the text after its JSR, which would be the agent's own page). The editor writes the colour too and
+  handles either screen; the text never reaches the row's last column, so no line link changes.
+
+**Tests.** `tests/test_vvec.py` (`C128Test`): the line in 40 columns (column 1, cursor put back), in 80 (column 21, `USB11`), nothing for
+a row 4 that is not the message, for the cursor elsewhere in 80 columns, for an INSTALL without A = `$A5`, for a refused launch INSTALL
+and on a C64; automatic numbers with a real drive at 8 (`SD 9 USB10`, the scan at INSTALL, none on the next LOAD). VICE `agent128`:
+after `SYS 56852,165` row 4 reads ` ALL RIGHTS RESERVED  VDRIVE SD 8 NOUSB`, READY. lands where BASIC 7 puts it after any SYS, and DEV0/DEV1
+are settled before the first OPEN; `agent128scan` (true-drive 1541 at 8) the same with `SD 9 USB10`. The 80-column path is only in the
+unit test (the mock types its `SYS` at a READY prompt, where the cursor rule says no).
+
+**Not done.** Hardware. The 80-column case in VICE through the real boot ROM. The C128's banner text of other BASIC 7 revisions is not
+checked (VICE's 318018-04 / 318019-04: `(C)1986`); only the last line is matched.
