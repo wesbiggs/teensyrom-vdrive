@@ -2,8 +2,8 @@
 """The cold-start hook (rst_hook, patches/vdrive.s) run in a 6502 simulator (py65; skipped when it is not installed).
 
 $FCE2 (the RESET vector, also SYS64738) jumps to rst_hook, which sends VIO_MENU only when the ID registers $DE19/$DE1A read
-$D6 $64 (the VDrive handler answers); otherwise the stock cold start goes on at $FCE5. Synthetic stock image as in
-test_irq_border.py (no Commodore ROM needed); the IO1 registers answer from a script, writes to them are recorded."""
+$D6 $64 (the VDrive handler answers); otherwise the stock cold start goes on at $FCE5. Synthetic stock image (only the bytes
+tools/build.py checks; no Commodore ROM needed); the IO1 registers answer from a script, writes to them are recorded."""
 import pathlib, subprocess, sys, tempfile
 
 try:

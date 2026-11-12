@@ -75,50 +75,6 @@ static uint8_t vdAgentPage[256];    // what IO1 answers: plain static = RAM1/DTC
 static vvec_t vvecStore;            // the engine's contexts (~1.2 KB), main loop only; never DMAMEM (RAM2 statics shrink the REU's heap, DESIGN.md 50)
 static vvec_t *vvec = NULL;
 
-#ifdef Fab04_VDrive
-// ---- the Alt button's border flash (TR+): the agent has no IRQ hook, so the Teensy sets the border itself, by DMA (docs/DESIGN.md 57) ----
-// One hold of the CPU per request: read $D020-$D03F and write $D020 only if those bytes are the VIC's (the colour registers read
-// back with their top nibble set, $D031-$D03F read $FF; the same on a C64 and on a C128's VIC-IIe). A program with I/O banked out at
-// that moment (the RAM or the character ROM at $D000) is not written to: the request is tried again from VD_AltPoll(). Nothing can
-// change the banks between the check and the write, since the CPU stays held. 80 columns (the VDC) are not flashed.
-extern bool isFrozen;               // Teensy.ino: the host holds the C64 (a hold of ours would end theirs)
-static uint8_t vdAgentBorder = 0xFF;   // the colour saved by VIO_BRD_SAVE; 0xFF = none
-
-FLASHMEM static bool VD_HeldDMA(DMA_Trans_RnW RnW, uint16_t addr, uint8_t *buf, uint32_t len)
-{  // one transfer inside HoldC64() ... CloseDMA(): what FinishDMA() does after its start handshake
-   SetUpDMA(RnW, addr, buf, len, DMA_ADDR_INCREMENT);
-   DMA_State = DMA_S_TransferExecuting;
-   uint32_t t0 = millis();
-   while (DMA_State != DMA_S_TransferComplete) if (millis() - t0 > 50) return false;
-   return true;
-}
-
-FLASHMEM static bool VD_LooksLikeVIC(const uint8_t *r)   // r = $D020-$D03F
-{
-   for (int i = 0; i <= 0x0E; i++) if ((r[i] & 0xF0) != 0xF0) return false;     // $D020-$D02E: colour registers
-   for (int i = 0x11; i < 0x20; i++) if (r[i] != 0xFF) return false;           // $D031-$D03F: unused
-   return true;
-}
-
-FLASHMEM static bool VD_AgentBorder(uint8_t reg)
-{
-   if (isFrozen) return false;
-   uint8_t color;
-   if (reg == VIO_BRD_RESTORE) { if (vdAgentBorder == 0xFF) return true; color = vdAgentBorder; }
-   else if ((reg & 0xF0) == VIO_BRD_SET) { if (vdAgentBorder == 0xFF) return true; color = reg & 0x0F; }   // not saved: never flash
-   else if (reg != VIO_BRD_SAVE) return true;
-   uint8_t vic[0x20];
-   bool ok = HoldC64() && VD_HeldDMA(DMA_READ, 0xD020, vic, sizeof vic) && VD_LooksLikeVIC(vic);
-   if (ok)
-   {
-      if (reg == VIO_BRD_SAVE) vdAgentBorder = vic[0] & 0x0F;
-      else ok = VD_HeldDMA(DMA_WRITE, 0xD020, &color, 1);
-   }
-   CloseDMA();
-   return ok;                       // the saved colour stays for the next flash of the sequence; the next SAVE replaces it
-}
-#endif
-
 FLASHMEM void InitHndlr_VDriveAgent()
 {
    memset(vdAgentPage, 0, sizeof vdAgentPage);
@@ -127,9 +83,7 @@ FLASHMEM void InitHndlr_VDriveAgent()
    vvec = &vvecStore;
    vvec_init(vvec, vio, VD_AgentBase);
 #ifdef Fab04_VDrive
-   vdAgentBorder = 0xFF;
-   vdBorderOut = &VD_AgentBorder;    // the Alt button switches disks under the agent too (TR+), its flash by DMA
-   VD_AltButtonInit();
+   VD_AltButtonInit();              // the Alt button switches disks under the agent too (TR+), as under the KERNAL handlers
 #endif
    vdDrivePoll = &PollingHndlr_VDriveAgent;
 }

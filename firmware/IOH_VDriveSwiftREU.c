@@ -1,6 +1,6 @@
 // "VDrive+Swift+REU" Special IO for TeensyROM+: the virtual-drive KERNAL (IOH_VDrive.c), the SwiftLink / Turbo232 modem
 // emulation (IOH_Swiftlink.c) and the REU (IOH_REU.c) at the same time.
-//   IO1 $DE00-$DE0F -> SwiftLink ACIA, IO1 $DE10-$DE18 -> VDrive mailbox (as in IOH_VDriveSwift.c)
+//   IO1 $DE00-$DE0F -> SwiftLink ACIA, IO1 $DE10-$DE1A -> VDrive mailbox (as in IOH_VDriveSwift.c)
 //   IO2 $DF00-$DF7F -> REU registers (11 registers, repeated every 32 bytes as on a real 1764/1750, but only 4 times)
 //   IO2 $DF80-$DFFF -> VDrive 128-byte window
 //   per-cycle callback -> SwiftLink (NMI timing); init and polling run all three.

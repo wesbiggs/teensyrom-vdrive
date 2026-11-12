@@ -3,6 +3,12 @@
 ## v0.9.0.64
 
 ### Changed
+- **The Alt button's border flash is done by DMA under every VDrive handler** (TR+), as it already was under VDrive Agent since
+  0.9.0.63: the Teensy writes `$D020` itself, only when the VIC is mapped in at that moment. The KERNAL no longer takes part: its IRQ
+  hook `irq_border` and the BORDER mailbox register are gone (`$DE18` is now unused; the ID registers stay at `$DE19/$DE1A`), so the
+  IRQ routine is stock again and `$9C` is left alone; a program that takes the KERNAL IRQ over now gets the flash too. A resident
+  VDrive KERNAL (EPROM, MEGA65) from an earlier revision keeps its drives but no longer flashes. **Rebuild `kernal-tr.bin`** (new
+  SHA-256 in the README). Host tests (`tests/fw_host`, both handler kinds); **not on hardware**. `docs/DESIGN.md` section 58.
 - **One test program, `VDSUITE`.** The separate programs on `vdtest.d64` are folded into it: SEQTEST, DOSTEST, DOS2TEST, BLKTEST and
   RELTEST were already its image sections; CDTEST's root header and missing-image (62) checks joined setup (`1`), GETRAW's byte-by-byte
   `GET#` read joined each image section (now 44 checks; "run all" 191), and SOAK, STATUS and RENUM are menu items `15`-`17` (the soak saves

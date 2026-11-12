@@ -2,7 +2,7 @@
  *
  *   IO1 ($DE10, offsets below are relative to it): +0 CMD (W: trigger)  +1 ARG (RW)  +2 DATA (R)  +3 STAT (R)  +4 ST (R)  +5 LEN (RW)
  *                                                  +6 DEV0 (R)  +7 DEV1 (R): IEC device number of the SD / USB drive now (0 = none)
- *                                                  +8 BORDER (R): request for the KERNAL's IRQ routine, see VIO_BRD_* (disk-switch feedback)
+ *                                                  +8: unused (reads 0; the BORDER register until 0.9.0.63). A gap on purpose: see the ID registers below
  *                                                  +9 ID0, +10 ID1 (R): VIO_ID0_VAL / VIO_ID1_VAL while the handler answers (the KERNAL's reset hook, see VIO_MENU)
  *   IO2 ($DF80): 128-byte window (RW): file name in, data blocks in/out. $DF00-$DF7F is not ours: the REU's registers live
  *                there in the "VDrive+REU" and "VDrive+Swift+REU" handlers (IOH_VDriveREU.c); the others leave it unanswered.
@@ -33,18 +33,20 @@
 extern "C" {
 #endif
 
-enum { VIO_CMD = 0, VIO_ARG = 1, VIO_DATA = 2, VIO_STAT = 3, VIO_ST = 4, VIO_LEN = 5, VIO_DEV0 = 6, VIO_DEV1 = 7, VIO_BORDER = 8, VIO_ID0 = 9, VIO_ID1 = 10, VIO_NREGS = 11 };
+enum { VIO_CMD = 0, VIO_ARG = 1, VIO_DATA = 2, VIO_STAT = 3, VIO_ST = 4, VIO_LEN = 5, VIO_DEV0 = 6, VIO_DEV1 = 7, /* 8: unused */ VIO_ID0 = 9, VIO_ID1 = 10, VIO_NREGS = 11 };
 #define VIO_BUSY    0x80
 #define VIO_OK      0x5A
 #define VIO_NOTMINE 0xA5
-/* BORDER register values (exact: the 6502 reads it twice and ignores anything else, e.g. $DE from a late answer): */
+/* Border flash requests (the firmware's Alt-button sequencer, IOH_VDrive.c, carried out by DMA): */
 #define VIO_BRD_IDLE    0x80   /* nothing to do */
 #define VIO_BRD_SET     0xC0   /* | colour 0..15: set the border to it */
 #define VIO_BRD_SAVE    0xB0   /* remember the current border colour */
 #define VIO_BRD_RESTORE 0xD0   /* set the border back to the remembered colour */
 /* ID registers: the KERNAL's reset entry ($FCE2, also SYS64738) sends VIO_MENU only when it reads these. A launch from the TR menu
  * resets the C64 too, while the menu's own IO1 handler still answers: its $DE19/$DE1A are a SID's init address (0 without a SID),
- * and no tune starts in I/O space, so $D6xx never shows there. Unanswered, the bus floats to $DE. */
+ * and no tune starts in I/O space, so $D6xx never shows there. Unanswered, the bus floats to $DE. Do not move them down onto the unused
+ * offset 8: the menu's $DE18 is the last search letter (a shifted V is $D6) and its $DE19 the init address's high byte ($64 for a tune
+ * at $64xx), a pair that could pass for the IDs (and the mailbox gate vd_here would then write the menu's EEPROM registers). */
 #define VIO_ID0_VAL 0xD6
 #define VIO_ID1_VAL 0x64
 #define VIO_WIN     128   /* window size: names, fast LOAD / SAVE blocks (a power of two, see vio_io2_read) */
@@ -91,7 +93,7 @@ enum {
 
 /* Registers + window: the only memory the bus ISR reads or writes (~140 bytes). Keep in DTCM. */
 typedef struct {
-    volatile uint8_t cmd, arg, data, stat, st, len, dev0, dev1, border, id0, id1, pending;   /* cmd..id1 are in register order (see the static_assert in IOH_VDrive.c) */
+    volatile uint8_t cmd, arg, data, stat, st, len, dev0, dev1, unused8, id0, id1, pending;   /* cmd..id1 are in register order (unused8: offset 8, reads 0) (see the static_assert in IOH_VDrive.c) */
     uint8_t window[VIO_WIN];
 } vio_hot_t;
 

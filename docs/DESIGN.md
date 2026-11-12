@@ -258,7 +258,7 @@ An alternative to `trvdrive` that needs no computer: the TR+'s Alt button cycles
 
 **Choosing.** The entry after the mounted image (compared case-insensitively with the entry paths), wrapping; with nothing mounted, or a mounted image that is not in the list, the first entry. Entries whose image has vanished (or is not a disk image) are skipped; the mount itself is `VDrive_RemoteSet()`, so it waits for the quiet point (section 20), closes the unit's channels and rewrites the `/.vdrive` sidecar. If the C64 never lets go of the drive, or nothing in the list is usable, the current disk stays.
 
-**Feedback.** The Teensy cannot write `$D020`, so the KERNAL does it: a new mailbox register `BORDER` (`$DE18`, `VIO_BORDER`) holds a request (`$80` idle, `$C0|c` set the border to c, `$B0` remember the border colour, `$D0` put it back; exact values only, `$DE` is what a late answer returns). `irq_border` (`patches/vdrive.s`, 37 bytes in the reclaimed tape space) replaces the `JSR $FFEA` (UDTIM) in the IRQ routine at `$EA31` (the operand at `$EA32` is retargeted; `tools/build.py` refuses a ROM without that `JSR`), reads the register twice, acts on it and ends in UDTIM (`$F69B`). The colour is remembered in `$9C`, a tape-only zero page byte. The sequencer on the Teensy (`VD_FlashPoll()`) sends SAVE, waits 100 ms, then per flash SET (250 ms) and RESTORE (750 ms; 100 ms after the last one) and ends with `$80`. A new press during a running sequence first restores the colour, then starts the new one. The error flash (no card or stick, no or bad list, nothing usable, drive busy) is red, 100 ms on / 100 ms off, ten times (2 s).
+**Feedback.** (Until 0.9.0.63; since 0.9.0.64 the Teensy writes `$D020` itself by DMA under every handler, section 58.) The Teensy cannot write `$D020`, so the KERNAL does it: a new mailbox register `BORDER` (`$DE18`, `VIO_BORDER`) holds a request (`$80` idle, `$C0|c` set the border to c, `$B0` remember the border colour, `$D0` put it back; exact values only, `$DE` is what a late answer returns). `irq_border` (`patches/vdrive.s`, 37 bytes in the reclaimed tape space) replaces the `JSR $FFEA` (UDTIM) in the IRQ routine at `$EA31` (the operand at `$EA32` is retargeted; `tools/build.py` refuses a ROM without that `JSR`), reads the register twice, acts on it and ends in UDTIM (`$F69B`). The colour is remembered in `$9C`, a tape-only zero page byte. The sequencer on the Teensy (`VD_FlashPoll()`) sends SAVE, waits 100 ms, then per flash SET (250 ms) and RESTORE (750 ms; 100 ms after the last one) and ends with `$80`. A new press during a running sequence first restores the colour, then starts the new one. The error flash (no card or stick, no or bad list, nothing usable, drive busy) is red, 100 ms on / 100 ms off, ten times (2 s).
 Limits: nothing flashes under a program that masks the KERNAL IRQ or replaces its handler without chaining to `$EA31`, or if the program owns `$D020` itself (the switch still happens); a program using `$9C` loses it for the length of a flash. Before the mailbox is live (BASIC init, TR menu handler) the routine reads whatever the menu's register 24 returns, which only matters if that is exactly `$B0`, `$D0` or `$C0-$CF` twice in a row.
 
 **Wiring.** The Alt button's action is a TR setting (`rwRegPwrUpDefaults2`, bits 5:3: AutoLaunch, Pause, TR menu, Reboot, None; `SetUpMainMenuROM()` points `fSpecialBtnChange` at the matching function whenever the menu is entered). `InitHndlr_VDrive()` takes the button over only when the setting is **None**, so a chosen action is never overridden; the menu setting is the opt-in. (A sixth "VDrive" entry would need the 6502 menu changed.) Takes effect for any program launched with the VDrive handler (also VDrive+SwiftLink).
@@ -802,7 +802,7 @@ Fast loaders were never served (no drive CPU).
 - the drive numbers in the banner (38)
 - SHIFT+RUN/STOP (42)
 - `SYS64738` back to the TR menu (41)
-- the IRQ border flash (22; the Special button is TR+ only anyway)
+- the border flash (22; the Special button is TR+ only anyway; since 0.9.0.63 by DMA under the agent too, sections 57-58)
 - device 8 for a bare `LOAD` (33). This would be possible in `v_load` (`FA` = 1 → 8), but it would take the tape away.
 **Size and placement (open).** The block is 1,124 bytes. On hardware it has two possible homes:
 - **(a) Served by the Teensy from the IO pages.** `$DE20-$DEFF` and `$DF00-$DF7F` are free with no REU, about 350 bytes. The plain TR already serves executable IO2 bytes for Epyx FastLoad. This would cost no C64 RAM, but 1.1 KB would need a bank register (a write switches the served page; execution continues in the new bank). Every opcode fetch would be an IO read, and the read-twice cure of the bus timing margin (see CLAUDE.md, "Bus timing margin") cannot protect an opcode: one late answer is a crash. A soak test (a checksummed loop running from IO2 for hours, on PAL, NTSC and a C128) has to come first. The block writes into itself (`old`), so the served page must keep writes, which the Teensy can do. VICE's GeoRAM (a 256-byte RAM window at `$DE00`, banked by `$DFFE/$DFFF`) can model "code in a banked IO page" for the mock.
@@ -1154,3 +1154,28 @@ its next VDC access. On a C128 in FAST mode the VIC is off and the TR+'s DMA tim
 Tests (`tests/fw_host`): the button wired under the agent and the KERNAL handler's hook NULL; a two-flash sequence with a VIC-like
 `$D020-$D03F` (`$F6` -> `$F5` -> `$F6` -> `$F5` -> `$F6`, one hold per change); with I/O banked out nothing written, and once it is back the
 flash completes and ends on the saved colour; no hold while `isFrozen`. Not on hardware.
+
+## 58. The border flash by DMA under every handler; the BORDER register and `irq_border` dropped (0.9.0.64; host tests; not on hardware)
+
+Section 57's DMA writer (`VD_AgentBorder()`, then only the agent's) now does the Alt button's flash under the KERNAL handlers too, so
+the KERNAL no longer needs a mailbox register or an IRQ hook for it. The writer moved to `firmware/IOH_VDrive.c` as `VD_BorderDMA()`
+(same rules: one `HoldC64()` per request, `$D020` written only when `$D020-$D03F` read as the VIC, retried from `VD_AltPoll()` while
+I/O is banked out, never while `isFrozen`); the output hook `vdBorderOut` is gone, the sequencer calls it directly and keeps its request
+in `vdBorderReq`. The sequencer's rhythm is unchanged (SAVE, 100 ms, SET 250 / RESTORE 750 ms per flash, 100 ms after the last).
+KERNAL: `irq_border` and the retargeted `JSR $FFEA` at `$EA31` (`P_EA32`) are removed, so the IRQ routine is stock again and `$9C` is no
+longer used; `tools/build.py` no longer checks for that `JSR`. `P_F8E2` drops from 678 to 643 of 683 bytes.
+Mailbox: register 8 (`$DE18`, `VIO_BORDER`) is removed, but its offset stays a gap (an unused byte in `vio_hot_t` that reads 0), so
+`ID0`/`ID1` keep `$DE19/$DE1A`. Moving them down one was considered and rejected: what answers there during a launch reset (and under a
+resident VDrive KERNAL) is the TR menu's IO1 handler, whose `$DE18` is `wRegSearchLetterWAIT` (the last search letter; a shifted V is
+`$D6`) and `$DE19` `rRegSIDInitHi` (`$64` for a tune at `$64xx`). That pair could pass for the IDs, and `vd_here` (section 45) would then
+write `$DE11`/`$DE15`, the menu's EEPROM-stored MIDI and timezone settings; at `$DE19/$DE1A` the first ID byte is a SID init high byte,
+never `$D6` (I/O space). Skipping offset 8 in `IO1Hndlr_VDrive` instead would add a compare before every answer (bus timing margin).
+The agent's IO2 IDs (`$DF09/$DF0A`) and the two menu loaders that check them are unchanged too.
+A resident VDrive KERNAL built before this change (an EPROM, a MEGA65 core) is "another revision" to the firmware (section 45): it
+keeps its drives, its `irq_border` reads 0 from the gap (not a request) and so its border is no longer flashed. Rebuild `kernal-tr.bin`.
+Gains: the flash no longer depends on the program keeping the KERNAL IRQ (one that masks it or replaces `$0314` without chaining to
+`$EA31` now gets the flash), and the 37 bytes are free. Costs: every flash step is a DMA *read* of a running program (CLAUDE.md, remote
+commands: DMA reads have crashed some programs) under the KERNAL handlers as well now; with I/O banked out at the moment of a step the
+flash waits until it is mapped in (the IRQ routine ran with I/O mapped in by definition).
+Tests: `tests/fw_host` runs the section-57 checks under both the KERNAL handler and the agent (two-flash sequence, I/O banked out, the
+host's hold); offset 8 reads 0 (`tests/test_vio.py`, `tests/fw_host`). `tests/test_irq_border.py` and `make test-border` are removed.

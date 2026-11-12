@@ -51,8 +51,8 @@ writes and is refreshed at init. The mailbox registers are at IO2 `$DF00-$DF0A` 
   VDrive Special IO as the default sets the agent for that launch and runs the drive's PreStart; the C128 boot ROM's loader
   (`C128PrgBoot.asm`) calls INSTALL before it types RUN. The engine tells the C128's KERNAL from the C64's at INSTALL (`$FFD5`).
   Since 0.9.0.63 Exit to C128 BASIC goes through the boot ROM too when `VDrive_C128Launch()` chose the agent (no RUN typed for it).
-- **Alt button under the agent** (TR+, 0.9.0.63): `InitHndlr_VDriveAgent()` wires disk switching; the border flash is `VD_AgentBorder()`
-  (`vdBorderOut`), one `HoldC64()` per step, `$D020` written only when `$D020-$D03F` read as the VIC.
+- **Alt button under the agent** (TR+, 0.9.0.63): `InitHndlr_VDriveAgent()` wires disk switching; the border flash is `VD_BorderDMA()`
+  (in `IOH_VDrive.c`, shared with the KERNAL handlers since 0.9.0.64), one `HoldC64()` per step, `$D020` written only when `$D020-$D03F` read as the VIC.
 
 `docs/DESIGN.md` sections 52-57.
 
@@ -64,7 +64,7 @@ area (`eepAdNext` moves from 4235 to 4237, reset-to-defaults zeroes them); `eepM
 ## Remote control
 `VDrive_RemoteStatus` / `VDrive_RemoteSet` in `IOH_VDrive.c` implement commands `0x64E3` / `0x64E4` on the TeensyROM remote-control port; the dispatcher text is
 `vdrive_remote.inc`, inserted into `SerUSBIO.ino`. Framing and details are in `docs/DESIGN.md` section 20.
-The Alt button disk switching (`SpecialBtn_VDrive`, `VD_SwitchNext`, `/vdrive-config.txt`, the border flash through the `BORDER` register) is in the same file; see `docs/DESIGN.md` section 22.
+The Alt button disk switching (`SpecialBtn_VDrive`, `VD_SwitchNext`, `/vdrive-config.txt`, the border flash by DMA, `VD_BorderDMA`) is in the same file; see `docs/DESIGN.md` sections 22 and 58.
 
 ## What changed in the KERNAL (`patches/vdrive.s`)
 * The 8 serial entry points (`LISTEN TALK SECOND TKSA CIOUT ACPTR UNLSN UNTLK`) `JMP` into stubs that ask the mailbox
