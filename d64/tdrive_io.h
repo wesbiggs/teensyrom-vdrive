@@ -6,13 +6,16 @@
  *                                                  +9 ID0, +10 ID1 (R): VIO_ID0_VAL / VIO_ID1_VAL while the handler answers (the KERNAL's reset hook, see VIO_MENU)
  *   IO2 ($DF80): 128-byte window (RW): file name in, data blocks in/out. $DF00-$DF7F is not ours: the REU's registers live
  *                there in the "TDrive+REU" and "TDrive+Swift+REU" handlers (IOH_TDriveREU.c); the others leave it unanswered.
+ *   The agent's handler (IOH_TDriveAgent.c: the plain TR, TDrive Agent, a C128 in 128 mode) serves the agent from IO1 instead and
+ *   answers the same registers at IO2 $DF00 (offsets as above); the window stays at $DF80.
  *
  * ISR side (vio_io*_read/write) is O(1) and never touches storage. Everything
  * else runs from vio_poll() in the main loop. Portable C: host tests and the
  * Teensy glue (IOH_TDrive.c) use the same code.
  *
  * Everything the bus ISR touches lives in the small vio_hot_t, which the firmware keeps in fast RAM1
- * (DTCM); the large drive state (vio_t) can sit in slower RAM2 because only the main loop uses it.
+ * (DTCM); only the main loop uses the large drive state (vio_t). (That one is in DTCM as well, but because RAM2 statics shrink the REU's heap,
+ * docs/DESIGN.md 50, not for speed.)
  *
  * STAT is a handshake token, not a flag byte: BUSY ($80) from the moment CMD is written, then
  * OK ($5A) or NOTMINE ($A5) when the answer is complete. The 6502 waits for exactly one of the two, so a

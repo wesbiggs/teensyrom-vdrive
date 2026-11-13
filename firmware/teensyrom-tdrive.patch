@@ -2011,12 +2011,12 @@ index 0000000..cc46efe
 +}
 diff --git a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_TDriveREU.c b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_TDriveREU.c
 new file mode 100644
-index 0000000..c7d63ce
+index 0000000..b215248
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_TDriveREU.c
 @@ -0,0 +1,76 @@
 +// "TDrive+REU" Special IO for TeensyROM+: the virtual-drive KERNAL (IOH_TDrive.c) and the REU (IOH_REU.c) at the same time.
-+//   IO1 $DE10-$DE18 -> TDrive mailbox ($DE00-$DE0F unanswered)
++//   IO1 $DE10-$DE1A -> TDrive mailbox ($DE00-$DE0F unanswered)
 +//   IO2 $DF00-$DF7F -> REU registers (11 registers, repeated every 32 bytes as on a real 1764/1750, but only 4 times)
 +//   IO2 $DF80-$DFFF -> TDrive 128-byte window
 +//   no per-cycle callback; init and polling run both.
@@ -2093,14 +2093,14 @@ index 0000000..c7d63ce
 +}
 diff --git a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_TDriveSwift.c b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_TDriveSwift.c
 new file mode 100644
-index 0000000..e2a00de
+index 0000000..07ba7c4
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_TDriveSwift.c
 @@ -0,0 +1,58 @@
 +// "TDrive+SwiftLink" Special IO for TeensyROM+: the virtual-drive KERNAL (IOH_TDrive.c) together with the SwiftLink / Turbo232
 +// modem emulation (IOH_Swiftlink.c), so a terminal such as CCGMS can download to device 8/9 through the normal KERNAL.
 +//   IO1 $DE00-$DE0F -> SwiftLink ACIA ($DE00-$DE03, Turbo232 speed register $DE07)
-+//   IO1 $DE10-$DE18 -> TDrive mailbox, IO2 $DF80-$DFFF -> TDrive 128-byte window
++//   IO1 $DE10-$DE1A -> TDrive mailbox, IO2 $DF80-$DFFF -> TDrive 128-byte window
 +//   per-cycle callback -> SwiftLink (NMI timing); init and polling run both.
 +// Included from IOHandlers.h after IOH_TDrive.c and IOH_Swiftlink.c (unity build, compiled as C++).
 +
@@ -2157,13 +2157,13 @@ index 0000000..e2a00de
 +}
 diff --git a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_TDriveSwiftREU.c b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_TDriveSwiftREU.c
 new file mode 100644
-index 0000000..6f56c4d
+index 0000000..0a56f8d
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_TDriveSwiftREU.c
 @@ -0,0 +1,46 @@
 +// "TDrive+Swift+REU" Special IO for TeensyROM+: the virtual-drive KERNAL (IOH_TDrive.c), the SwiftLink / Turbo232 modem
 +// emulation (IOH_Swiftlink.c) and the REU (IOH_REU.c) at the same time.
-+//   IO1 $DE00-$DE0F -> SwiftLink ACIA, IO1 $DE10-$DE18 -> TDrive mailbox (as in IOH_TDriveSwift.c)
++//   IO1 $DE00-$DE0F -> SwiftLink ACIA, IO1 $DE10-$DE1A -> TDrive mailbox (as in IOH_TDriveSwift.c)
 +//   IO2 $DF00-$DF7F -> REU registers (11 registers, repeated every 32 bytes as on a real 1764/1750, but only 4 times)
 +//   IO2 $DF80-$DFFF -> TDrive 128-byte window
 +//   per-cycle callback -> SwiftLink (NMI timing); init and polling run all three.
@@ -4006,10 +4006,10 @@ index 0000000..aa27440
 +VD_COLD size_t vio_hot_sizeof(void) { return sizeof(vio_hot_t); }
 diff --git a/Source/Teensy/MinimalBoot/Common/tdrive/tdrive_io.h b/Source/Teensy/MinimalBoot/Common/tdrive/tdrive_io.h
 new file mode 100644
-index 0000000..18e93da
+index 0000000..d908230
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/tdrive/tdrive_io.h
-@@ -0,0 +1,136 @@
+@@ -0,0 +1,139 @@
 +/* Mailbox register engine for the TR+ virtual drive.
 + *
 + *   IO1 ($DE10, offsets below are relative to it): +0 CMD (W: trigger)  +1 ARG (RW)  +2 DATA (R)  +3 STAT (R)  +4 ST (R)  +5 LEN (RW)
@@ -4018,13 +4018,16 @@ index 0000000..18e93da
 + *                                                  +9 ID0, +10 ID1 (R): VIO_ID0_VAL / VIO_ID1_VAL while the handler answers (the KERNAL's reset hook, see VIO_MENU)
 + *   IO2 ($DF80): 128-byte window (RW): file name in, data blocks in/out. $DF00-$DF7F is not ours: the REU's registers live
 + *                there in the "TDrive+REU" and "TDrive+Swift+REU" handlers (IOH_TDriveREU.c); the others leave it unanswered.
++ *   The agent's handler (IOH_TDriveAgent.c: the plain TR, TDrive Agent, a C128 in 128 mode) serves the agent from IO1 instead and
++ *   answers the same registers at IO2 $DF00 (offsets as above); the window stays at $DF80.
 + *
 + * ISR side (vio_io*_read/write) is O(1) and never touches storage. Everything
 + * else runs from vio_poll() in the main loop. Portable C: host tests and the
 + * Teensy glue (IOH_TDrive.c) use the same code.
 + *
 + * Everything the bus ISR touches lives in the small vio_hot_t, which the firmware keeps in fast RAM1
-+ * (DTCM); the large drive state (vio_t) can sit in slower RAM2 because only the main loop uses it.
++ * (DTCM); only the main loop uses the large drive state (vio_t). (That one is in DTCM as well, but because RAM2 statics shrink the REU's heap,
++ * docs/DESIGN.md 50, not for speed.)
 + *
 + * STAT is a handshake token, not a flag byte: BUSY ($80) from the moment CMD is written, then
 + * OK ($5A) or NOTMINE ($A5) when the answer is complete. The 6502 waits for exactly one of the two, so a

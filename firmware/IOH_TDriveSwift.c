@@ -1,7 +1,7 @@
 // "TDrive+SwiftLink" Special IO for TeensyROM+: the virtual-drive KERNAL (IOH_TDrive.c) together with the SwiftLink / Turbo232
 // modem emulation (IOH_Swiftlink.c), so a terminal such as CCGMS can download to device 8/9 through the normal KERNAL.
 //   IO1 $DE00-$DE0F -> SwiftLink ACIA ($DE00-$DE03, Turbo232 speed register $DE07)
-//   IO1 $DE10-$DE18 -> TDrive mailbox, IO2 $DF80-$DFFF -> TDrive 128-byte window
+//   IO1 $DE10-$DE1A -> TDrive mailbox, IO2 $DF80-$DFFF -> TDrive 128-byte window
 //   per-cycle callback -> SwiftLink (NMI timing); init and polling run both.
 // Included from IOHandlers.h after IOH_TDrive.c and IOH_Swiftlink.c (unity build, compiled as C++).
 

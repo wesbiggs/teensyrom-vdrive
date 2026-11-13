@@ -271,7 +271,7 @@ util/            VDCOPY: vdcopy.s (all machine code, BASIC SYS stub at $0801, ta
 vector/         the plain-TeensyROM agent: vdagent.s (6502, docs/DESIGN.md 53), agent.cfg (PRG at ld65 -S; VICE build at $DE08 in GeoRAM)
 patches/        ca65 sources overlaid on the stock KERNAL by tools/build.py; segment name P_XXXX = load address
   tdrive.s        serial entry hooks, fast LOAD / VERIFY ($F4C8, window or DMA) / SAVE ($F605, window or DMA), bus scan, code placed in reclaimed tape space $F8E2-$FB8D (678 of 683 bytes used, `irq_border` included; the mailbox gate `vd_here` included, the build asserts the limit);
-                  the cold-start hook `rst_hook` (`JMP` at $FCE2, code at $F875-$F8CF, 33 of 91 bytes: SYS64738 back to the TR menu)
+                  the cold-start hook `rst_hook` (`JMP` at $FCE2: SYS64738 back to the TR menu) and `shift_run` (`JMP` at $E5EE), code at $F875-$F8CF (79 of 91 bytes)
   vdbanner.s      the drive numbers in the power-on banner (INITMS: `JSR` at $E42D, `JMP` at $E43D, banner string cut at $E49A; code in reclaimed tape routines $FB97-$FCD0, 312 of 314 bytes)
 bringup/banner.s  proof patch (`TRTDRIVE 64 BASIC V2`), only in `make build/kernal-banner.bin`
 firmware/       TeensyROM integration: IOH_TDrive.c (Special IO), IOH_TDriveSwift.c / IOH_TDriveREU.c / IOH_TDriveSwiftREU.c (combined Special IOs),
@@ -308,7 +308,8 @@ build/          generated, git-ignored (kernal images derived from the ROM, libd
   `firmware/teensyrom-tdrive.patch`, commits it (clean tree) and runs TeensyROM's `tools/build-firmware.mjs` (node >= 24). `tr`/`tr-plus` are built without DMA LOAD
   (the define dropped and `vd_kpatch.h` rebuilt with `-D VD_DMA_LOAD=0`: the same tree as `VD_DMA_LOAD=0 make_tr_patch.sh`, checked for 0.9.0.52); `tr-plus-dma` keeps
   it and stamps the version `<ver>-DMA`. **Update `firmware/UPSTREAM`
-  whenever the patch is rebased** onto another upstream commit. The plain `tr` hex has no TDrive yet (`Fab04_TDrive` sits under `Fab04_Features`; a TR port is on its own branch).
+  whenever the patch is rebased** onto another upstream commit. The plain `tr` hex has only the agent ("TDrive", `TDrive_Agent`, defined outside `Fab04_Features`; nothing of it on hardware yet):
+  the KERNAL handlers (`Fab04_TDrive`) sit under `Fab04_Features`, so they are TR+ only.
 * `tools/make_tr_patch.sh /path/to/TeensyROM` — regenerate `firmware/teensyrom-tdrive.patch` after changing `firmware/IOH_TDrive.c`
   or anything in `d64/` (the patch embeds copies of those files, except the engine `d64.c`/`d64.h`, which the tree's `Source/Teensy/DiskImage` supplies; `tdrive.h`'s `#include "d64.h"` is pointed there). Always re-run it, then `git apply --check` on a clean checkout. Run it against a *pristine* tree of the fork's `kernalreplace-fixes` branch (`git archive kernalreplace-fixes` in the TeensyROM checkout; `firmware/UPSTREAM` names the commit and the repository), not the owner's already-patched one: its edits assert on unpatched text. It also reads `firmware/tdrive_remote.inc` (the remote-control dispatcher inserted into `SerUSBIO.ino`) and `firmware/tdrive_probe.asm`, and rebuilds the menu header with the TR's own `tools/build-c64.mjs` (needs `acme` 0.97 and `node`).
 * Requires: `ca65/ld65` (cc65), VICE (`x64sc`, `c1541`), a C/C++ compiler, Python 3; `acme` 0.97 for `make test-menuprobe` and, with `node`, for `make_tr_patch.sh`.

@@ -22,7 +22,8 @@ Please raise a GitHub issue if you find a non-working configuration.
 
 The `VDSUITE` test program passes on a real C64 on both the SD and the USB unit: `.d64` / `.d71` / `.d81` images made with `N:`, direct sector access,
 `C:` copy, REL files, append, `V` validate, `L:` / `W-` lock and write protect, bad sectors, plain files from the card, `MD:` / `RD:`, CMD paths and `S:` on images.
-Still **not run on a real C64**: the machine-code VDCOPY, the default device 8, TDrive+REU, `STATUS` compared with a real drive, and RUN/STOP during a load.
+Still **not run on a real C64**: the machine-code VDCOPY, the default device 8, TDrive+REU, `STATUS` compared with a real drive, RUN/STOP during a load,
+and the `-DMA` firmware's LOAD (timed on a C128 in C64 mode only); its DMA `SAVE` and `VERIFY` have not run on any hardware yet.
 The test disk (`make testdisk`, see [Building and testing](#building-and-testing)) has `VDSUITE`, whose menu covers most of them.
 
 The original TR does not have the Kernal Replace functionality needed for this software. A more limited TR version, hooking the KERNAL's RAM vectors instead, is in the firmware since 0.9.0.58 but has only run in VICE; see [TR+ and TR compared](#tr-and-tr-compared) for what it keeps and loses.
@@ -44,9 +45,12 @@ The C64's ability to read the 8 KB of RAM under KERNAL ROM ($E000-$FFFF) is used
    ```
    cd /path/to/TeensyROM && git apply /path/to/teensyrom-vdrive/firmware/teensyrom-tdrive.patch
    ```
-   The patch adds `Fab04_TDrive` (enabled next to `Fab04_KernalReplace` in `Common_Defs.h`), a new Special IO
-   `IOH_TDrive` ("TDrive KERNAL"), `IOH_TDriveSwift` ("TDrive+SwiftLink") and `IOH_TDriveSwiftREU` ("TDrive+Swift+REU"), `IOH_TDriveREU` ("TDrive+REU"), the library under `MinimalBoot/Common/tdrive/` (on top of the shared engine in `Source/Teensy/DiskImage`), and a few lines in
-   `KERNALPreStart()` and the Kernal Replace start so these Special IOs serve their own KERNAL image.
+   The patch adds `Fab04_TDrive` (enabled next to `Fab04_KernalReplace` in `Common_Defs.h`), the Special IOs
+   `IOH_TDrive` ("TDrive KERNAL"), `IOH_TDriveSwift` ("TDrive+SwiftLink"), `IOH_TDriveSwiftREU` ("TDrive+Swift+REU") and `IOH_TDriveREU` ("TDrive+REU")
+   on the TR+, and `IOH_TDriveAgent` on both boards ("TDrive Agent" on the TR+, "TDrive" on the plain TR; see [TR+ and TR compared](#tr-and-tr-compared)),
+   the library under `MinimalBoot/Common/tdrive/` (on top of the shared engine in `Source/Teensy/DiskImage`), a few lines in
+   `KERNALPreStart()` and the Kernal Replace start so these Special IOs serve their own KERNAL image, and small additions to the TR menu
+   (the bus probe before a launch, TDrive Config in Utilities) and to the remote-control commands. [firmware/README.md](firmware/README.md) lists them.
 
    Build with `arduino-cli` and the Teensy core `teensy:avr@1.61.0` (library `CRC32@2.0.1`). **Do not use Teensyduino 1.62.0**: SD reads
    stall with it. The easiest way to flash is to copy the resulting `.hex` to the SD card and select it in the TR menu (flashing over USB needs
@@ -88,9 +92,9 @@ The C64's ability to read the 8 KB of RAM under KERNAL ROM ($E000-$FFFF) is used
 While a TDrive Special IO runs, `SYS64738` (or any program that ends by jumping to the RESET vector) returns to the TR menu, writing
 back anything not yet saved, instead of restarting BASIC. To get a fresh BASIC, start it from the menu.
 
-The "TDrive+SwiftLink" Special IO runs the virtual drive and the SwiftLink / Turbo232 modem together. When the default Special IO is TDrive or TDrive+SwiftLink, menu programs paired with plain SwiftLink (CCGMS, Retromate, Simple SwiftLink Term) start with it, so launching one does not drop the drive. `.crt` SwiftLink/Turbo232 images are left alone and run with the C64's own KERNAL. It costs SwiftLink's normal start-up RAM (about 355 KB of RAM2 buffers, drive menu freed), so it is a separate Special IO.
+The "TDrive+SwiftLink" Special IO runs the virtual drive and the SwiftLink / Turbo232 modem together. When the default Special IO is TDrive KERNAL, TDrive+SwiftLink or TDrive+REU, menu programs paired with plain SwiftLink (CCGMS, Retromate, Simple SwiftLink Term) start with it, so launching one does not drop the drive. `.crt` SwiftLink/Turbo232 images are left alone and run with the C64's own KERNAL. It costs SwiftLink's normal start-up RAM (about 355 KB of RAM2 buffers, drive menu freed), so it is a separate Special IO.
 
-The "TDrive+REU" Special IO runs the virtual drive and an REU (RAM Expansion Unit) together, with the same **512 KB** REU as the plain "512KB REU" Special IO. When the default Special IO is any TDrive one, menu programs paired with the REU start with it, so launching one does not drop the drive.
+The "TDrive+REU" Special IO runs the virtual drive and an REU (RAM Expansion Unit) together, with the same **512 KB** REU as the plain "512KB REU" Special IO. When the default Special IO is any of the four TDrive KERNAL ones, menu programs paired with the REU start with it, so launching one does not drop the drive.
 
 The "TDrive+Swift+REU" Special IO has all three. SwiftLink's buffers leave room for a **128 KB** REU (a 1700), not 512 KB; software that insists on a bigger one will refuse it. When it is the default Special IO, menu programs paired with SwiftLink start with it (REU programs get TDrive+REU and its 512 KB, as above).
 
@@ -138,7 +142,7 @@ The examples here use `8` as an illustration only, and work the same on both SD 
 | `OPEN15,8,15,"CD//GAMES/:G.D81"` | The CMD HD / sd2iec forms work too: `CD//` (root), `CD//GAMES` (from the root), `CD/GAMES` and `CD/GAMES/:SUB` (relative), `CD_`; see "CMD paths" below |
 | `OPEN15,8,15,"S:OLD*"` | Scratch |
 | `OPEN15,8,15,"N:NAME,ID"` | Format the mounted disk |
-| `OPEN15,8,15,"N:NAME.D64,ID"` | With nothing mounted: create a new blank image (`.D64`, `.D71` or `.D81`) in the current folder (or `N:/DIR/NAME.D64`), mount it and format it with disk name `NAME` (ID `00` if left out). Never replaces an existing file (63). A `.D81` on a slow USB stick may take longer than the KERNAL waits (about 1.6 s; not measured yet) |
+| `OPEN15,8,15,"N:NAME.D64,ID"` | With nothing mounted: create a new blank image (`.D64`, `.D71` or `.D81`) in the current folder (or `N:/DIR/NAME.D64`), mount it and format it with disk name `NAME` (ID `00` if left out). Never replaces an existing file (63). A `.D81` takes about 0.8 s on an old, slow USB stick, half of the KERNAL's ~1.6 s wait |
 | `OPEN15,8,15,"R:NEW=OLD"` | Rename a file |
 | `OPEN15,8,15,"UI"` / `"UJ"` / `"U9"` | Reset (status 73); `UI+` / `UI-` (bus speed) are accepted and do nothing |
 
@@ -187,7 +191,8 @@ physical drive at 8 the SD drive becomes 9, and so on.
 
 The power-on banner shows the numbers too (`TDRIVE SD 9 USB10`): the firmware writes them into the KERNAL copy it serves once the menu's
 probe is done (a KERNAL started some other way does the same probe itself at power-on, on the real bus only, before showing them).
-`PEEK(56854)` (SD) and `PEEK(56855)` (USB) show the current numbers from the program's first instruction (0 = none), the directory header id shows it too (`0 "SD:/" 09 2A`), and the serial console prints the numbers
+`PEEK(56854)` (SD) and `PEEK(56855)` (USB) show the current numbers from the program's first instruction (0 = none; under the agent, the TR's
+"TDrive", they are at `PEEK(57094)` and `PEEK(57095)`), the directory header id shows it too (`0 "SD:/" 09 2A`), and the serial console prints the numbers
 at start-up. Nothing is probed when nothing needs a number (no card, or both numbers fixed). A drive that has not powered up yet when the
 program starts looks like a gap, so fix the numbers if some device boots slowly (e.g. a Wi-Fi drive).
 
@@ -231,8 +236,8 @@ With the TR menu showing (no program running) the same commands show and change 
 ### Supported
 | Feature | Notes |
 |---|---|
-| `LOAD` / `SAVE` | Fast path, 128 B per mailbox transaction; on the TR+ `-DMA` firmware up to 2 KB at a time by DMA (`SAVE` from `$0200-$CFFF`) |
-| `VERIFY` | On the TR+ `-DMA` firmware compared by the TR+ (DMA reads) when the whole file lies in `$0200-$CFFF`; otherwise the byte path |
+| `LOAD` / `SAVE` | Fast path, 128 B per mailbox transaction; on the TR+ `-DMA` firmware up to 2 KB at a time by DMA (`SAVE` from `$0200-$CFFF`; DMA `SAVE` not on hardware yet) |
+| `VERIFY` | On the TR+ `-DMA` firmware compared by the TR+ (DMA reads) when the whole file lies in `$0200-$CFFF` (not on hardware yet); otherwise the byte path |
 | `OPEN` / `PRINT#` / `INPUT#` | Byte path |
 | File types | PRG, SEQ, USR, REL |
 | Wildcards | |
@@ -270,7 +275,7 @@ hooks the KERNAL's RAM vectors (`$0314-$0333`) instead of patching the serial ro
 | Automatic and fixed (`U0>`) device numbers | Yes | Yes |
 | Auto-mount and remembered mounts | Yes | Yes |
 | `trvdrive` / `trls` while a program runs | Yes | Yes |
-| TDrive+SwiftLink | Yes | Yes |
+| TDrive+SwiftLink, TDrive+REU, TDrive+Swift+REU | Yes | No: there are no combined handlers for the agent yet; SwiftLink and REU programs run with their own handler, without the drives |
 | Fast `LOAD` / `SAVE` / `VERIFY` | Yes | Yes |
 | Programs that call the serial routines directly (`LISTEN` `TALK` `SECOND` `TKSA` `ACPTR` `CIOUT` `UNTLK` `UNLSN`, `$FFB1` and friends: DOS wedges, some directory readers and disk utilities) | Yes | No: they talk to the real bus and do not see the virtual drives. VDCOPY and TDrive Config probe units this way and would have to probe another way (e.g. an `OPEN` of channel 15) |
 | Programs that call `RESTOR` (`$FF8A`) or install their own vectors (many games and demos at start-up) | Yes | No: the drives are gone until the vectors are set again. Multi-load games that use plain `$FFD5` with the default vectors are fine |
