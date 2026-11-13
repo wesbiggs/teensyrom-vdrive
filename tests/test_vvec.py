@@ -117,6 +117,82 @@ class VVecTest(unittest.TestCase):
         self.assertEqual((t[0], t[4] & 1), (RTS, 0), "the ROM's vectors: hooked")
         self.assertEqual(m.w16(0x0330), ENTRIES + 3 * E["LOAD"])
 
+    # ---- the drives in the C64 banner's second line (docs/DESIGN.md 60) ----
+    def banner(self, text=" 64K RAM SYSTEM  38911 BASIC BYTES FREE", row=3):
+        """`text` as screen codes on row `row` of the screen at $0400, the rest of the row blank"""
+        codes = bytes(c & 0x3F if 0x40 <= c < 0x60 else c for c in text.encode()).ljust(40, b" ")
+        assert len(codes) == 40
+        self.ag.mem[0x0400 + 40 * row:0x0400 + 40 * row + 40] = codes
+
+    def row(self, r=3):
+        return "".join(chr(c + 0x40) if 1 <= c <= 26 else chr(c) for c in self.ag.mem[0x0400 + 40 * r:0x0400 + 40 * r + 40])
+
+    def launch(self, listen=None):
+        """the menu's PRG loader's INSTALL (A = $A5); plays LISTEN / SECOND / UNLSN. Returns (the LISTENed devices, the final GO)"""
+        m, listened = self.ag, []
+        t = m.call("INSTALL", a=0xA5)
+        while t[0] == CTRAMP:
+            r = m.w16(CTRAMP + 1)
+            m.zp["st"] = 0
+            if r == 0xFFB1:
+                listened.append(t[1])
+                if not (listen and listen(t[1])): m.zp["st"] = 0x80   # DEVICE NOT PRESENT
+            else:
+                self.assertIn(r, (0xFF93, 0xFFAE), "SECOND / UNLSN, nothing printed through the KERNAL")
+            t = m.result()
+        m.zp["st"] = 0
+        return listened, t
+
+    def test_banner_c64(self):
+        self.banner()
+        colour = bytes(self.ag.mem[0xD800:0xDC00])
+        listened, t = self.launch()
+        self.assertEqual((t[0], t[4] & 1), (RTS, 0), "hooked, C clear")
+        self.assertEqual(self.ag.w16(0x0330), ENTRIES + 3 * E["LOAD"])
+        self.assertEqual(self.row(), " 64K RAM  38911 FREE  VDRIVE SD 8 NOUSB ")
+        self.assertEqual(listened, [], "fixed numbers: no scan")
+        self.assertEqual(bytes(self.ag.mem[0xD800:0xDC00]), colour, "colour RAM untouched")
+        self.setUp()
+        self.io.attach(1, None, present=True); self.io.set_devices(10, 11)
+        self.banner(" 64K RAM SYSTEM  1234 BASIC BYTES FREE")              # another free-bytes count (a lowered top of memory)
+        self.launch()
+        self.assertEqual(self.row(), " 64K RAM  1234 FREE  VDRIVE SD10 USB11  ")
+
+    def test_no_banner_c64(self):
+        """a row 3 that is not the banner (a PRG loaded over the screen, a hand-typed SYS on a scrolled screen) stays as it was"""
+        for text in ("", " 64K RAM SYSTEM  38911 BASIC BYTES FREEX", " 64K RAM SYSTEM  BASIC BYTES FREE",
+                     "    **** COMMODORE 64 BASIC V2 ****", " 64K RAM  38911 FREE  VDRIVE SD 8 NOUSB"):
+            self.setUp()
+            self.banner(text)
+            before = bytes(self.ag.mem)
+            listened, t = self.launch()
+            self.assertEqual((t[0], t[4] & 1, listened), (RTS, 0, []), text)
+            self.assertEqual(bytes(self.ag.mem[0x0400:0x0800]), before[0x0400:0x0800], text)
+        self.setUp()
+        self.banner()
+        self.install()                                                # SYS 56852: no A = $A5
+        self.assertEqual(self.row(), " 64K RAM SYSTEM  38911 BASIC BYTES FREE ")
+        self.setUp()
+        self.banner()
+        self.ag.mem[0x0330:0x0332] = struct.pack("<H", 0x1300)       # the program's own LOAD: refused, nothing written
+        self.assertEqual(self.launch()[1][4] & 1, 1)
+        self.assertEqual(self.row(), " 64K RAM SYSTEM  38911 BASIC BYTES FREE ")
+
+    def test_banner_c64_after_the_bus_scan(self):
+        """automatic numbers: the scan runs at the launch INSTALL, so the line shows what the drives keep; the first LOAD does not scan"""
+        self.io.attach(1, None, present=True)
+        self.io.set_devices(0, 0)
+        self.io.arm_scan()
+        self.banner()
+        listened, _ = self.launch(listen=lambda d: d == 8)            # a real drive at 8
+        self.assertEqual(listened, [8, 9, 10])
+        self.assertEqual(self.row(), " 64K RAM  38911 FREE  VDRIVE SD 9 USB10 ")
+        m = self.ag
+        m.mem[0x2000] = ord("X")
+        m.mem[0xB7], m.mem[0xBA], m.mem[0xBB], m.mem[0xBC], m.mem[0xB9] = 1, 9, 0x00, 0x20, 0
+        m.call("LOAD", a=0)
+        self.assertEqual(m.w16(CTRAMP + 1), 0xF5AF, "straight to SEARCHING FOR: no second scan")
+
     def test_install_keeps_a_wedge_as_old_vector(self):
         self.ag.mem[0x0330:0x0332] = struct.pack("<H", 0xC123)       # a wedge installed before us
         self.install()

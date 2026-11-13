@@ -828,15 +828,18 @@ def agent_tests(m, run, check, service, log, disk, big, workdir, vec, real):
     sys_at = start + 12                                # the agent's INSTALL entry (VV_OFS_ENTRIES)
     expect('LOAD"$",%d\r' % D, "DEVICE NOT PRESENT")
     chk("not installed: the stock KERNAL, nothing reached the mailbox", not log)
-    expect('SYS%d\r' % sys_at, "READY.")
+    expect('POKE780,165:SYS%d\r' % sys_at, "READY.")              # A = $A5: as the menu's PRG loader, against the ROM's tables
+    scr = m.screen()
+    line = " 64K RAM  38911 FREE  VDRIVE " + ("SD 9 USB11" if real else "SD 8 NOUSB")
+    chk("the banner's second line: %r (docs/DESIGN.md 60)" % scr[3], scr[3] == line)
     v_load = bytes(m.read(0x0330, 2))
-    chk("SYS: ILOAD points into the agent ($%04X)" % struct.unpack("<H", v_load)[0],
+    chk("launch INSTALL: ILOAD points into the agent ($%04X)" % struct.unpack("<H", v_load)[0],
         start <= struct.unpack("<H", v_load)[0] < start + len(vec) - 2)
     expect('SYS%d\r' % sys_at, "READY.")               # twice: must not save its own handlers as the "old" vectors (an endless loop)
     expect('LOAD"$",%d\r' % D, "SEARCHING FOR $")
     expect('LIST\r', '0 "MOCKDISK')
     want_devs = bytes([9, 11]) if real else bytes([8, 0])
-    chk("the first OPEN/LOAD/SAVE ran the bus scan: DEV0/DEV1 %r" % bytes(m.read(0xC800 + 6, 2)), bytes(m.read(0xC800 + 6, 2)) == want_devs)
+    chk("the launch INSTALL ran the bus scan: DEV0/DEV1 %r" % bytes(m.read(0xC800 + 6, 2)), bytes(m.read(0xC800 + 6, 2)) == want_devs)
 
     if real:
         # both error channels in one line: the real 1541 through the chained stock code, ours through the mailbox

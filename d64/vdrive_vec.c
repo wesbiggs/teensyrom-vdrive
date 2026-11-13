@@ -51,6 +51,13 @@ static const vv_kernal_t vv_kernal[2] = {
 #define B_SCREEN40  0x0400      /* the 40-column screen as BASIC 7's start leaves it */
 static const char vv_banner_head[] = "ALL RIGHTS RESERVED";
 
+/* C64 (and a C128 in C64 mode) on the stock KERNAL: the banner's second line (row 3), as INITMS printed it just before the menu's PRG
+ * loader calls INSTALL, " 64K RAM SYSTEM  38911 BASIC BYTES FREE", becomes the TR+ VDrive KERNAL's " 64K RAM  38911 FREE  VDRIVE SD 8
+ * USB 9" (patches/vdbanner.s; docs/DESIGN.md 60). Written into the screen RAM at $0400 in one POKE: the new line is shorter than the
+ * old one, so every column it uses already has the text colour */
+#define B64_ROW     (0x0400 + 40 * 3)
+static const char vv_b64_old0[] = " 64K RAM SYSTEM  ", vv_b64_old1[] = " BASIC BYTES FREE";
+
 /* C128: the MMU's configuration register, and the value for each bank as the KERNAL's GETCFG table ($F7F0) has it, with I/O switched
  * in (bit 0 clear): the agent runs in I/O. Banks 0-3 are RAM, 14 and 15 the system bank. Both RAM banks hold the KERNAL's interrupt
  * trampolines at $FF05 and the CPU vectors, so an interrupt while bank 1 is switched in is served as usual. */
@@ -148,14 +155,11 @@ static int ours(vvec_t *e, uint8_t dev) { return dev >= 4 && vdrive_unit_for(&e-
 /* the zero page as PEEKed from $AE ($AE-$C4 on a C64; to $C7 on a C128: BA, FNBANK) */
 #define ZP(a) c->buf[(a) - 0xAE]
 
-/* " ALL RIGHTS RESERVED  VDRIVE SD 8 USB 9" without the leading space: each unit "SD 8" / "SD10" / "NOSD", "USB 9" / "USB11" /
- * "NOUSB" (patches/vdbanner.s); returns its length (38) */
-VD_COLD static uint8_t banner_text(const vdrive_t *vd, uint8_t *t)
+/* the drive field, always 10 wide: each unit "SD 8" / "SD10" / "NOSD", "USB 9" / "USB11" / "NOUSB" (patches/vdbanner.s); appended at
+ * t[n], returns the new length */
+VD_COLD static uint8_t units_text(const vdrive_t *vd, uint8_t *t, uint8_t n)
 {
     static const char *const name[2] = { "SD", "USB" };
-    uint8_t n = 0;
-    for (const char *s = vv_banner_head; *s; s++) t[n++] = (uint8_t)*s;
-    for (const char *s = "  VDRIVE "; *s; s++) t[n++] = (uint8_t)*s;
     for (int u = 0; u < 2; u++) {
         uint8_t d = vd->unit[u].present ? vd->dev[u] : 0;
         if (u) t[n++] = ' ';
@@ -164,6 +168,15 @@ VD_COLD static uint8_t banner_text(const vdrive_t *vd, uint8_t *t)
         if (d) { t[n++] = d < 10 ? ' ' : (uint8_t)('0' + d / 10); t[n++] = (uint8_t)('0' + d % 10); }
     }
     return n;
+}
+
+/* " ALL RIGHTS RESERVED  VDRIVE SD 8 USB 9" without the leading space; returns its length (38) */
+VD_COLD static uint8_t banner_text(const vdrive_t *vd, uint8_t *t)
+{
+    uint8_t n = 0;
+    for (const char *s = vv_banner_head; *s; s++) t[n++] = (uint8_t)*s;
+    for (const char *s = "  VDRIVE "; *s; s++) t[n++] = (uint8_t)*s;
+    return units_text(vd, t, n);
 }
 
 /* 1 if a 40-column screen row (screen codes) holds "ALL RIGHTS RESERVED" */
@@ -176,6 +189,20 @@ VD_COLD static int banner_on_row(const uint8_t *row)
         if (j == len) return 1;
     }
     return 0;
+}
+
+/* the C64 banner's second line (screen codes): its free-bytes digits into d[1..] (d[0] = how many); 0 if the row is not that line */
+VD_COLD static int c64_banner_on_row(const uint8_t *row, uint8_t *d)
+{
+    const int n0 = (int)sizeof vv_b64_old0 - 1, n1 = (int)sizeof vv_b64_old1 - 1;
+    int i = 0, k = 0;
+    for (; i < n0; i++) if ((row[i] & 0x7F) != (vv_b64_old0[i] & 0x3F)) return 0;
+    while (i < 40 && row[i] >= 0x30 && row[i] <= 0x39 && k < 6) d[1 + k++] = row[i++];
+    if (!k || i + n1 > 40) return 0;
+    for (int j = 0; j < n1; j++) if ((row[i + j] & 0x7F) != (vv_b64_old1[j] & 0x3F)) return 0;
+    for (i += n1; i < 40; i++) if (row[i] != 0x20) return 0;
+    d[0] = (uint8_t)k;
+    return 1;
 }
 
 /* hook every vector that is not ours yet (c->buf = $0302-$0333 as PEEKed; c->mainv = main_vec's value where it is elsewhere), and
@@ -253,17 +280,25 @@ VD_COLD static int vv_run(vvec_t *e, vv_ctx_t *c)
          * not printed yet. The drives go into its last line, after the bus scan that would otherwise wait for the first OPEN / LOAD /
          * SAVE, so the numbers shown are the ones the drives keep. 40 columns: only if the row reads "ALL RIGHTS RESERVED"; 80 columns
          * (the VDC's memory is not read): only with the cursor where the message leaves it, column 0 of row 5 or 6. */
-        if (e->machine != VV_M_C128 || c->a != VV_LAUNCH) { sc_ret(e, c, c->a, c->x, c->y, 0); DONE(c); }
-        PEEK(B_MODE, B_TBLX + 2 - B_MODE);
-        c->b0 = c->buf[0] & 0x80;
-        c->b1 = c->buf[B_TBLX - B_MODE]; c->left = c->buf[B_TBLX + 1 - B_MODE];
-        if (!c->b0) { PEEK(B_SCREEN40 + 40 * B_ROW, 40); c->scan = (uint8_t)(banner_on_row(c->buf) ? 2 : 0); }
-        else c->scan = (uint8_t)((c->b1 == 5 || c->b1 == 6) && c->left == 0 ? 2 : 0);
-        if (!c->scan) { sc_ret(e, c, c->a, c->x, c->y, 0); DONE(c); }
+        if (c->a != VV_LAUNCH) { sc_ret(e, c, c->a, c->x, c->y, 0); DONE(c); }
+        if (e->machine != VV_M_C128) {
+            /* C64, from the menu's PRG loader: INITMS has just printed the banner, the program is loaded but not run. Only if row 3
+             * still reads " 64K RAM SYSTEM  n BASIC BYTES FREE" (a program loaded over the screen leaves something else there) */
+            PEEK(B64_ROW, 40);
+            c->scan = (uint8_t)(c64_banner_on_row(c->buf, c->data) ? 3 : 0);
+            if (!c->scan) { sc_ret(e, c, c->a, c->x, c->y, 0); DONE(c); }
+        } else {
+            PEEK(B_MODE, B_TBLX + 2 - B_MODE);
+            c->b0 = c->buf[0] & 0x80;
+            c->b1 = c->buf[B_TBLX - B_MODE]; c->left = c->buf[B_TBLX + 1 - B_MODE];
+            if (!c->b0) { PEEK(B_SCREEN40 + 40 * B_ROW, 40); c->scan = (uint8_t)(banner_on_row(c->buf) ? 2 : 0); }
+            else c->scan = (uint8_t)((c->b1 == 5 || c->b1 == 6) && c->left == 0 ? 2 : 0);
+            if (!c->scan) { sc_ret(e, c, c->a, c->x, c->y, 0); DONE(c); }
+        }
     }
 
     /* which numbers are free on the real bus: LISTEN + SECOND as OPEN does it (DESIGN.md 16), through the KERNAL. On the first OPEN,
-     * LOAD or SAVE of a run, or at the C128's launch INSTALL (the banner above) */
+     * LOAD or SAVE of a run, or at a launch INSTALL that shows the drives (the banners above) */
     if (c->scan && v->scan_state == 1) {
         v->scan_state = 3;
         c->n = (uint8_t)vdrive_scan_begin(&v->vd);
@@ -285,6 +320,19 @@ VD_COLD static int vv_run(vvec_t *e, vv_ctx_t *c)
         CALL(K_PLOT, 0, B_ROW, c->b0 ? 21 : 1);
         for (c->idx = 0; c->idx < c->n; c->idx++) CALL(ED_PRINT, c->data[c->idx], 0, 0);
         CALL(K_PLOT, 0, c->b1, c->left);
+        sc_ret(e, c, c->a, c->x, c->y, 0);
+        DONE(c);
+    }
+
+    if (c->scan == 3) {               /* the C64's banner: " 64K RAM  " digits " FREE  VDRIVE " units, as screen codes over row 3 */
+        uint8_t row[40], n = 0;
+        for (const char *s = " 64K RAM  "; *s; s++) row[n++] = (uint8_t)*s;
+        for (int i = 0; i < c->data[0]; i++) row[n++] = c->data[1 + i];
+        for (const char *s = " FREE  VDRIVE "; *s; s++) row[n++] = (uint8_t)*s;
+        n = units_text(&v->vd, row, n);                                /* at most 1 + 9 + 6 + 14 + 10 = 40 */
+        while (n < 40) row[n++] = ' ';
+        for (int i = 0; i < 40; i++) if (row[i] >= 0x40 && row[i] < 0x60) row[i] &= 0x3F;
+        sc_poke(e, B64_ROW, row, 40);
         sc_ret(e, c, c->a, c->x, c->y, 0);
         DONE(c);
     }

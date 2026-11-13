@@ -1220,3 +1220,34 @@ unit test (the mock types its `SYS` at a READY prompt, where the cursor rule say
 
 **Not done.** Hardware. The 80-column case in VICE through the real boot ROM. The C128's banner text of other BASIC 7 revisions is not
 checked (VICE's 318018-04 / 318019-04: `(C)1986`); only the last line is matched.
+
+## 60. The drives in the C64 banner under the agent (0.9.0.66; host tests and VICE; not on hardware)
+
+**What.** Section 59 for a C64 (and a C128 in C64 mode) on its own KERNAL: the plain TeensyROM's "VDrive" and the TR+'s "VDrive Agent".
+The banner's second line, ` 64K RAM SYSTEM  38911 BASIC BYTES FREE`, becomes the TR+ VDrive KERNAL's line (section 38):
+
+```
+ 64K RAM  38911 FREE  VDRIVE SD 8 USB 9
+```
+
+with the free-bytes count taken from the line itself and the same 10-wide drive field (`units_text`, shared with the C128 line).
+
+**When.** `XferCopyRun` in `MainMenu.asm` calls INITMS in place before it streams the program (section 46), and `PRGLoadStartReloc.s`
+calls the agent's INSTALL with A = `$A5` once the program is in memory and the handler swap is done, before it prints `running...` and
+runs it (Exit to BASIC is a PRG item too). At that moment the banner is on rows 1 and 3 and nothing has scrolled. After the vectors
+are hooked (a launch INSTALL that refuses, an autostart PRG over the vectors, writes nothing), the engine PEEKs row 3 (`$0478`, 40 bytes)
+and goes on only if it reads ` 64K RAM SYSTEM  `, 1-6 digits, ` BASIC BYTES FREE` and blanks: a program loaded over the screen, another
+ROM's banner or a hand-typed `SYS 56852` on a scrolled screen leave it alone. Then the bus scan (the block section 59 made shared;
+`c->scan = 3`), then one POKE of the 40 screen codes. No PLOT or CHROUT round trips as on the C128: the C64's screen is always the one
+at `$0400` here (CINT has just set it), and the new line is shorter than the old one, so every column it uses already has the text
+colour in colour RAM (the last old column, now blank, keeps it too). The cursor is not touched.
+
+**Tests.** `tests/test_vvec.py` (`VVecTest`): the line with fixed numbers (no scan; colour RAM untouched), another free-bytes count with
+two-digit numbers, rows that are not the banner (blank, one character too many, no digits, the title line, the line already rewritten),
+an INSTALL without A = `$A5`, a refused launch INSTALL, and automatic numbers with a real drive at 8 (`SD 9 USB10`, the scan at INSTALL,
+none on the next LOAD). VICE `agent`: the first install is now `POKE780,165:SYS56852` (A = `$A5`) right after the banner, row 3 reads
+` 64K RAM  38911 FREE  VDRIVE SD 8 NOUSB` and DEV0/DEV1 are settled before the first OPEN; `agentscan` (true-drive 1541s at 8 and 10)
+` ... VDRIVE SD 9 USB11`.
+
+**Not done.** Hardware; the menu loader itself in VICE (the mock types the `SYS`). Other C64 ROMs' banners (JiffyDOS and the like)
+are matched only if their second line is the stock one.

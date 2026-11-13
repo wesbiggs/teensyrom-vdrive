@@ -48,7 +48,7 @@ typedef struct {
     uint8_t  buf[VIO_WIN];      /* the last PEEK */
     /* handler state */
     uint8_t  fnlen, la, sa, fa, verify, idx, n, dev, eoi, stx, b0, b1, left;
-    uint8_t  scan;              /* 1: run the bus scan if it is still due; 2: the same, then the C128's banner line (INSTALL) */
+    uint8_t  scan;              /* 1: run the bus scan if it is still due; 2: the same, then the C128's banner line (INSTALL); 3: the C64's */
     uint8_t  ba, fnbank, mmu, chunk;    /* C128: the data and name banks ($C6 / $C7), the caller's $FF00 (0xFF = not read yet),
                                            bytes per file-data POKE / PEEK */
     uint16_t fnadr, addr, end, cadr, i, mainv;   /* mainv: the re-hook vector's value, where it is not in $0302-$0333 (C128) */

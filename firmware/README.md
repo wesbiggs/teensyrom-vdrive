@@ -52,6 +52,7 @@ writes and is refreshed at init. The mailbox registers are at IO2 `$DF00-$DF0A` 
   (`C128PrgBoot.asm`) calls INSTALL before it types RUN. The engine tells the C128's KERNAL from the C64's at INSTALL (`$FFD5`).
   Since 0.9.0.63 Exit to C128 BASIC goes through the boot ROM too when `VDrive_C128Launch()` chose the agent (no RUN typed for it).
   Since 0.9.0.65 that INSTALL also writes the drives into BASIC 7's start-up message (` ALL RIGHTS RESERVED  VDRIVE SD 8 USB 9`), after the bus scan.
+  Since 0.9.0.66 the C64 launch INSTALL (`PRGLoadStartReloc.s`) does the same for the C64 banner's second line (` 64K RAM  38911 FREE  VDRIVE SD 8 USB 9`).
 - **Alt button under the agent** (TR+, 0.9.0.63): `InitHndlr_VDriveAgent()` wires disk switching; the border flash is `VD_BorderDMA()`
   (in `IOH_VDrive.c`, shared with the KERNAL handlers since 0.9.0.64), one `HoldC64()` per step, `$D020` written only when `$D020-$D03F` read as the VIC.
 

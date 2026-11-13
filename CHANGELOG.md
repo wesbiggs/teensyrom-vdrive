@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.9.0.66
+
+### Added
+- **The C64 banner shows the drives under the agent** (the plain TeensyROM's "VDrive", the TR+'s "VDrive Agent"; also a C128 in C64
+  mode): after a program launch or Exit to BASIC from the TR menu, the banner's second line reads
+  ` 64K RAM  38911 FREE  VDRIVE SD 8 USB 9`, as with the TR+'s VDrive KERNAL, with the same `SD10` / `NOSD` / `NOUSB` forms. The menu's
+  loader calls the agent's INSTALL right after the banner is printed; the engine runs the bus scan there (instead of on the first disk
+  access, as the C128 does since 0.9.0.65) and writes the new line into screen RAM in one go, only when row 3 still reads
+  ` 64K RAM SYSTEM  n BASIC BYTES FREE`. Host tests (`tests/test_vvec.py`) and VICE (`make test-agent`: `agent`, `agentscan` with true-drive
+  1541s at 8 and 10: `SD 9 USB11`); **not on hardware**. `docs/DESIGN.md` section 60.
+
 ## v0.9.0.65
 
 ### Added
