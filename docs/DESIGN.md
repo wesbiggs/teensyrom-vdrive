@@ -1296,3 +1296,12 @@ the setting, so a press that goes to upstream's Reboot TR shows as the last step
 `!nodma` alone on a line of the config file makes `VD_BorderDMA` return at once: if the crash stays with it, the hold is not the cause.
 Risk: the crumbs share RAM2's top 128 bytes with the core's fault record, inside the malloc heap's range (`_heap_end` is the top of
 RAM2), as the core's own breadcrumbs do; a heap that reaches the top (a full REU) could be overwritten by them.
+
+**Hardware result for 0.9.0.69 (owner, 2026-11-13):** the Alt button works in C64 BASIC and in a program, under the VDrive KERNAL and
+under the agent. But **Exit to C128 BASIC** now fills the screen with garbage characters before the C128's own colours appear (so
+before or during its KERNAL's screen set-up, ahead of the boot ROM's loader and the agent), and the TR keeps running (the Alt button
+still answers). Compared with 0.9.0.65's patch, only four upstream files differ: `Common_Defs.h` (the version), `Teensy.ino` (the two
+trace hooks, idle unless the button changes or at power-up), `IOH_VDrive.c` (counters, trace; nothing on the boot ROM's path but a
+print in PreStart) and `ISRs.c` (`VD_DmaSnoopedCycle`). The last is the only one on every bus cycle: logically idle without a
+pending DMA start, but it moves code inside `isrPHI2` (a removed alignment `nop`, two branches shortened), and serving the boot ROM
+from ROML/ROMH is timing work. An A/B build without it: `VD_ISR_FIX=0 tools/make_tr_patch.sh <tree>`.
