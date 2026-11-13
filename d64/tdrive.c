@@ -798,7 +798,7 @@ VD_COLD static void cmd_block_io(vd_unit_t *u, const char *p, const char *end, i
 {
     int a[4];
     if (parse_nums(p, end, a, 4) != 4) { set_err(u, 30, 0, 0); return; }
-    if (a[0] < 0 || a[0] > 14 || a[0] == 15) { set_err(u, 70, 0, 0); return; }
+    if (a[0] > 14) { set_err(u, 70, 0, 0); return; }                  /* parse_nums gives no negatives; 15 is the command channel */
     vd_chan_t *c = chan_find(u, a[0]);
     if (!c || c->mode != 5) { set_err(u, 70, 0, 0); return; }
     if (a[2] > 255 || a[3] > 255 || d64_sector_offset(u->disk, (uint8_t)a[2], (uint8_t)a[3]) < 0) { set_err(u, 66, (uint8_t)a[2], (uint8_t)a[3]); return; }

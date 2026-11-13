@@ -1404,8 +1404,9 @@ FLASHMEM static bool VD_SwitchNext(int unit)
       stcVDCfgEntry *e = &vdCfg[(start + k) % n];
       if (VD_CheckImage(u->fs, e->path, msg, sizeof msg)) continue;       // gone (or not an image): next one
       uint8_t color = e->color, count = e->flashes;
-      if (TDrive_RemoteSet(unit, e->path, msg, sizeof msg) == 0) { VD_Flash(color, count, VD_FlashOnMs, VD_FlashOffMs); return true; }
-      if (strstr(msg, "busy")) break;                                      // the C64 never let go of the drive
+      int r = TDrive_RemoteSet(unit, e->path, msg, sizeof msg);
+      if (r == 0) { VD_Flash(color, count, VD_FlashOnMs, VD_FlashOffMs); return true; }
+      if (r == 2) break;                                                   // the C64 never let go of the drive
    }
    VD_FlashError();
    return false;

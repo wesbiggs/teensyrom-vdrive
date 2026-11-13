@@ -391,10 +391,10 @@ index 90cd86e..ebb8bd1 100644
              TxMsgOffset = 0;
 diff --git a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_TDrive.c b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_TDrive.c
 new file mode 100644
-index 0000000..5f70b17
+index 0000000..0c8e640
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_TDrive.c
-@@ -0,0 +1,1482 @@
+@@ -0,0 +1,1483 @@
 +// The TDrive Special IOs: the virtual IEC drive and its SD / USB glue. On the TeensyROM+ (Fab04_TDrive) "TDrive KERNAL" and its
 +// combined handlers serve a replacement KERNAL; on both boards (TDrive_Agent) IOH_TDriveAgent.c reaches the same drive through the
 +// KERNAL's RAM vectors and a 6502 agent (docs/DESIGN.md 53). The KERNAL-only parts are under Fab04_TDrive.
@@ -1801,8 +1801,9 @@ index 0000000..5f70b17
 +      stcVDCfgEntry *e = &vdCfg[(start + k) % n];
 +      if (VD_CheckImage(u->fs, e->path, msg, sizeof msg)) continue;       // gone (or not an image): next one
 +      uint8_t color = e->color, count = e->flashes;
-+      if (TDrive_RemoteSet(unit, e->path, msg, sizeof msg) == 0) { VD_Flash(color, count, VD_FlashOnMs, VD_FlashOffMs); return true; }
-+      if (strstr(msg, "busy")) break;                                      // the C64 never let go of the drive
++      int r = TDrive_RemoteSet(unit, e->path, msg, sizeof msg);
++      if (r == 0) { VD_Flash(color, count, VD_FlashOnMs, VD_FlashOffMs); return true; }
++      if (r == 2) break;                                                   // the C64 never let go of the drive
 +   }
 +   VD_FlashError();
 +   return false;
@@ -2279,7 +2280,7 @@ index 463190d..436362c 100644
     #endif  
 diff --git a/Source/Teensy/MinimalBoot/Common/tdrive/tdrive.c b/Source/Teensy/MinimalBoot/Common/tdrive/tdrive.c
 new file mode 100644
-index 0000000..2fd91b3
+index 0000000..2fcd71e
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/tdrive/tdrive.c
 @@ -0,0 +1,1208 @@
@@ -3083,7 +3084,7 @@ index 0000000..2fd91b3
 +{
 +    int a[4];
 +    if (parse_nums(p, end, a, 4) != 4) { set_err(u, 30, 0, 0); return; }
-+    if (a[0] < 0 || a[0] > 14 || a[0] == 15) { set_err(u, 70, 0, 0); return; }
++    if (a[0] > 14) { set_err(u, 70, 0, 0); return; }                  /* parse_nums gives no negatives; 15 is the command channel */
 +    vd_chan_t *c = chan_find(u, a[0]);
 +    if (!c || c->mode != 5) { set_err(u, 70, 0, 0); return; }
 +    if (a[2] > 255 || a[3] > 255 || d64_sector_offset(u->disk, (uint8_t)a[2], (uint8_t)a[3]) < 0) { set_err(u, 66, (uint8_t)a[2], (uint8_t)a[3]); return; }
@@ -3664,10 +3665,10 @@ index 0000000..32e38dd
 +#endif
 diff --git a/Source/Teensy/MinimalBoot/Common/tdrive/tdrive_io.c b/Source/Teensy/MinimalBoot/Common/tdrive/tdrive_io.c
 new file mode 100644
-index 0000000..7e8d396
+index 0000000..aa27440
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/tdrive/tdrive_io.c
-@@ -0,0 +1,349 @@
+@@ -0,0 +1,335 @@
 +#include "tdrive_io.h"
 +#include "vd_cfg.h"
 +#include <string.h>
@@ -3685,22 +3686,8 @@ index 0000000..7e8d396
 +    vio_publish_devices(v);
 +}
 +
-+uint8_t vio_io1_read(const vio_hot_t *h, uint8_t off)
-+{
-+    switch (off) {
-+    case VIO_ARG:  return h->arg;
-+    case VIO_DATA: return h->data;
-+    case VIO_STAT: return h->stat;
-+    case VIO_ST:   return h->st;
-+    case VIO_LEN:  return h->len;
-+    case VIO_DEV0: return h->dev0;
-+    case VIO_DEV1: return h->dev1;
-+    case VIO_BORDER: return h->border;
-+    case VIO_ID0:  return h->id0;
-+    case VIO_ID1:  return h->id1;
-+    default:       return 0;
-+    }
-+}
++/* As the firmware's handlers read them (IO1Hndlr_TDrive): the register bytes in order, CMD included */
++uint8_t vio_io1_read(const vio_hot_t *h, uint8_t off) { return off < VIO_NREGS ? ((const volatile uint8_t *)h)[off] : 0; }
 +
 +void vio_io1_write(vio_hot_t *h, uint8_t off, uint8_t val)
 +{

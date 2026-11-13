@@ -15,22 +15,8 @@ VD_COLD void vio_init(vio_t *v, vio_hot_t *hot)
     vio_publish_devices(v);
 }
 
-uint8_t vio_io1_read(const vio_hot_t *h, uint8_t off)
-{
-    switch (off) {
-    case VIO_ARG:  return h->arg;
-    case VIO_DATA: return h->data;
-    case VIO_STAT: return h->stat;
-    case VIO_ST:   return h->st;
-    case VIO_LEN:  return h->len;
-    case VIO_DEV0: return h->dev0;
-    case VIO_DEV1: return h->dev1;
-    case VIO_BORDER: return h->border;
-    case VIO_ID0:  return h->id0;
-    case VIO_ID1:  return h->id1;
-    default:       return 0;
-    }
-}
+/* As the firmware's handlers read them (IO1Hndlr_TDrive): the register bytes in order, CMD included */
+uint8_t vio_io1_read(const vio_hot_t *h, uint8_t off) { return off < VIO_NREGS ? ((const volatile uint8_t *)h)[off] : 0; }
 
 void vio_io1_write(vio_hot_t *h, uint8_t off, uint8_t val)
 {
