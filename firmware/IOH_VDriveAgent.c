@@ -75,9 +75,6 @@ static uint8_t vdAgentPage[256];    // what IO1 answers: plain static = RAM1/DTC
 static vvec_t vvecStore;            // the engine's contexts (~1.2 KB), main loop only; never DMAMEM (RAM2 statics shrink the REU's heap, DESIGN.md 50)
 static vvec_t *vvec = NULL;
 
-// The Alt button's border flash: none under the agent (it has no IRQ hook). 0.9.0.63-0.9.0.65 wrote $D020 by DMA here; those
-// holds of a running program crashed it on hardware (docs/DESIGN.md 60), so the disk switches without a flash.
-
 FLASHMEM void InitHndlr_VDriveAgent()
 {
    memset(vdAgentPage, 0, sizeof vdAgentPage);
@@ -86,7 +83,7 @@ FLASHMEM void InitHndlr_VDriveAgent()
    vvec = &vvecStore;
    vvec_init(vvec, vio, VD_AgentBase);
 #ifdef Fab04_VDrive
-   VD_AltButtonInit();              // the Alt button switches disks under the agent too (TR+), without the border flash
+   VD_AltButtonInit();              // the Alt button switches disks under the agent too (TR+), as under the KERNAL handlers
 #endif
    vdDrivePoll = &PollingHndlr_VDriveAgent;
 }

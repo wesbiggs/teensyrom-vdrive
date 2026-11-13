@@ -752,11 +752,6 @@ FLASHMEM void VDrive_PreStart(bool agent)
    vdNoMenuProbe = false;
 }
 
-// Where a BORDER request (Alt-button disk switching) goes besides the register: NULL for the KERNAL handlers, whose IRQ routine reads
-// it, and the agent too (it has no writer since 0.9.0.66: its DMA one crashed running programs, docs/DESIGN.md 60). A writer returns
-// false when the request was not done now; VD_AltPoll() asks again while the request is current.
-static bool (*vdBorderOut)(uint8_t reg) = NULL;
-
 #ifdef Fab04_VDrive
 // ---- the menu's bus probe before launch (MainMenu.asm, VDriveProbe; docs/DESIGN.md 37) -------------------------------------
 // Only the 6502 can see which numbers real drives hold. The TR menu probes the bus right after this PreStart, so DEV0/DEV1
@@ -974,7 +969,6 @@ FLASHMEM void InitHndlr_VDrive()
       vio_publish_devices(vio);
    }
    InitHndlr_KernalReplace();
-   vdBorderOut = NULL;              // the KERNAL's IRQ routine flashes the border
    VD_AltButtonInit();
    vdDrivePoll = &PollingHndlr_VDrive;
 }
@@ -1073,6 +1067,9 @@ static bool VD_RemoteReady(int unit)
    return vio != NULL && vioReady && unit >= 0 && unit <= 1 && vio->vd.unit[unit].present;
 }
 
+// The border flash's debug counters as `,"dbg":{...}` (0.9.0.67, see vdBorderDbg); 0 when they do not fit or there are none.
+static int VD_DbgJson(char *out, size_t cap);   // defined with the counters, below
+
 // One-line JSON for a unit; returns its length (0 = no such unit or VDrive not running).
 FLASHMEM size_t VDrive_RemoteStatus(int unit, char *out, size_t cap)
 {
@@ -1086,10 +1083,14 @@ FLASHMEM size_t VDrive_RemoteStatus(int unit, char *out, size_t cap)
    strlcpy(cwd, u->cwd, sizeof cwd);
    for (char *p = cwd; *p; p++) if (*p == '"' || *p == '\\') *p = '?';
    int n = snprintf(out, cap,
-      "{\"unit\":%d,\"storage\":\"%s\",\"device\":%u,\"fixed\":%u,\"mounted\":%s,\"writable\":%s,\"path\":\"%s\",\"cwd\":\"%s\"}",
+      "{\"unit\":%d,\"storage\":\"%s\",\"device\":%u,\"fixed\":%u,\"mounted\":%s,\"writable\":%s,\"path\":\"%s\",\"cwd\":\"%s\"",
       unit, unit == 0 ? "sd" : "usb", vio->vd.dev[unit], vio->vd.pin[unit], u->mounted ? "true" : "false",
       (u->mounted && u->d.write) ? "true" : "false", path, cwd[0] ? cwd : "/");
-   return (n > 0 && (size_t)n < cap) ? (size_t)n : 0;
+   if (n <= 0 || (size_t)n >= cap) return 0;
+   n += VD_DbgJson(out + n, cap - n);
+   if ((size_t)n + 1 >= cap) return 0;
+   out[n++] = '}'; out[n] = 0;
+   return (size_t)n;
 }
 
 // Wait (up to VD_SwapWaitMs) for a quiet moment, polling the mailbox meanwhile, so the caller may touch the card: 0 = quiet now,
@@ -1236,8 +1237,8 @@ FLASHMEM int VDrive_RemoteIdleSet(int unit, const char *path, char *msg, size_t 
 // stick that is missing, an unreadable list or no usable image in it flashes red quickly for 2 s. An image that has disappeared is
 // skipped. With nothing mounted (or an image that is not in the list) the first usable image is picked.
 // Wired to the TR's Alt button only when its setting (TR menu, settings) is "None": a chosen action is never taken over.
-// The border change itself is done by the KERNAL's IRQ routine (patches/vdrive.s, irq_border), driven by the BORDER register; the
-// agent, which has no IRQ hook, switches disks without a flash (0.9.0.63-0.9.0.65 flashed by DMA, which crashed programs: DESIGN 60).
+// The border change itself is done by DMA (VD_BorderDMA below), under every handler: the KERNAL handlers and the agent alike
+// (docs/DESIGN.md 58; until 0.9.0.63 the KERNAL handlers' IRQ routine did it from a BORDER mailbox register).
 #define VD_CfgBufSize    2048
 #define VD_CfgMaxEntries 32
 #define VD_TapWindowMs   1000
@@ -1245,7 +1246,7 @@ FLASHMEM int VDrive_RemoteIdleSet(int unit, const char *path, char *msg, size_t 
 #define VD_FlashOffMs    750
 #define VD_ErrFlashMs    100    // red error flash: 100 ms on / 100 ms off for 2 s
 #define VD_ErrFlashes    10
-#define VD_SettleMs      100    // the IRQ routine must see a SAVE / RESTORE request at least once (every 16-20 ms)
+#define VD_SettleMs      100    // pause after SAVE and after the last RESTORE (kept from the IRQ-routine flash: same rhythm)
 #define VD_ColorRed      2
 
 struct stcVDCfgEntry { char *path; uint8_t color, flashes; };
@@ -1297,6 +1298,81 @@ FLASHMEM static int VD_ParseConfig(char *text, stcVDCfgEntry *out, int max)
    return n;
 }
 
+// ---- the border write: by DMA (TR+), docs/DESIGN.md 57-58 ----
+// One hold of the CPU per request: read $D020-$D03F and write $D020 only if those bytes are the VIC's (the colour registers read
+// back with their top nibble set, $D031-$D03F read $FF; the same on a C64 and on a C128's VIC-IIe). A program with I/O banked out at
+// that moment (the RAM or the character ROM at $D000) is not written to: the request is tried again from VD_AltPoll(). Nothing can
+// change the banks between the check and the write, since the CPU stays held. 80 columns (the VDC) are not flashed.
+// Requests are the VIO_BRD_* codes. false = not done now (I/O not mapped in, the C64 held by the host, ...).
+static uint8_t vdBorderSaved = 0xFF;   // the colour saved by VIO_BRD_SAVE; 0xFF = none
+#ifdef Fab04_VDrive
+extern bool isFrozen;               // Teensy.ino: the host holds the C64 (a hold of ours would end theirs)
+
+// Debug for the hardware try of 0.9.0.67 (docs/DESIGN.md 60), in the remote get's JSON ("dbg"; trvdrive get): never printed on the
+// serial console, since a USB serial write stalls the phi2 interrupt. Counted since the handler started.
+//   brd:   requests, HoldC64 failed, transfer timed out, not the VIC (I/O banked out), $D020 writes, CloseDMA failed, longest request (us)
+//   snoop: cycles the bus snoop took that stepped the DMA start (ISRs.c VD_DmaSnoopedCycle), /DMA asserted on one, dropped as late, writes
+struct stcVDBorderDbg { uint32_t req, holdFail, xferFail, notVIC, written, closeFail, maxUs; };
+static stcVDBorderDbg vdBorderDbg;
+volatile uint32_t VD_DmaSnoopStats[4];
+
+FLASHMEM static bool VD_HeldDMA(DMA_Trans_RnW RnW, uint16_t addr, uint8_t *buf, uint32_t len)
+{  // one transfer inside HoldC64() ... CloseDMA(): what FinishDMA() does after its start handshake
+   SetUpDMA(RnW, addr, buf, len, DMA_ADDR_INCREMENT);
+   DMA_State = DMA_S_TransferExecuting;
+   uint32_t t0 = millis();
+   while (DMA_State != DMA_S_TransferComplete) if (millis() - t0 > 50) return false;
+   return true;
+}
+
+FLASHMEM static bool VD_LooksLikeVIC(const uint8_t *r)   // r = $D020-$D03F
+{
+   for (int i = 0; i <= 0x0E; i++) if ((r[i] & 0xF0) != 0xF0) return false;     // $D020-$D02E: colour registers
+   for (int i = 0x11; i < 0x20; i++) if (r[i] != 0xFF) return false;           // $D031-$D03F: unused
+   return true;
+}
+
+FLASHMEM static bool VD_BorderDMA(uint8_t reg)
+{
+   if (isFrozen) return false;
+   uint8_t color;
+   if (reg == VIO_BRD_RESTORE) { if (vdBorderSaved == 0xFF) return true; color = vdBorderSaved; }
+   else if ((reg & 0xF0) == VIO_BRD_SET) { if (vdBorderSaved == 0xFF) return true; color = reg & 0x0F; }   // not saved: never flash
+   else if (reg != VIO_BRD_SAVE) return true;
+   uint8_t vic[0x20];
+   const uint32_t t0 = micros();
+   vdBorderDbg.req++;
+   bool ok = HoldC64();
+   if (!ok) vdBorderDbg.holdFail++;
+   else if (!VD_HeldDMA(DMA_READ, 0xD020, vic, sizeof vic)) { ok = false; vdBorderDbg.xferFail++; }
+   else if (!VD_LooksLikeVIC(vic)) { ok = false; vdBorderDbg.notVIC++; }
+   if (ok)
+   {
+      if (reg == VIO_BRD_SAVE) vdBorderSaved = vic[0] & 0x0F;
+      else if (!VD_HeldDMA(DMA_WRITE, 0xD020, &color, 1)) { ok = false; vdBorderDbg.xferFail++; }
+      else vdBorderDbg.written++;
+   }
+   if (!CloseDMA()) vdBorderDbg.closeFail++;
+   const uint32_t us = micros() - t0;
+   if (us > vdBorderDbg.maxUs) vdBorderDbg.maxUs = us;
+   return ok;                       // the saved colour stays for the next flash of the sequence; the next SAVE replaces it
+}
+
+FLASHMEM static int VD_DbgJson(char *out, size_t cap)
+{
+   const stcVDBorderDbg &b = vdBorderDbg;
+   int n = snprintf(out, cap, ",\"dbg\":{\"brd\":[%lu,%lu,%lu,%lu,%lu,%lu,%lu],\"snoop\":[%lu,%lu,%lu,%lu]}",
+                    (unsigned long)b.req, (unsigned long)b.holdFail, (unsigned long)b.xferFail, (unsigned long)b.notVIC,
+                    (unsigned long)b.written, (unsigned long)b.closeFail, (unsigned long)b.maxUs,
+                    (unsigned long)VD_DmaSnoopStats[0], (unsigned long)VD_DmaSnoopStats[1], (unsigned long)VD_DmaSnoopStats[2],
+                    (unsigned long)VD_DmaSnoopStats[3]);
+   return (n > 0 && (size_t)n < cap) ? n : 0;
+}
+#else
+static bool VD_BorderDMA(uint8_t) { return true; }   // the plain TR has no Alt button: never called
+static int VD_DbgJson(char *, size_t) { return 0; }
+#endif
+
 // ---- border flash sequencer (main loop, driven from PollingHndlr_VDrive) ----
 enum { VDF_Idle, VDF_Save, VDF_On, VDF_Off, VDF_Restore };
 struct stcVDFlash
@@ -1309,14 +1385,15 @@ struct stcVDFlash
    uint16_t qOnMs, qOffMs;
 };
 static stcVDFlash vdFlash;
+static uint8_t vdBorderReq = VIO_BRD_IDLE;   // the current request (VIO_BRD_*)
 static bool vdBorderRetry = false;
 
 FLASHMEM static void VD_FlashPhase(uint8_t phase, uint8_t reg)
 {
    vdFlash.phase = phase;
    vdFlash.since = millis();
-   vioHot.border = reg;
-   vdBorderRetry = vdBorderOut && reg != VIO_BRD_IDLE && !vdBorderOut(reg);
+   vdBorderReq = reg;
+   vdBorderRetry = reg != VIO_BRD_IDLE && !VD_BorderDMA(reg);
 }
 
 FLASHMEM static void VD_FlashBegin(uint8_t color, uint8_t count, uint16_t onMs, uint16_t offMs)
@@ -1423,7 +1500,7 @@ FLASHMEM void SpecialBtn_VDrive(bool Up_nDn)
 
 FLASHMEM void VD_AltPoll()
 {
-   if (vdBorderRetry && vdBorderOut) vdBorderRetry = !vdBorderOut(vioHot.border);
+   if (vdBorderRetry) vdBorderRetry = !VD_BorderDMA(vdBorderReq);
    VD_FlashPoll();
    if (vdTaps == 0 || vdSwitching) return;
    if (vdTaps < 2 && millis() - vdTapFirstMs < VD_TapWindowMs) return;     // a second tap may still come
@@ -1438,6 +1515,11 @@ extern void (*fSpecialBtnChange)(bool Up_nDn);
 FLASHMEM void VD_AltButtonInit()
 {
    vdTaps = 0; vdFlash.phase = VDF_Idle; vdFlash.queued = false; vdBorderRetry = false;
+   vdBorderReq = VIO_BRD_IDLE; vdBorderSaved = 0xFF;
+#ifdef Fab04_VDrive
+   memset(&vdBorderDbg, 0, sizeof vdBorderDbg);
+   for (int i = 0; i < 4; i++) VD_DmaSnoopStats[i] = 0;
+#endif
 #ifdef Fab04_SpecialButton
    if ((IO1[rwRegPwrUpDefaults2] & rpud2AltBtnActionMask) == rpud2AltBtnNone) fSpecialBtnChange = &SpecialBtn_VDrive;
 #endif
@@ -1445,7 +1527,7 @@ FLASHMEM void VD_AltButtonInit()
 
 static_assert(offsetof(vio_hot_t, cmd) == VIO_CMD && offsetof(vio_hot_t, arg) == VIO_ARG && offsetof(vio_hot_t, data) == VIO_DATA &&
               offsetof(vio_hot_t, stat) == VIO_STAT && offsetof(vio_hot_t, st) == VIO_ST && offsetof(vio_hot_t, len) == VIO_LEN &&
-              offsetof(vio_hot_t, dev0) == VIO_DEV0 && offsetof(vio_hot_t, dev1) == VIO_DEV1 && offsetof(vio_hot_t, border) == VIO_BORDER &&
+              offsetof(vio_hot_t, dev0) == VIO_DEV0 && offsetof(vio_hot_t, dev1) == VIO_DEV1 &&
               offsetof(vio_hot_t, id0) == VIO_ID0 && offsetof(vio_hot_t, id1) == VIO_ID1, "register bytes must stay in register order");
 
 #ifdef Fab04_VDrive

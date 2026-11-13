@@ -8,7 +8,6 @@ VD_COLD void vio_init(vio_t *v, vio_hot_t *hot)
     memset((void *)v, 0, sizeof *v);
     v->h = hot;
     hot->stat = VIO_OK;                   /* idle, nothing pending */
-    hot->border = VIO_BRD_IDLE;
     hot->id0 = VIO_ID0_VAL;
     hot->id1 = VIO_ID1_VAL;
     vdrive_init(&v->vd);
@@ -25,7 +24,6 @@ uint8_t vio_io1_read(const vio_hot_t *h, uint8_t off)
     case VIO_LEN:  return h->len;
     case VIO_DEV0: return h->dev0;
     case VIO_DEV1: return h->dev1;
-    case VIO_BORDER: return h->border;
     case VIO_ID0:  return h->id0;
     case VIO_ID1:  return h->id1;
     default:       return 0;

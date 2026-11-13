@@ -53,6 +53,49 @@ for old in ("#ifdef Fab04_GlobalKernalReplace\nextern volatile bool FnetLoopPoll
             "#ifdef Fab04_GlobalKernalReplace\n            if (FnetLoopPoll) NVIC_DISABLE_IRQ(IRQ_PIT);"):
     edit(f"{C}/IO_Handlers/IOH_Swiftlink.c", old,
          old.replace("#ifdef Fab04_GlobalKernalReplace", "#if defined(Fab04_GlobalKernalReplace) || defined(Fab04_VDrive)"))
+# The bus snoop and the safe-freeze start (docs/DESIGN.md 60, experimental 0.9.0.67): isrPHI2 returns when the snoop takes a cycle
+# (KernalCheck: every CPU read of $E000-$FFFF), before the DMA start state machine at its end sees it, so an asynchronous start
+# (HoldC64, PerformDMA) could take a later read for "the read after a write" and assert /DMA ahead of a write. VD_DmaSnoopedCycle steps
+# the machine for those cycles too. Main image with Fab04_VDrive only (the minimal image keeps upstream's line).
+edit(f"{C}/ISRs.c",
+     "//Phi2 rising edge:\nFASTRUN void isrPHI2() \n",
+     "#if defined(Fab04_VDrive) && !defined(MinimumBuild)\n"
+     "//VDrive (teensyrom-vdrive docs/DESIGN.md 60): the safe-freeze start for a cycle the bus snoop took. Only the three asynch start\n"
+     "//  states, as in isrPHI2's switch below. Past Phi2 high (the snoop or a C128 HIRAM sense ran late) the cycle is not known any more,\n"
+     "//  so a pending \"last cycle was a write\" is dropped: the start then waits for the next write/read pair, a bad line or the time-out.\n"
+     "FASTRUN void VD_DmaSnoopedCycle(bool R_Wn)\n"
+     "{\n"
+     "   const uint8_t S = DMA_State;\n"
+     "   if (S != DMA_S_StartAsynch && S != DMA_S_StartAsynch_Wait_LRd && S != DMA_S_StartAsynch_Wait_LWr) return;\n"
+     "   if (!GP6_Phi2(ReadGPIO6))\n"
+     "   {\n"
+     "      if (S == DMA_S_StartAsynch_Wait_LWr) DMA_State = DMA_S_StartAsynch_Wait_LRd;\n"
+     "      VD_DmaSnoopStats[2]++;\n"
+     "      return;\n"
+     "   }\n"
+     "   while(GP6_Phi2(ReadGPIO6)); //Phi2 falling, as isrPHI2 before its own switch\n"
+     "   StartCycCnt = ARM_DWT_CYCCNT;\n"
+     "   VD_DmaSnoopStats[0]++;\n"
+     "   if (!R_Wn) { VD_DmaSnoopStats[3]++; DMA_State = DMA_S_StartAsynch_Wait_LWr; return; } //a write: the next read may start it\n"
+     "   if (S == DMA_S_StartAsynch) DMACycleCount = 0;\n"
+     "   if (S == DMA_S_StartAsynch_Wait_LWr || !GP9_BA(ReadGPIO9) ||\n"
+     "       (S == DMA_S_StartAsynch_Wait_LRd && DMACycleCount++ > DMA_TIMEOUT_CYCLES))\n"
+     "   {  //the read after a write, a bad line read, or the read-loop time-out: as isrPHI2's switch\n"
+     "      DMAWaitAssertReady();\n"
+     "      VD_DmaSnoopStats[1]++;\n"
+     "      return;\n"
+     "   }\n"
+     "   DMA_State = DMA_S_StartAsynch_Wait_LRd;\n"
+     "}\n"
+     "#endif\n\n"
+     "//Phi2 rising edge:\nFASTRUN void isrPHI2() \n")
+edit(f"{C}/ISRs.c",
+     "   if (fBusSnoop != NULL) if (fBusSnoop(Address, R_Wn)) return;\n",
+     "#if defined(Fab04_VDrive) && !defined(MinimumBuild)\n"
+     "   if (fBusSnoop != NULL) if (fBusSnoop(Address, R_Wn)) { if (DMA_State > DMA_S_BeginStartStates) VD_DmaSnoopedCycle(R_Wn); return; }\n"
+     "#else\n"
+     "   if (fBusSnoop != NULL) if (fBusSnoop(Address, R_Wn)) return;\n"
+     "#endif\n")
 import re
 base = re.search(r'#define TRVersion\s+"([^"]+)"', open(f"{C}/Common_Defs.h").read()).group(1)
 rev = open(sys.argv[2]).read().strip()                      # firmware/REV: bumped by hand on firmware-affecting commits

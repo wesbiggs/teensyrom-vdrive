@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.9.0.67 (experimental, branch `dma-border-isr`)
+
+### Changed
+- **The border flash by DMA again, for a hardware try** (TR+), under every VDrive handler as in 0.9.0.64-0.9.0.65: `irq_border` and
+  the BORDER register are gone again (`kernal-tr.bin` as in 0.9.0.64/65, SHA-256 in the README). **Rebuild `kernal-tr.bin`.**
+
+### Fixed
+- **A DMA hold could start in front of a CPU write while the replacement KERNAL is served** (`docs/DESIGN.md` section 60): the bus
+  interrupt left before its safe-freeze logic whenever the KERNAL snoop took the cycle (every read of `$E000-$FFFF`), so the hold
+  could begin just before a `JSR`'s pushes, which were then lost. The interrupt now steps that logic for those cycles too
+  (`VD_DmaSnoopedCycle`, a `make_tr_patch.sh` edit of `ISRs.c`; main image only). The likely cause of 0.9.0.64-0.9.0.65's crashes
+  under the KERNAL handlers; the agent's (C128 mode) is not explained by it. Builds (the interrupt's register saves and `KernalCheck`
+  unchanged in the disassembly); **not on hardware**.
+
+### Added
+- Debug counters for the hardware try, in the remote get's JSON (`trvdrive get`, TCP): `"dbg":{"brd":[requests, hold failed,
+  transfer timed out, not the VIC, $D020 writes, release failed, longest µs], "snoop":[snooped cycles stepped, /DMA asserted on one,
+  dropped as late, writes]}`, counted since the handler started. Nothing on the serial console (USB writes stall the bus interrupt).
+
 ## v0.9.0.66
 
 ### Fixed

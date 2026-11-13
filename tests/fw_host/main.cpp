@@ -18,6 +18,7 @@ static uint32_t g_ms = 0, g_tick = 0;               // g_tick > 0: every millis(
 static void (*g_on_millis)() = nullptr;               // test hook: a busy C64 issuing mailbox commands while the firmware waits
 bool g_led = true;                                    // on, as the TR leaves it while a program runs
 uint32_t millis() { g_ms += g_tick; if (g_on_millis) g_on_millis(); return g_ms; }
+uint32_t micros() { return g_ms * 1000u; }
 static int g_fs_probes = 0;
 bool SDFullInit() { g_fs_probes++; return fs_::exists(SD.root); }
 bool USBFileSystemWait() { g_fs_probes++; return fs_::exists(firstPartition.root); }
@@ -50,7 +51,7 @@ bool PerformDMA(DMA_Trans_RnW RnW, uint16_t StartAddr, uint8_t *Buffer, uint32_t
     return true;
 }
 bool CloseDMA() { return true; }
-// held transfers (the agent's border flash): $D020-$D02E behave like the VIC's colour registers (the top nibble reads back set)
+// held transfers (the Alt button's border flash): $D020-$D02E behave like the VIC's colour registers (the top nibble reads back set)
 DmaStateStub DMA_State;
 bool isFrozen = false;
 static struct { bool rnw; uint16_t a; uint8_t *b; uint32_t n; } g_held;
@@ -866,6 +867,7 @@ int main(int argc, char **argv)
         check("remote get: USB unit is device 9", has(1, "\"storage\":\"usb\",\"device\":9"));
         check("remote get: no unit 2", VDrive_RemoteStatus(2, js, sizeof js) == 0 && VDrive_RemoteStatus(-1, js, sizeof js) == 0);
         check("remote get: output too small is refused, not truncated", VDrive_RemoteStatus(0, js, 20) == 0);
+        check("remote get: the 0.9.0.67 border/DMA debug counters close the object", has(0, ",\"dbg\":{\"brd\":[") && has(0, "],\"snoop\":[0,0,0,0]}}"));
 
         g_tick = 1;                                           // let the waiting code see time pass
         check("remote set: mounts an image on SD", VDrive_RemoteSet(0, "/GAME.D64", msg, sizeof msg) == 0 && vdUnit[0].mounted);
@@ -983,11 +985,12 @@ int main(int argc, char **argv)
         fs_::remove(SD.root / ".vdrive"); fs_::remove(firstPartition.root / ".vdrive");
         IO1[rWRegCurrMenuWAIT] = rmtTeensy; DriveDirPath[0] = 0;
         prestart(); InitHndlr_VDrive();
-        check("border register idles at $80", vioHot.border == VIO_BRD_IDLE && r1(VIO_BORDER) == 0x80);
+        check("offset 8 (the old BORDER register) is unused: reads 0", r1(8) == 0);
+        check("border request idle", vdBorderReq == VIO_BRD_IDLE);
         g_ms += 5000;
 
-        auto run = [&](uint32_t ms) { Trace t; uint8_t last = vioHot.border; uint32_t t0 = g_ms;
-                                      for (uint32_t i = 0; i < ms; i += 5) { g_ms += 5; PollingHndlr_VDrive(); if (vioHot.border != last) { last = vioHot.border; t.push_back({g_ms - t0, last}); } }
+        auto run = [&](uint32_t ms) { Trace t; uint8_t last = vdBorderReq; uint32_t t0 = g_ms;
+                                      for (uint32_t i = 0; i < ms; i += 5) { g_ms += 5; PollingHndlr_VDrive(); if (vdBorderReq != last) { last = vdBorderReq; t.push_back({g_ms - t0, last}); } }
                                       return t; };
         auto near = [](uint32_t a, uint32_t b) { return a + 20 >= b && a <= b + 20; };
         auto tap = [&](int n) { for (int i = 0; i < n; i++) { SpecialBtn_VDrive(false); g_ms += 50; SpecialBtn_VDrive(true); g_ms += 100; } };
@@ -1074,7 +1077,7 @@ int main(int argc, char **argv)
         // a tap while a long flash is still running: the colour is given back first (saving mid-flash would remember the flash colour)
         put(SD, "vdrive-config.txt", "/SUB/INNER.D64,7,1\n/GAME.D64,3,3\n");
         tap(1); run(1000);
-        check("alt: the long sequence (GAME, 3 flashes) is under way", cur(0) == "/game.d64" && vioHot.border != VIO_BRD_IDLE);
+        check("alt: the long sequence (GAME, 3 flashes) is under way", cur(0) == "/game.d64" && vdBorderReq != VIO_BRD_IDLE);
         tap(1); t = run(8000);
         int lastSave = -1; for (int i = 0; i < (int)t.size(); i++) if (t[i].second == VIO_BRD_SAVE) lastSave = i;
         bool restoredBeforeSave = lastSave >= 1 && t[lastSave - 1].second == VIO_BRD_RESTORE && t[lastSave].first - t[lastSave - 1].first >= 100;
@@ -1267,19 +1270,44 @@ int main(int argc, char **argv)
           !VDrive_C128Launch() && IO1[rwRegNextIOHndlr] == IOH_Other && !vioReady);
     EEPROM.write(eepAdNextIOHndlr, IOH_None);
 
-    // ---- the Alt button under the agent (TR+): disk switching as under the KERNAL handlers, no border flash (DESIGN.md 57, 60) ----
+    // ---- the border flash by DMA ($D020), under the KERNAL handlers and the agent alike (TR+; DESIGN.md 57-58) ----
     {
         IO1[rwRegPwrUpDefaults2] = rpud2AltBtnNone; fSpecialBtnChange = nullptr;
-        InitHndlr_VDrive();
-        check("KERNAL handler: its IRQ routine flashes the border (no DMA writer)", vdBorderOut == nullptr);
-        fSpecialBtnChange = nullptr;
-        InitHndlr_VDriveAgent();
-        check("agent: the Alt button switches disks, no border writer (the DMA one crashed programs, DESIGN.md 60)",
-              fSpecialBtnChange == &SpecialBtn_VDrive && vdBorderOut == nullptr);
-        g_holds = 0; g_held_writes = 0;
-        VD_Flash(5, 2, 250, 750);
-        for (int t = 0; t < 2500; t += 5) { g_ms += 5; PollingHndlr_VDriveAgent(); }
-        check("agent flash: never holds the C64 (no DMA)", g_holds == 0 && g_held_writes == 0);
+        for (int pass = 0; pass < 2; pass++) {
+            const bool agent = pass == 1;
+            const char *who = agent ? "agent" : "KERNAL handler";
+            char what[160];
+            fSpecialBtnChange = nullptr;
+            if (agent) InitHndlr_VDriveAgent(); else InitHndlr_VDrive();
+            snprintf(what, sizeof what, "%s: the Alt button switches disks", who);
+            check(what, fSpecialBtnChange == &SpecialBtn_VDrive);
+            auto vic = [](uint8_t border) {                         // what DMA reads at $D020-$D03F with I/O mapped in
+                for (int i = 0; i < 0x20; i++) g_c64_ram[0xD020 + i] = 0xFF;
+                for (int i = 0; i <= 0x0E; i++) g_c64_ram[0xD020 + i] = (uint8_t)(0xF0 | i);
+                g_c64_ram[0xD020] = border;
+            };
+            vic(0xF6);
+            std::vector<uint8_t> seen;
+            auto run = [&](int ms) { for (int t = 0; t < ms; t += 5) { g_ms += 5; if (agent) PollingHndlr_VDriveAgent(); else PollingHndlr_VDrive();
+                                     if (seen.empty() || seen.back() != g_c64_ram[0xD020]) seen.push_back(g_c64_ram[0xD020]); } };
+            g_holds = 0; g_held_writes = 0;
+            VD_Flash(5, 2, 250, 750);
+            run(2500);
+            snprintf(what, sizeof what, "%s flash: blue border -> green, back, green, back (two flashes), one hold per change", who); check(what,
+                  seen == std::vector<uint8_t>({0xF6, 0xF5, 0xF6, 0xF5, 0xF6}) && g_held_writes == 4 && g_holds == 5);
+            g_c64_ram[0xD031] = 0x00;                               // I/O banked out: RAM (or the character ROM) at $D000
+            g_held_writes = 0; seen.clear();
+            VD_Flash(2, 1, 250, 750);
+            run(400);
+            snprintf(what, sizeof what, "%s flash: I/O not mapped in: nothing written", who); check(what, g_held_writes == 0 && g_c64_ram[0xD020] == 0xF6);
+            vic(0xF6);
+            run(2000);
+            snprintf(what, sizeof what, "%s: once I/O is back, the flash still happens and ends on the saved colour", who); check(what, g_held_writes >= 1 && g_c64_ram[0xD020] == 0xF6);
+            isFrozen = true; g_holds = 0;
+            VD_Flash(2, 1, 250, 750); run(2000);
+            snprintf(what, sizeof what, "%s flash: never while the host holds the C64", who); check(what, g_holds == 0);
+            isFrozen = false; run(2000);
+        }
         IO1[rwRegPwrUpDefaults2] = 0; fSpecialBtnChange = nullptr;
     }
 

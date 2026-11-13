@@ -1256,5 +1256,22 @@ register `$DE18` (offset 8 again; ID0/ID1 stay at `$DE19/$DE1A`), the `vdBorderO
 That path is the hardware-verified one (0.9.0.17). The agent keeps disk switching but has no flash: its DMA writer is removed.
 `kernal-tr.bin` is byte-identical to 0.9.0.63's again (SHA-256 `ea5518f3...`). Tests: `make test-border` (py65) is back, `tests/fw_host`
 checks the KERNAL handler's register sequence and that the agent never holds the C64.
-**Next (0.9.0.67, experimental branch `dma-border-isr`).** The ISR fix for the cause above, and the DMA flash again, with a debug trace,
-to be tried on hardware.
+**0.9.0.67 (experimental, branch `dma-border-isr`; builds, not on hardware).** The DMA flash again (0.9.0.65's code: `VD_BorderDMA()`
+under every handler, no `irq_border`, `$DE18` a gap), plus a fix for the cause above, in `ISRs.c` by `make_tr_patch.sh` (main image with
+`Fab04_VDrive` only):
+
+    if (fBusSnoop != NULL) if (fBusSnoop(Address, R_Wn)) { if (DMA_State > DMA_S_BeginStartStates) VD_DmaSnoopedCycle(R_Wn); return; }
+
+`VD_DmaSnoopedCycle` handles only `DMA_S_StartAsynch` and its two wait states, with the same rules as `isrPHI2`'s own switch (a write:
+wait for the read after it; that read, a bad-line read or the read-loop time-out: assert). It first checks that Phi2 is still high:
+`KernalCheck` hands the cycle back before Phi2 falls (it drives data until 390 ns), but a late interrupt or a C128 HIRAM-sense cycle
+(`KDS_Skip`, `KDS_Run`) comes back in Phi2 low, when that cycle's R/W is not current any more; then a pending "last was a write" is
+dropped, which can only delay a start. `DMA_S_StartDisable` and `DMA_S_StartImmediate` are left to the next unsnooped cycle as before
+(the REU's start and every release unchanged). Cost: on a snooped cycle one byte load and compare after the answer; the disassembly
+(`objdump` of `Teensy.ino.elf`, `--keep-work`) shows the same register saves on entry as 0.9.0.66 and a byte-identical `KernalCheck`.
+Debug for the hardware try, in the remote get's JSON (`"dbg"`; never printed on serial): `brd` = requests, `HoldC64` failed, transfer
+timed out, not the VIC, `$D020` writes, `CloseDMA` failed, longest request in µs; `snoop` = snooped cycles stepped, `/DMA` asserted on
+one, dropped as late, writes seen. A crash with `snoop` asserts > 0 points elsewhere; a long `maxUs` or `closeFail` > 0 means a
+release that had to wait out its 50 ms ceiling (possible if, while the CPU is held, the undriven bus reads as `$E000+` and the snoop keeps taking the cycle, so `StartDisable` is never reached).
+What to try: the Alt button in C64 BASIC, in a program, in C128 BASIC (128 mode: the agent, which this fix does not cover), then
+`trvdrive get`.
