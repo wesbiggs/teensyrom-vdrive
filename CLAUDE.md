@@ -196,6 +196,9 @@ Firmware integration and usage: `firmware/README.md`.
   Cause of the DMA crash under the KERNAL handlers (found in the ISR, not proven on hardware): `isrPHI2` returns when `KernalCheck` takes a cycle (every `$E000-$FFFF` read),
   before the safe-freeze state machine sees it, so a hold can start on a read that is followed by writes (a `JSR`'s pushes are lost). The agent's crash is not explained.
   Experimental 0.9.0.67 on branch `dma-border-isr`: that ISR fix plus the DMA flash, for a hardware try.
+* **0.9.0.69 (host test, not on hardware):** a remote swap or an Alt-button switch closes the unit's channels on the old image before it mounts the new one
+  (`tdrive_close_unit()` in `TDrive_RemoteSet`). Before, a write file a program had left open was closed against the new image's `d64_t` and wrote its last
+  block, BAM and entry into the new disk (0.9.0.8-0.9.0.68).
 * Default device 8 for `LOAD`/`SAVE`/`VERIFY` without a number, as on the SX-64 (`P_E1DA` in `patches/tdrive.s`, docs/DESIGN.md 33). KERNAL only; VICE `basic` run; **not on hardware yet**. Rebuild `kernal-tr.bin`.
 * 0.9.0.32: bad sectors from the image's error table (the trailing error-info bytes): reads of a sector marked bad fail with its DOS code (`d64_t.errtab`, `D64_E_BADSEC`, `d64_t.bad`, `read_err()` in `tdrive.c`; the firmware keeps a RAM2 copy only when the table marks something bad; docs/DESIGN.md 35). Write errors (25/26/28) not emulated; a write does not repair a bad sector. Unit and glue host tests; VICE and hardware through VDSUITE `5` (reads only).
 * 0.9.0.34: SwiftLink Tx fix to upstream (was `firmware/swiftlink-tx-fix.patch`; merged upstream as PR #80 in `6518b966`, patch dropped). NativeEthernet's `client.write()` busy-waits for send-buffer space;

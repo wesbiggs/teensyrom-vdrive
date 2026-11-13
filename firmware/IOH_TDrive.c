@@ -1132,6 +1132,8 @@ FLASHMEM int TDrive_RemoteSet(int unit, const char *path, char *msg, size_t cap)
       if (r) return r;
    }
    if (TDrive_RemoteQuiet(msg, cap)) return 2;
+   tdrive_close_unit(&vio->vd, unit);   // first, while the image they were opened on is still open: closing them after the swap wrote an
+                                        // open file's last block, BAM and entry into the new image (0.9.0.8-0.9.0.68)
    if (!path[0])
    {
       VD_Unmount(NULL, unit);

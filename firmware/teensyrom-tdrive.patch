@@ -199,7 +199,7 @@ index 75cea2d..dbf9501 100644
       rtFilePrg  , IOH_TR_BASIC     , (char*)"BASIC with TeensyROM Commands"    , (uint8_t*)TRCBC_prg                  , sizeof(TRCBC_prg) ,
       rtFileCrt  , IOH_None         , (char*)"Super Expander 64"                , (uint8_t*)super_expander_64_crt      , sizeof(super_expander_64_crt) ,
 diff --git a/Source/Teensy/MinimalBoot/Common/Common_Defs.h b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
-index 2c5d19a..9ca2d05 100644
+index 2c5d19a..5aca99d 100644
 --- a/Source/Teensy/MinimalBoot/Common/Common_Defs.h
 +++ b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
 @@ -14,9 +14,13 @@
@@ -221,7 +221,7 @@ index 2c5d19a..9ca2d05 100644
  
  
 -#define TRVersion              "0.9"    //*VERSION*
-+#define TRVersion              "0.9.0.68"    //*VERSION*  (stock 0.9 + TDrive rev 68)
++#define TRVersion              "0.9.0.69"    //*VERSION*  (stock 0.9 + TDrive rev 69)
  // Special builds: tools/build-firmware.mjs --tag <name> defines TRVersionSuffix as "-<name>",
  // and a build with uncommitted edits to the image sources adds "*". Arduino IDE builds have
  // none. Leave TRVersion to releases: it names the hex and the browser's User-Agent.
@@ -391,10 +391,10 @@ index 90cd86e..ebb8bd1 100644
              TxMsgOffset = 0;
 diff --git a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_TDrive.c b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_TDrive.c
 new file mode 100644
-index 0000000..0c04218
+index 0000000..5f70b17
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_TDrive.c
-@@ -0,0 +1,1480 @@
+@@ -0,0 +1,1482 @@
 +// The TDrive Special IOs: the virtual IEC drive and its SD / USB glue. On the TeensyROM+ (Fab04_TDrive) "TDrive KERNAL" and its
 +// combined handlers serve a replacement KERNAL; on both boards (TDrive_Agent) IOH_TDriveAgent.c reaches the same drive through the
 +// KERNAL's RAM vectors and a 6502 agent (docs/DESIGN.md 53). The KERNAL-only parts are under Fab04_TDrive.
@@ -1529,6 +1529,8 @@ index 0000000..0c04218
 +      if (r) return r;
 +   }
 +   if (TDrive_RemoteQuiet(msg, cap)) return 2;
++   tdrive_close_unit(&vio->vd, unit);   // first, while the image they were opened on is still open: closing them after the swap wrote an
++                                        // open file's last block, BAM and entry into the new image (0.9.0.8-0.9.0.68)
 +   if (!path[0])
 +   {
 +      VD_Unmount(NULL, unit);
@@ -2277,10 +2279,10 @@ index 463190d..436362c 100644
     #endif  
 diff --git a/Source/Teensy/MinimalBoot/Common/tdrive/tdrive.c b/Source/Teensy/MinimalBoot/Common/tdrive/tdrive.c
 new file mode 100644
-index 0000000..7a0e124
+index 0000000..2fd91b3
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/tdrive/tdrive.c
-@@ -0,0 +1,1206 @@
+@@ -0,0 +1,1208 @@
 +#include "tdrive.h"
 +#include "vd_cfg.h"
 +#include <string.h>
@@ -3311,6 +3313,8 @@ index 0000000..7a0e124
 +    set_err(u, 0, 0, 0);
 +}
 +
++VD_COLD void tdrive_close_unit(tdrive_t *v, int unit) { close_all(&v->unit[unit]); }
++
 +VD_COLD void tdrive_set_devices(tdrive_t *v, uint8_t pin0, uint8_t pin1)
 +{
 +    if (pin0 < 8 || pin0 > 30) pin0 = 0;                /* 0 (unset) or garbage: automatic */
@@ -3489,10 +3493,10 @@ index 0000000..7a0e124
 +}
 diff --git a/Source/Teensy/MinimalBoot/Common/tdrive/tdrive.h b/Source/Teensy/MinimalBoot/Common/tdrive/tdrive.h
 new file mode 100644
-index 0000000..7fd6510
+index 0000000..32e38dd
 --- /dev/null
 +++ b/Source/Teensy/MinimalBoot/Common/tdrive/tdrive.h
-@@ -0,0 +1,161 @@
+@@ -0,0 +1,165 @@
 +/* Virtual IEC drive: the Teensy-side state machine behind the KERNAL mailbox.
 + * Units 0/1 = devices 8/9, each backed by an optional mounted d64_t.
 + * One mailbox command in, one result out; no I/O other than the d64 and host callbacks. */
@@ -3618,6 +3622,10 @@ index 0000000..7fd6510
 +
 +void tdrive_init(tdrive_t *v);
 +void tdrive_attach(tdrive_t *v, int unit, d64_t *disk, int present);
++/* Close every channel of a unit on the disk it is on now (open files are closed properly). Before the host changes that disk
++ * behind the drive's back (a remote swap): the channels' state belongs to the old image. A listing by path being closed puts its
++ * selection back (host pop). */
++void tdrive_close_unit(tdrive_t *v, int unit);
 +/* pin0/pin1: device numbers the user fixed (8..30), 0 = automatic. Automatic units start on VD_DEV0/VD_DEV1 (or the next
 + * free number) and are moved by the start-up scan below. */
 +void tdrive_set_devices(tdrive_t *v, uint8_t pin0, uint8_t pin1);

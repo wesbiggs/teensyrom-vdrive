@@ -123,6 +123,10 @@ typedef struct tdrive_s {
 
 void tdrive_init(tdrive_t *v);
 void tdrive_attach(tdrive_t *v, int unit, d64_t *disk, int present);
+/* Close every channel of a unit on the disk it is on now (open files are closed properly). Before the host changes that disk
+ * behind the drive's back (a remote swap): the channels' state belongs to the old image. A listing by path being closed puts its
+ * selection back (host pop). */
+void tdrive_close_unit(tdrive_t *v, int unit);
 /* pin0/pin1: device numbers the user fixed (8..30), 0 = automatic. Automatic units start on VD_DEV0/VD_DEV1 (or the next
  * free number) and are moved by the start-up scan below. */
 void tdrive_set_devices(tdrive_t *v, uint8_t pin0, uint8_t pin1);

@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.9.0.69
+
+### Fixed
+- **Changing the disk while a program has a file open for writing no longer damages the new disk.** A remote swap (`trvdrive`,
+  command `0x64E4`) or an Alt-button switch opened the new image first and only then closed the unit's channels, so a file a
+  program had left open for writing (`OPEN 2,8,2,"LOG,S,W"` between `PRINT#`s) was closed against the new image: its last block,
+  BAM entries and directory entry were written into it, and on the old image the file stayed unclosed (a `*SEQ` splat). The
+  channels are now closed first, on the old image, as `CD:` always did. Unmounting with an empty path lost the file the same way
+  (the image was closed before its channels). In every version with the remote swap (0.9.0.8) or the Alt button (0.9.0.17), up to 0.9.0.68.
+  Host test (`tests/fw_host`); **not on hardware**. `docs/DESIGN.md` section 20.
+
 ## v0.9.0.68
 
 ### Changed

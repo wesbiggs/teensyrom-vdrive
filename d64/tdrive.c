@@ -1028,6 +1028,8 @@ VD_COLD void tdrive_attach(tdrive_t *v, int unit, d64_t *disk, int present)
     set_err(u, 0, 0, 0);
 }
 
+VD_COLD void tdrive_close_unit(tdrive_t *v, int unit) { close_all(&v->unit[unit]); }
+
 VD_COLD void tdrive_set_devices(tdrive_t *v, uint8_t pin0, uint8_t pin1)
 {
     if (pin0 < 8 || pin0 > 30) pin0 = 0;                /* 0 (unset) or garbage: automatic */

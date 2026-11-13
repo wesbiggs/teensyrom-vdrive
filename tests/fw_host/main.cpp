@@ -907,6 +907,24 @@ int main(int argc, char **argv)
         g_tick = 1;
         check("remote set closes the channels on the unit", TDrive_RemoteSet(0, "/SUB/COPY.D64", msg, sizeof msg) == 0 && tdrive_chan_mode(&vio->vd, 0, 2) == 0);
 
+        // a write channel left open by a program: the swap closes it on the old image (as CD: does), never on the new one
+        {
+            auto slurp = [](const fs_::path &p) { std::ifstream f(p, std::ios::binary); return std::string((std::istreambuf_iterator<char>(f)), {}); };
+            g_tick = 0; cmd15("CD:/"); cmd15("CD:GAME.D64"); status15();
+            call(VD_LISTEN, 8); call(VD_SECOND, 0xF3); for (char c : std::string("LOG,S,W")) call(VD_CIOUT, (uint8_t)c); call(VD_UNLSN);
+            call(VD_LISTEN, 8); call(VD_SECOND, 0x63); for (char c : std::string("LINE ONE\r")) call(VD_CIOUT, (uint8_t)c); call(VD_UNLSN);
+            check("a write channel is open", tdrive_chan_mode(&vio->vd, 0, 3) == 3);
+            std::string before = slurp(SD.root / "SUB" / "COPY.D64");
+            g_tick = 1;
+            check("remote set with a write channel open", TDrive_RemoteSet(0, "/SUB/COPY.D64", msg, sizeof msg) == 0 && tdrive_chan_mode(&vio->vd, 0, 3) == 0);
+            check("... the new image is not touched by the old image's open file", slurp(SD.root / "SUB" / "COPY.D64") == before);
+            check("... the open file was closed on the old image", TDrive_RemoteSet(0, "/GAME.D64", msg, sizeof msg) == 0 &&
+                  (g_tick = 0, [] { std::string d = fast_load(8, "$"); size_t a = d.find("\"LOG\"");   // SEQ, not *SEQ (a splat: never closed)
+                                    return a != std::string::npos && d.substr(d.find_first_not_of(' ', a + 5), 3) == "SEQ"; }()));
+            g_tick = 0; cmd15("S:LOG"); g_tick = 1;
+            TDrive_RemoteSet(0, "/SUB/COPY.D64", msg, sizeof msg);   // back to where the checks below expect the unit
+        }
+
         g_tick = 0; check("the drive status channel is clean after a swap", status15() == "00, OK,00,00\r"); g_tick = 1;
         check("remote set: empty path unmounts, folder stays, sidecar gone", TDrive_RemoteSet(0, "", msg, sizeof msg) == 0 && !vdUnit[0].mounted && !fs_::exists(SD.root / ".tdrive") && has(0, "\"mounted\":false,\"writable\":false,\"path\":\"\",\"cwd\":\"/SUB\""));
         g_tick = 0;
