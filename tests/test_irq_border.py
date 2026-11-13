@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The border-flash routine (irq_border, patches/vdrive.s) run in a 6502 simulator (py65; skipped when it is not installed).
+"""The border-flash routine (irq_border, patches/tdrive.s) run in a 6502 simulator (py65; skipped when it is not installed).
 
 The KERNAL is assembled onto a synthetic 8 KB image that only has the bytes tools/build.py checks (the `JSR $FFEA` at $EA31 the
 patch retargets, the `LDX #$01` at $E1D9 of the default-device patch, the SHIFT+RUN buffer fill at $E5EE, INITMS for the banner), so no Commodore ROM is needed. $DE18 (the BORDER register) answers from a script, $D020 / $9C are plain memory."""

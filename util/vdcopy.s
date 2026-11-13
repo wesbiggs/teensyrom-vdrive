@@ -4,13 +4,13 @@
 ;    time through the KERNAL (CHKIN/CHRIN from the source, CHKOUT/CHROUT to the destination), checking the destination's error channel
 ;    after every chunk.
 ; D  a whole disk: the 683 sectors of a 35-track 1541 disk, one at a time through a buffer channel on each side ("#", U1 on the source,
-;    B-P + U2 on the destination), so a .D64 image goes onto a real floppy or a floppy into a new .D64 image (any two units work). A vdrive
-;    source may first mount an image (CD:path); a vdrive destination gets a new image (N:NAME.D64) or the mounted one is written over; a real
+;    B-P + U2 on the destination), so a .D64 image goes onto a real floppy or a floppy into a new .D64 image (any two units work). A tdrive
+;    source may first mount an image (CD:path); a tdrive destination gets a new image (N:NAME.D64) or the mounted one is written over; a real
 ;    destination may be formatted first with the source's disk name and ID. Read errors are copied as they come and counted; the screen
 ;    shows a map of the sectors (columns are tracks).
 ; Tables live at $2800-$3FFF (BSS, not in the PRG), the copy buffer at $C000-$C7FF (in disk mode: the sector at $C000, track 18 sector 0
 ; of the source at $C100). Messages are upper case ASCII, which is also the default-mode PETSCII (the upper-case character set is kept).
-; Colours follow the TR menu, as in VDrive Config: its seven colour references come as the third line of "!STATE" from a vdrive unit (the
+; Colours follow the TR menu, as in TDrive Config: its seven colour references come as the third line of "!STATE" from a tdrive unit (the
 ; menu's defaults otherwise). Bytes C_BAN..C_NAME in a printed string select one; a reverse banner, keys in reverse in the option colour.
 .setcpu "6502"
 
@@ -34,7 +34,7 @@ TXTCOL  = $0286
 BORDER  = $D020
 BGCOL   = $D021
 .ifndef DEV0REG
-DEV0REG = $DE16         ; vdrive: current device number of the SD unit (0 = none), $DE17 the USB unit's (the VICE mock: -D DEV0REG=$C806)
+DEV0REG = $DE16         ; tdrive: current device number of the SD unit (0 = none), $DE17 the USB unit's (the VICE mock: -D DEV0REG=$C806)
 .endif
 SCREEN  = $0400
 COLRAM  = $D800
@@ -97,9 +97,9 @@ start:
         sta OT
         PS {142, 8}             ; the upper-case character set, and Shift+C= may not switch it
         lda #8
-        jsr probe               ; the first bus access also runs the vdrive scan that numbers the units
+        jsr probe               ; the first bus access also runs the tdrive scan that numbers the units
         ldx #1
-@dv:    lda DEV0REG,x           ; the vdrive units (0 = none or no vdrive)
+@dv:    lda DEV0REG,x           ; the tdrive units (0 = none or no tdrive)
         cmp #8
         bcc @no
         cmp #31
@@ -154,8 +154,8 @@ banner: PS {C_NAME, $93, C_BAN, 18, "                VDCOPY                 ", 1
         sta COLRAM+39
         rts
 
-; "VDRIVE: SD UNIT 8  USB UNIT 9" / "VDRIVE: NOT ACTIVE"
-punits: PS {C_SRC, "VDRIVE: "}
+; "TDRIVE: SD UNIT 8  USB UNIT 9" / "TDRIVE: NOT ACTIVE"
+punits: PS {C_SRC, "TDRIVE: "}
         lda VD0
         ora VD1
         bne @a
@@ -175,7 +175,7 @@ punits: PS {C_SRC, "VDRIVE: "}
 @e:     CR
         rts
 
-; Z set when unit A is a vdrive unit
+; Z set when unit A is a tdrive unit
 isvd:   cmp VD0
         beq @y
         cmp VD1
@@ -2098,7 +2098,7 @@ sendcmd:jsr CHKOUT
 @e:     jmp CLRCHN
 
 ; ---------------------------------------------------------------------------------------------------------------------------------
-; THEME = the TR menu's colour references from the third line of "!STATE" on a vdrive unit (all seven hex digits or none)
+; THEME = the TR menu's colour references from the third line of "!STATE" on a tdrive unit (all seven hex digits or none)
 readtheme:
         lda VD0
         bne @d
@@ -2235,7 +2235,7 @@ RESN:   .res 2
 RESRS:  .res 1
 RESWS:  .res 1
 RESEP:  .res 1
-VD0:    .res 1          ; the vdrive units (VD1 right after VD0)
+VD0:    .res 1          ; the tdrive units (VD1 right after VD0)
 VD1:    .res 1
 OC:     .res 1
 OB:     .res 1

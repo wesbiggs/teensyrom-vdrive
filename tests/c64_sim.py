@@ -6,7 +6,7 @@ CHRIN, CHROUT, GETIN, PLOT, LISTEN, SECOND, UNLSN. Any other jump into the ROM a
 (open / close / get / getline / put / st, and .units for "present"), the screen is a 40x25 model with cursor addressing, reverse and colour
 codes and the two character sets (CHR$(14) / CHR$(142); row() shows what the set displays: in the lower-case set $41-$5A as
 small letters and $C1-$DA as capitals), keys come from a script. run() returns "key" when the program waits for a key it does not
-have, "end" when it returns to BASIC and "menu" when it writes the vdrive mailbox's VIO_MENU command (the Teensy would reset the
+have, "end" when it returns to BASIC and "menu" when it writes the tdrive mailbox's VIO_MENU command (the Teensy would reset the
 C64 into the TR menu then; answered at $DE13 unless menu_answer is False). The fast LOAD's block commands FLOAD_OPEN / FLOAD_BLK are
 answered from the drive as well (the name and the blocks in the IO2 window at $DF80, DATA $DE12, ST $DE14), unless fast is False
 ("not mine": the program must fall back to OPEN + CHRIN); fast_blocks counts the blocks sent.
@@ -136,7 +136,7 @@ class C64:
         if v in (self.FLOAD_OPEN, self.FLOAD_BLK):
             if not self.fast: m[self.MBXSTAT] = 0xA5; return
             m[self.MBXST] = 0
-            if v == self.FLOAD_OPEN:                    # as fload_open in d64/vdrive_io.c: OPEN on secondary 0, the first two bytes
+            if v == self.FLOAD_OPEN:                    # as fload_open in d64/tdrive_io.c: OPEN on secondary 0, the first two bytes
                 self.fast_opens += 1
                 self.drive.close(self.FL)
                 name = bytes(m[self.WIN:self.WIN + m[self.MBXLEN]]).decode("latin1")

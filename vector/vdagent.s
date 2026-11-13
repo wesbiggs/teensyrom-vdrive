@@ -1,6 +1,6 @@
-; VDrive agent for the plain TeensyROM (docs/DESIGN.md 53): a small 6502 routine the Teensy serves from the IO1 page. The KERNAL's
+; TDrive agent for the plain TeensyROM (docs/DESIGN.md 53): a small 6502 routine the Teensy serves from the IO1 page. The KERNAL's
 ; RAM vectors point into it; it reports each call to the Teensy and then does what the Teensy's answer says. All drive and file-table
-; logic is C on the Teensy (d64/vdrive_vec.c), which also decides "not ours" and chains to the vector it replaced.
+; logic is C on the Teensy (d64/tdrive_vec.c), which also decides "not ours" and chains to the vector it replaced.
 ;
 ; Request (agent -> Teensy): the frame in the window, then CMD = C_VEC (or C_CONT after a PEEK / CONT op: the window holds PEEK's data)
 ;   WIN+0 Y, +1 X, +2 A, +3 P, +4 the entry's return-address low byte (which entry; `ctramp`'s own entry = a CALL's result),
@@ -18,14 +18,14 @@
 ; Fast paths: CHROUT/CHRIN/GETIN with DFLTO/DFLTN < 4 (screen, keyboard, tape, RS-232) go straight to the old vector, so printing
 ; and keyboard input cost nothing extra.
 ;
-; The offsets the Teensy needs are asserted at the end and repeated in d64/vdrive_vec.h (VV_OFS_*).
+; The offsets the Teensy needs are asserted at the end and repeated in d64/tdrive_vec.h (VV_OFS_*).
 
 .include "mailbox.inc"
 
 C_VEC   = 20
 C_CONT  = 21
 
-; entries, in this order; d64/vdrive_vec.h has the same numbers (VV_E_*)
+; entries, in this order; d64/tdrive_vec.h has the same numbers (VV_E_*)
 E_BASIN   = 6                 ; also GETIN for devices 4 and up (stock runs the same serial code for both)
 E_BSOUT   = 7
 NE        = 12
@@ -157,7 +157,7 @@ zpl:    .byte   $90, $98, $99, $9A ; ST, open files, DFLTN, DFLTO
 NZ      = * - zpl
 end_:
 
-; d64/vdrive_vec.h repeats these
+; d64/tdrive_vec.h repeats these
 .assert ctramp - base = 0, error, "VV_OFS_CTRAMP"
 .assert old_bsout - base = 6, error, "VV_OFS_OLD (old_bsout, old_basin, old_getin)"
 .assert entries - base = 12, error, "VV_OFS_ENTRIES"

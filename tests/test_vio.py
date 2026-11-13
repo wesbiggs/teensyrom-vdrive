@@ -1,6 +1,6 @@
 import ctypes, pathlib, random, shutil, subprocess, sys, tempfile, unittest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / 'tools'))
-from d64py import (LIB, Disk, VIO, VDrive, WIN_SIZE, F_SAVE_DMA, F_VERIFY_OPEN, F_LOAD_OPEN, F_LOAD_BLK, F_SAVE_OPEN, F_SAVE_BLK, F_SAVE_CLOSE,
+from d64py import (LIB, Disk, VIO, TDrive, WIN_SIZE, F_SAVE_DMA, F_VERIFY_OPEN, F_LOAD_OPEN, F_LOAD_BLK, F_SAVE_OPEN, F_SAVE_BLK, F_SAVE_CLOSE,
                    R_STAT, R_DEV0, R_DEV1, F_SCAN, F_FREE, F_MENU, BUSY, OK, NOTMINE, SCANREQ)
 
 LISTEN, TALK, SECOND, TKSA, CIOUT, ACPTR, UNLSN, UNTLK = range(1, 9)
@@ -59,7 +59,7 @@ class VioTests(unittest.TestCase):
         self.io.w(8, 0xC2); self.assertEqual(self.io.r(8), 0x80)
 
     def test_id_registers_are_constant_and_read_only(self):
-        # the KERNAL's reset hook (P_F875 in patches/vdrive.s) asks for the TR menu only after reading these two
+        # the KERNAL's reset hook (P_F875 in patches/tdrive.s) asks for the TR menu only after reading these two
         self.assertEqual((self.io.r(9), self.io.r(10)), (0xD6, 0x64))
         self.io.w(9, 0); self.io.w(10, 0); self.assertEqual((self.io.r(9), self.io.r(10)), (0xD6, 0x64))
         self.assertNotIn(0xDE, (0xD6, 0x64))                             # an unanswered read floats to $DE (high byte of $DE19)
@@ -518,7 +518,7 @@ class HostTests(unittest.TestCase):
                              HostStruct.PUSH(push), HostStruct.POP(pop), create=HostStruct.CREATE(create),
                              plain_open=HostStruct.HOPEN(hopen), plain_read=HostStruct.HREAD(hread), plain_close=HostStruct.HCLOSE(hclose),
                              mkdir=HostStruct.MKDIR(mkdir), rmdir=HostStruct.MKDIR(rmdir), scratch=HostStruct.MKDIR(scratch))
-        LIB.vdrive_set_host(self.io.v, ctypes.byref(self.cb))
+        LIB.tdrive_set_host(self.io.v, ctypes.byref(self.cb))
 
     def tearDown(self): shutil.rmtree(self.tmp)
 
@@ -707,7 +707,7 @@ class HostTests(unittest.TestCase):
         self.cb.hf_open, self.cb.hf_read = HostStruct.HFOPEN(op), HostStruct.HFREAD(rd)
         self.cb.hf_write, self.cb.hf_close = HostStruct.HFWRITE(wr), HostStruct.HFCLOSE(cl)
         self.keep_hf = (op, rd, wr, cl)
-        LIB.vdrive_set_host(self.io.v, ctypes.byref(self.cb))
+        LIB.tdrive_set_host(self.io.v, ctypes.byref(self.cb))
 
     def open_ch(self, ch, name):
         self.io.call(LISTEN, 8); self.io.call(SECOND, 0xF0 | ch)
@@ -757,7 +757,7 @@ class HostTests(unittest.TestCase):
     def test_second_host_file_replaces_the_first(self):
         self.hostfile_hooks(b"x\r")
         self.open_ch(2, b"!CONFIG"); self.open_ch(3, b"!STATE")
-        self.assertEqual((LIB.vdrive_chan_mode(self.io.v, 0, 2), LIB.vdrive_chan_mode(self.io.v, 0, 3)), (0, 6))
+        self.assertEqual((LIB.tdrive_chan_mode(self.io.v, 0, 2), LIB.tdrive_chan_mode(self.io.v, 0, 3)), (0, 6))
         self.assertEqual([e for e in self.hf["log"] if e[0] == "close"], [("close", 0)])
 
     def test_host_directory_when_nothing_mounted(self):
@@ -1023,7 +1023,7 @@ class DeviceNumberTests(unittest.TestCase):
         self.cb = HostStruct()                                            # all other callbacks NULL
         self.save_cb = HostStruct.SAVEDEV(lambda c, a, b: self.saved.append((a, b)))
         self.cb.save_devices = self.save_cb
-        LIB.vdrive_set_host(self.io.v, ctypes.byref(self.cb))
+        LIB.tdrive_set_host(self.io.v, ctypes.byref(self.cb))
 
     def renumber(self, via, n):
         self.io.call(LISTEN, via); self.io.call(SECOND, 0x6F)
@@ -1265,7 +1265,7 @@ class FootprintTests(unittest.TestCase):
         self.io.call(LISTEN, 8); self.io.call(SECOND, 0xF0 | 12)
         for b in b"FILE01": self.io.call(CIOUT, b)
         self.io.call(UNLSN)
-        self.assertEqual(LIB.vdrive_pending_err(self.io.v, 0), 70)    # NO CHANNEL
+        self.assertEqual(LIB.tdrive_pending_err(self.io.v, 0), 70)    # NO CHANNEL
         self.io.call(LISTEN, 8); self.io.call(SECOND, 0xE0 | 2); self.io.call(UNLSN)   # close one
         self.io.call(LISTEN, 8); self.io.call(SECOND, 0xF0 | 12)
         for b in b"FILE01": self.io.call(CIOUT, b)

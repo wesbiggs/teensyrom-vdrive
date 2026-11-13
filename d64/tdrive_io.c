@@ -1,4 +1,4 @@
-#include "vdrive_io.h"
+#include "tdrive_io.h"
 #include "vd_cfg.h"
 #include <string.h>
 
@@ -11,7 +11,7 @@ VD_COLD void vio_init(vio_t *v, vio_hot_t *hot)
     hot->border = VIO_BRD_IDLE;
     hot->id0 = VIO_ID0_VAL;
     hot->id1 = VIO_ID1_VAL;
-    vdrive_init(&v->vd);
+    tdrive_init(&v->vd);
     vio_publish_devices(v);
 }
 
@@ -53,7 +53,7 @@ void    vio_io2_write(vio_hot_t *h, uint8_t off, uint8_t val) { h->window[off & 
 VD_COLD static int bus(vio_t *v, uint8_t c, uint8_t a, uint8_t *data)
 {
     uint8_t st = 0, d = 0;
-    vdrive_mailbox(&v->vd, c, a, &d, &st);
+    tdrive_mailbox(&v->vd, c, a, &d, &st);
     if (data) *data = d;
     return st;
 }
@@ -217,9 +217,9 @@ VD_COLD static void fsave_open(vio_t *v)
     if (bus(v, VD_LISTEN, dev, 0) & 0x80) { v->h->data = 5; return; }
     bus(v, VD_UNLSN, 0, 0);
     send_name_open(v, dev, 0xF1);
-    int unit = vdrive_unit_for(&v->vd, dev);
-    if (vdrive_chan_mode(&v->vd, unit, 1) == 3) { v->fs_active = 1; v->fs_dev = dev; v->h->data = 0; }
-    else { int e = vdrive_pending_err(&v->vd, unit); v->h->data = (uint8_t)(e ? e : 74); }
+    int unit = tdrive_unit_for(&v->vd, dev);
+    if (tdrive_chan_mode(&v->vd, unit, 1) == 3) { v->fs_active = 1; v->fs_dev = dev; v->h->data = 0; }
+    else { int e = tdrive_pending_err(&v->vd, unit); v->h->data = (uint8_t)(e ? e : 74); }
 }
 
 VD_COLD static void fsave_bytes(vio_t *v, const uint8_t *buf, unsigned n)
@@ -270,10 +270,10 @@ VD_COLD static int fsave_close(vio_t *v)
     v->h->data = 0;
     if (v->fs_fail) { v->fs_fail = 0; return 1; }
     if (!v->fs_active) return 0;
-    int unit = vdrive_unit_for(&v->vd, v->fs_dev);
-    int ok = vdrive_chan_mode(&v->vd, unit, 1) == 3;
+    int unit = tdrive_unit_for(&v->vd, v->fs_dev);
+    int ok = tdrive_chan_mode(&v->vd, unit, 1) == 3;
     close_chan(v, v->fs_dev, 0xE1);
-    if (!ok) { int e = vdrive_pending_err(&v->vd, unit); v->h->data = (uint8_t)(e ? e : 74); }
+    if (!ok) { int e = tdrive_pending_err(&v->vd, unit); v->h->data = (uint8_t)(e ? e : 74); }
     v->fs_active = 0;
     return 0;
 }
@@ -291,14 +291,14 @@ VD_COLD int vio_arm_scan(vio_t *v)
 VD_COLD int vio_probe_begin(vio_t *v)
 {
     v->scan_state = 3;
-    int need = vdrive_scan_begin(&v->vd);
+    int need = tdrive_scan_begin(&v->vd);
     vio_publish_devices(v);
     return need;
 }
 
 VD_COLD int vio_probe_free(vio_t *v, uint8_t dev)
 {
-    int left = vdrive_scan_free(&v->vd, dev);
+    int left = tdrive_scan_free(&v->vd, dev);
     vio_publish_devices(v);
     return left;
 }
@@ -323,19 +323,19 @@ VD_COLD int vio_poll(vio_t *v)
         /* answer SCANREQ below, execute nothing */
     } else if (c >= VD_LISTEN && c <= VD_UNTLK) {
         uint8_t d, st;
-        notmine = (uint8_t)vdrive_mailbox(&v->vd, c, v->h->arg, &d, &st);
+        notmine = (uint8_t)tdrive_mailbox(&v->vd, c, v->h->arg, &d, &st);
         v->h->data = d; v->h->st = st;
     } else switch (c) {
-        case VIO_FLOAD_OPEN:  if (vdrive_unit_for(&v->vd, v->h->arg) >= 0) fload_open(v);  else notmine = 1; break;
+        case VIO_FLOAD_OPEN:  if (tdrive_unit_for(&v->vd, v->h->arg) >= 0) fload_open(v);  else notmine = 1; break;
         case VIO_FLOAD_BLK:   fload_blk(v); break;
         case VIO_FLOAD_DMA:   notmine = (uint8_t)fload_dma(v); break;
-        case VIO_FSAVE_OPEN:  if (vdrive_unit_for(&v->vd, v->h->arg) >= 0) fsave_open(v);  else notmine = 1; break;
+        case VIO_FSAVE_OPEN:  if (tdrive_unit_for(&v->vd, v->h->arg) >= 0) fsave_open(v);  else notmine = 1; break;
         case VIO_FSAVE_BLK:   notmine = (uint8_t)fsave_blk(v); break;
         case VIO_FSAVE_CLOSE: notmine = (uint8_t)fsave_close(v); break;
         case VIO_FSAVE_DMA:   notmine = (uint8_t)fsave_dma(v); break;
-        case VIO_FVERIFY_OPEN: if (vdrive_unit_for(&v->vd, v->h->arg) >= 0) notmine = (uint8_t)fverify_open(v); else notmine = 1; break;
-        case VIO_SCAN:        v->scan_state = 3; v->h->data = (uint8_t)vdrive_scan_begin(&v->vd); break;
-        case VIO_FREE:        v->h->data = (uint8_t)vdrive_scan_free(&v->vd, v->h->arg); break;
+        case VIO_FVERIFY_OPEN: if (tdrive_unit_for(&v->vd, v->h->arg) >= 0) notmine = (uint8_t)fverify_open(v); else notmine = 1; break;
+        case VIO_SCAN:        v->scan_state = 3; v->h->data = (uint8_t)tdrive_scan_begin(&v->vd); break;
+        case VIO_FREE:        v->h->data = (uint8_t)tdrive_scan_free(&v->vd, v->h->arg); break;
         case VIO_MENU:        v->menu_req = 1; break;
         default: notmine = 1;
     }

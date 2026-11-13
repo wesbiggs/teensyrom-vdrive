@@ -1,4 +1,4 @@
-; VDrive Config: edit the Alt-button disk lists (/vdrive-config.txt on each unit) and show / change the mounted images, entirely in machine code.
+; TDrive Config: edit the Alt-button disk lists (/tdrive-config.txt on each unit) and show / change the mounted images, entirely in machine code.
 ; Loads at $0801 with a BASIC "10 SYS 2061" stub. Talks to the drives only through the KERNAL: the "!CONFIG[,W]" and "!STATE" host text
 ; channels (docs/DESIGN.md 23), "$/folder/" listings for the browser and "CD:" on the command channel (logical file 15 for the SD unit, 14 for
 ; the USB unit, open for the whole run: closing a command channel closes every channel of its unit). The only mailbox access of its own
@@ -34,8 +34,8 @@ INSRT   = $D8           ; insert count, likewise
 BORDER  = $D020
 BGCOL   = $D021
 TXTCOL  = $0286
-DEV0REG = $DE16         ; vdrive: current device number of the SD unit, $DE17 the USB unit (0 = none)
-MBXCMD  = $DE10         ; vdrive mailbox (d64/vdrive_io.h): command register ...
+DEV0REG = $DE16         ; tdrive: current device number of the SD unit, $DE17 the USB unit (0 = none)
+MBXCMD  = $DE10         ; tdrive mailbox (d64/tdrive_io.h): command register ...
 MBXSTAT = $DE13         ; ... and its answer token
 MBXARG  = $DE11         ; argument (the device for the fast open)
 MBXDATA = $DE12         ; result byte (the fast open's error, a block's byte count)
@@ -43,7 +43,7 @@ MBXST   = $DE14         ; IEC status bits of the answer ($40 EOI: the last block
 MBXLEN  = $DE15         ; name length for the fast open
 WIN     = $DF80         ; the 128-byte IO2 window: the name out, the blocks in
 WINSZ   = 128
-C_FLOPEN = 9            ; FLOAD_OPEN / FLOAD_BLK: the fast LOAD's block transfer (d64/vdrive_io.h), used for the browser's listings
+C_FLOPEN = 9            ; FLOAD_OPEN / FLOAD_BLK: the fast LOAD's block transfer (d64/tdrive_io.h), used for the browser's listings
 C_FLBLK = 10
 STAT_NOTMINE = $A5
 STAT_SCAN = $3C
@@ -167,7 +167,7 @@ start:
         bne @act
         lda #255
         sta FLDN
-        PS "VDrive is not active.", 13, "Start this program from the TeensyROM menu with the VDrive KERNAL.", 13
+        PS "TDrive is not active.", 13, "Start this program from the TeensyROM menu with the TDrive KERNAL.", 13
         rts
 @act:   lda BORDER
         and #15
@@ -1321,7 +1321,7 @@ drawall:jsr scr
         PS C_NAME, 147          ; the menu clears in the name colour
         ldx #0
         jsr rowbeg
-        PS C_BAN, 18, "             VDrive Config"
+        PS C_BAN, 18, "             TDrive Config"
         jsr fpad
         PS 146
         lda #$A0                ; the banner's last column straight into the screen: printing it would link rows 0 and 1

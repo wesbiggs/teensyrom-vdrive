@@ -300,7 +300,7 @@ run7:   jsr begin
         jmp @rp
 :       jmp report
 
-; T8: read the KERNAL ROM the TR serves (stock ROM-serving path, no VDrive register involved): each byte twice in a row
+; T8: read the KERNAL ROM the TR serves (stock ROM-serving path, no TDrive register involved): each byte twice in a row
 run8:   jsr begin
 @rp:    ldx #0
 @lo:    ldy #0

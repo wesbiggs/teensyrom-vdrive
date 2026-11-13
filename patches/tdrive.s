@@ -4,7 +4,7 @@
 ; and flow continues in the stock routine, so real drives still work.
 ;
 ; Mailbox (IO1 on hardware; RAM in the VICE mock build, see Makefile). It sits at $DE10, clear of the
-; SwiftLink/Turbo232 ACIA at $DE00-$DE07 so both can be active together (firmware handler "VDrive+SwiftLink"):
+; SwiftLink/Turbo232 ACIA at $DE00-$DE07 so both can be active together (firmware handler "TDrive+SwiftLink"):
 ;   MBX+0 CMD   W  write triggers the Teensy; sets BUSY at once
 ;   MBX+1 ARG   RW argument (device / secondary / byte)
 ;   MBX+2 DATA  R  result byte (ACPTR)
@@ -13,7 +13,7 @@
 ;   MBX+5 LEN   RW name / block length for the fast LOAD / SAVE commands
 ;   MBX+6 DEV0  R  device number of the SD drive now, MBX+7 DEV1 the USB drive (0 = none): PEEK(56854), PEEK(56855)
 ;   MBX+8 BORDER R request for the IRQ routine's border flash (disk-switch feedback, see irq_border at the end)
-;   MBX+9 ID0, MBX+10 ID1  R  $D6 $64 while the VDrive handler answers (the reset hook, see rst_hook at the end)
+;   MBX+9 ID0, MBX+10 ID1  R  $D6 $64 while the TDrive handler answers (the reset hook, see rst_hook at the end)
 ;
 ; Reclaims tape bit-timing code $F8E2-$FB8D and the cassette IRQ set-up $F875-$F8CF (device 1 tape I/O stops working).
 
@@ -29,7 +29,7 @@
 .segment "P_EA32"
         .word irq_border
 
-; ---- cold start ($FCE2: the RESET vector, also SYS64738): back to the TR menu while the VDrive handler runs ----
+; ---- cold start ($FCE2: the RESET vector, also SYS64738): back to the TR menu while the TDrive handler runs ----
 ; Replaces `LDX #$FF / SEI`; rst_hook does them and goes on at the stock `TXS`.
 .segment "P_FCE2"
         jmp rst_hook
@@ -244,7 +244,7 @@ fl_hook:
 .if VD_DMA_LOAD
 @blk:   lda $AE                 ; where the next byte goes: ARG/LEN. The Teensy answers with a window block as FLOAD_BLK, or
         sta $A7                 ; (DATA = 0) has written the next part straight into RAM by DMA and moved $AE/$AF on itself
-        lda $AF                 ; (VIO_FLOAD_DMA, d64/vdrive_io.h; never below $0200 or in $D000-$DFFF)
+        lda $AF                 ; (VIO_FLOAD_DMA, d64/tdrive_io.h; never below $0200 or in $D000-$DFFF)
         sta MBX_LEN
         lda #C_FLOAD_DMA
 .else
@@ -377,7 +377,7 @@ irq_border_end:
 
 ; ---- reset hook: SYS64738 (or any jump to the RESET vector) returns to the TR menu ----
 ; The cold start also runs when the TR menu launches a program, while the menu's own IO1 handler still answers (the mailbox is not
-; live yet), and on a machine with no VDrive at all. So nothing is written to the mailbox until both ID registers read right: the
+; live yet), and on a machine with no TDrive at all. So nothing is written to the mailbox until both ID registers read right: the
 ; menu's $DE19/$DE1A are a SID's init address, never $D6xx; an unanswered read floats to $DE. Then VIO_MENU: the Teensy answers,
 ; writes back what is unsaved and resets the C64 into its menu, so after the answer the CPU only waits. No answer (~1 s, vcall's
 ; time-out): the stock cold start. Lives in the cassette IRQ set-up ($F875-$F8CF), reached only by a tape transfer with PLAY pressed,
@@ -426,7 +426,7 @@ SR_KEYS = * - sr_keys - SR_ECHO
 rst_hook_end:
 .assert rst_hook_end <= $F8D0, lderror, "the reset hook and SHIFT+RUN overflow into the tape STOP check ($F8D0, used by PRESS PLAY)"
 
-; ---- is the VDrive handler there? (vcall asks before every command) ----
+; ---- is the TDrive handler there? (vcall asks before every command) ----
 ; Z=1: ID0 ($DE19) read $D6 in one of 4 tries. Up to 4, so that a late (bit-mixed) answer of a handler that is there does not
 ; hand a transaction to the real bus mid-way, where it would go wrong; with no handler 4 misses cost about 50 cycles. Under the
 ; TR menu's handler $DE19 is a SID's init address, never $D6xx (I/O); a floating bus that reads $D6 by chance only gets

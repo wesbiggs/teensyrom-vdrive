@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Build build/testdisk/vdtest.d64: VDSUITE (tests/basic/vdsuite.bas with the machine-code checks of tests/asm/suite.s), DMATEST,
-LOADTEST's data files, HELLO + BIG (for VDSUITE's checks by hand), VDCOPY and VDrive Config; and VDSUITE's card files.
+LOADTEST's data files, HELLO + BIG (for VDSUITE's checks by hand), VDCOPY and TDrive Config; and VDSUITE's card files.
 
 usage: make_testdisk.py [OUTDIR]     (needs petcat and c1541 from VICE)
 Copy the resulting vdtest.d64, vdbad.d64 and vdplain.prg to the root of the SD card (or USB stick) and mount vdtest.d64 with CD:VDTEST.D64.

@@ -1,12 +1,27 @@
 # Changelog
 
+## v0.9.0.68
+
+### Changed
+- **VDrive is now called TDrive.** Everything in the project uses the new name: the Special IOs in the TR menu ("TDrive KERNAL",
+  "TDrive+SwiftLink", "TDrive+Swift+REU", "TDrive+REU", "TDrive Agent"), the power-on banner (`TDRIVE SD 8 USB 9`, also on the C128's
+  start-up message), "TDrive Config", serial messages, source files (`d64/tdrive*.c`, `firmware/IOH_TDrive*.c`,
+  `firmware/teensyrom-tdrive.patch`) and identifiers (`Fab04_TDrive`, `TDrive_PreStart`, ...). The repository keeps its name
+  (`teensyrom-vdrive`) for now, and the remote-control client in teensyrom-rcp is still `trvdrive` (its protocol has no name in it).
+  Entries below this one were rewritten with the new name; those versions said VDrive.
+- **Files on the card are renamed too; rename yours by hand:** `/.vdrive` (the remembered mount) is now `/.tdrive`,
+  `/vdrive-config.txt` (the Alt button's lists) is now `/tdrive-config.txt`, and `sd:/VDrive/kernal.bin` is now `sd:/TDrive/kernal.bin`.
+  The old names are not read any more.
+- **Rebuild `kernal-tr.bin`**: the banner text changed (new SHA-256 in the README). Version 0.9.0.67 is the experimental
+  `dma-border-isr` build. Host tests and VICE (`make test`); TR+ patch regenerated and checked with `git apply --check`; **not on hardware**.
+
 ## v0.9.0.66
 
 ### Fixed
-- **The Alt button's disk switch no longer crashes the machine.** Since 0.9.0.64 (0.9.0.63 under VDrive Agent) the border flash was
+- **The Alt button's disk switch no longer crashes the machine.** Since 0.9.0.64 (0.9.0.63 under TDrive Agent) the border flash was
   written by DMA, holding the running program for every flash step; on hardware that corrupted the screen and then sent the TeensyROM
   back to its menu, in C64 BASIC, in programs and in C128 BASIC (owner, 0.9.0.65). The flash is the KERNAL IRQ routine's again, as in
-  0.9.0.63 and before (`irq_border`, the BORDER register `$DE18`), the way that worked on hardware since 0.9.0.17. Under VDrive Agent
+  0.9.0.63 and before (`irq_border`, the BORDER register `$DE18`), the way that worked on hardware since 0.9.0.17. Under TDrive Agent
   (the plain-TR vectors, C128 mode) the disk still switches, but the border no longer flashes. **Rebuild `kernal-tr.bin`**: it is
   byte-identical to the 0.9.0.63 image again (SHA-256 in the README). A cause, under the KERNAL handlers, is described in
   `docs/DESIGN.md` section 60 (the bus ISR's safe-freeze logic does not see the cycles the KERNAL snoop takes); it is being tried
@@ -15,8 +30,8 @@
 ## v0.9.0.65
 
 ### Added
-- **The C128's start-up message shows the drives** (128 mode, with a VDrive Special IO as the default): after Exit to C128 BASIC or a
-  128-mode program launch, its last line reads ` ALL RIGHTS RESERVED  VDRIVE SD 8 USB 9`, centered in 40 or 80 columns, with the same
+- **The C128's start-up message shows the drives** (128 mode, with a TDrive Special IO as the default): after Exit to C128 BASIC or a
+  128-mode program launch, its last line reads ` ALL RIGHTS RESERVED  TDRIVE SD 8 USB 9`, centered in 40 or 80 columns, with the same
   `SD10` / `NOSD` / `NOUSB` forms as the C64 banner. The automatic numbers are settled by the bus scan at start-up now instead of on
   the first disk access, so the line shows what the drives keep. Written only over the message itself (40 columns) or with the cursor
   where the message leaves it (80 columns). Host tests (`tests/test_vvec.py`) and VICE `x128` (`make test-agent`, 40 columns); **not on
@@ -25,11 +40,11 @@
 ## v0.9.0.64
 
 ### Changed
-- **The Alt button's border flash is done by DMA under every VDrive handler** (TR+), as it already was under VDrive Agent since
+- **The Alt button's border flash is done by DMA under every TDrive handler** (TR+), as it already was under TDrive Agent since
   0.9.0.63: the Teensy writes `$D020` itself, only when the VIC is mapped in at that moment. The KERNAL no longer takes part: its IRQ
   hook `irq_border` and the BORDER mailbox register are gone (`$DE18` is now unused; the ID registers stay at `$DE19/$DE1A`), so the
   IRQ routine is stock again and `$9C` is left alone; a program that takes the KERNAL IRQ over now gets the flash too. A resident
-  VDrive KERNAL (EPROM, MEGA65) from an earlier revision keeps its drives but no longer flashes. **Rebuild `kernal-tr.bin`** (new
+  TDrive KERNAL (EPROM, MEGA65) from an earlier revision keeps its drives but no longer flashes. **Rebuild `kernal-tr.bin`** (new
   SHA-256 in the README). Host tests (`tests/fw_host`, both handler kinds); **not on hardware**. `docs/DESIGN.md` section 58.
 - **One test program, `VDSUITE`.** The separate programs on `vdtest.d64` are folded into it: SEQTEST, DOSTEST, DOS2TEST, BLKTEST and
   RELTEST were already its image sections; CDTEST's root header and missing-image (62) checks joined setup (`1`), GETRAW's byte-by-byte
@@ -41,7 +56,7 @@
   takes VDSUITE's setup and D64 sections. **Not on hardware** in this form (the checks themselves are the hardware-run ones). `tests/basic/README.md`.
 
 ### Build
-- **The VICE mock polls instead of waiting fixed pauses** (`tools/vdrive_mock.py`): after each typed command it serves the mailbox until
+- **The VICE mock polls instead of waiting fixed pauses** (`tools/tdrive_mock.py`): after each typed command it serves the mailbox until
   the machine waits for keyboard input again (keyboard buffer empty, the screen editor's cursor flag on). Locally the VICE runs went from
   about 26 minutes (the last CI run) to about 13 (`basic` 9 to 5 minutes, the agent runs 2-3 minutes to under one). Resets blank the screen
   first, so an old `READY.` cannot pass for the new one. The dead-handler check was passing on a stale `DEVICE NOT PRESENT`: the mock answered
@@ -55,18 +70,18 @@
 ## v0.9.0.63
 
 ### Added
-- **Exit to C128 BASIC installs the drives** when a VDrive Special IO is the default: it now starts through the C128 boot ROM, like a
+- **Exit to C128 BASIC installs the drives** when a TDrive Special IO is the default: it now starts through the C128 boot ROM, like a
   C128 program, whose loader installs the agent (no `SYS 56852`, no `RUN` typed). Upstream's plain reset is kept otherwise. Upstream's
   boot-ROM test and a one-off run of the loader in its 6502 emulator; **not on hardware**. `docs/DESIGN.md` section 57.
-- **The Alt button switches disks under VDrive Agent** (TR+; on a C64 and on a C128 in 128 mode), as it does under the KERNAL
+- **The Alt button switches disks under TDrive Agent** (TR+; on a C64 and on a C128 in 128 mode), as it does under the KERNAL
   handlers, with the border flash done by DMA (`$D020`) since the agent has no IRQ hook: only when the VIC is really mapped in at
   that moment, never in 80 columns. Host tests (`tests/fw_host`); firmware builds; **not on hardware**. `docs/DESIGN.md` section 57.
 
 ## v0.9.0.62
 
 ### Added
-- **VDrive on a C128 in 128 mode** (BASIC 7.0), through the same agent as the plain TeensyROM's vector build: a C128 BASIC program the
-  TR menu starts in 128 mode (upstream's [PR 96](https://github.com/SensoriumEmbedded/TeensyROM/pull/96)), with any VDrive Special IO as
+- **TDrive on a C128 in 128 mode** (BASIC 7.0), through the same agent as the plain TeensyROM's vector build: a C128 BASIC program the
+  TR menu starts in 128 mode (upstream's [PR 96](https://github.com/SensoriumEmbedded/TeensyROM/pull/96)), with any TDrive Special IO as
   the default, gets the agent instead (a cartridge cannot replace the C128's own KERNAL in 128 mode), after the drive's start-up
   (SD/USB, the auto-mount from the image it came from, the remembered mounts); the boot ROM's loader installs it before RUN. After
   Exit to C128 BASIC, or after a reset, `SYS 56852` installs it. The engine tells the C128's KERNAL from a C64's by itself and switches
@@ -82,7 +97,7 @@
   new name is still 63, as on a 1541; both checked against a true-drive 1541 in VICE). Unit tests.
 
 ### Changed
-- A 128-mode launch with a VDrive KERNAL Special IO as the default runs the agent: the KERNAL handlers' bus hook never reaches the
+- A 128-mode launch with a TDrive KERNAL Special IO as the default runs the agent: the KERNAL handlers' bus hook never reaches the
   C128's ROM. The patch hooks upstream's `C128Prg.ino` and `C128PrgBoot.asm` ([PR 96](https://github.com/SensoriumEmbedded/TeensyROM/pull/96)),
   both in the fork's `7b3c3294`; that base does not have upstream's [PR 98](https://github.com/SensoriumEmbedded/TeensyROM/pull/98)
   (plain Kernal Replace dropped for a 128-mode launch) yet, which only matters with plain Kernal Replace as the default.
@@ -94,7 +109,7 @@
 
 ### Changed
 - **The D64/D71/D81 engine is now TeensyROM's shared one** (`Source/Teensy/DiskImage`, which GEOS, the TR block device and the menu's
-  image browser also use): the patch no longer carries its own `vdrive/d64.c` and `d64.h`. The glue includes `DiskImage/DiskImage.h`, and
+  image browser also use): the patch no longer carries its own `tdrive/d64.c` and `d64.h`. The glue includes `DiskImage/DiskImage.h`, and
   the patch now applies on the fork's `kernalreplace-fixes` branch (`7b3c3294`, which already holds `kernalreplace-fixes.patch`), not on
   upstream `main`; `firmware/UPSTREAM` names that commit and the fork, and `tools/build_firmware.sh` fetches from it.
   `d64/d64.c`, `d64.h` and `DiskImage.h` here are byte-identical copies for the host tests; `tools/make_tr_patch.sh` refuses a tree whose
@@ -104,7 +119,7 @@
 - **Image writes reach the card the way the TR block device's do** (`DiskImage/WriteBack.h`, shared with it): a mounted image is now an
   SdFat `FsFile` on the unit's volume (`SD.sdfs`, the USB stick's `mscfs`) instead of an SD.h `File`, whose `flush()` dropped whether the
   sync worked. A sync the card fails now leaves the image dirty and is tried again after the next idle quarter second (it used to be
-  counted as done); the serial console says `VDrive n: writes are not reaching the card; retrying` once, and `last writes did not reach
+  counted as done); the serial console says `TDrive n: writes are not reaching the card; retrying` once, and `last writes did not reach
   the card` when an unmount's close fails. Unmount, and a new launch, close the image (which syncs) instead of leaving it open until the
   next mount. Host test (`tests/fw_host`: a failing card, the retry, the recovery).
   Unit tests, `tests/fw_host` (both DMA builds) and the TR+ firmware build; **not on hardware**. `docs/DESIGN.md` section 55.
@@ -113,7 +128,7 @@
 
 ### Fixed
 - **A program launched from inside a `.d64`/`.d71`/`.d81` in the TR menu got the remembered image mounted instead of that one** under
-  VDrive+REU and VDrive+Swift+REU (0.9.0.55-0.9.0.59; the other VDrive Special IOs were not affected). 0.9.0.55 frees the menu's
+  TDrive+REU and TDrive+Swift+REU (0.9.0.55-0.9.0.59; the other TDrive Special IOs were not affected). 0.9.0.55 frees the menu's
   directory listing before the drive starts, and upstream's free also resets the menu source and the image path the auto-mount reads.
   The drive now notes both first. Host test (`tests/fw_host`); firmware builds; works on hardware (owner, 2026-11-10, C128 in C64 mode, on the build then numbered 0.9.0.58,
   i.e. without 0.9.0.57's DMA SAVE/VERIFY and 0.9.0.58's agent:
@@ -133,25 +148,25 @@
   Ethernet stack polled from `loop()` while a replaced KERNAL is served). `firmware/kernal-fnet-poll.patch` is gone; the firmware now
   has #85 as merged, with its review fixes: the PIT is unmasked for SwiftLink browser commands as well as AT commands, `ReadC64Mem`
   replies and file sends poll the stack while the socket is full instead of spinning, and the poll is held from the KERNAL's PreStart
-  until the menu returns whatever the Special IO (so the VDrive Special IOs need no entry of their own; VDrive+SwiftLink keeps the PIT
-  unmask through `Fab04_VDrive`). Also from upstream since `6518b966`: the Special IO "REU+USB Mouse/Disk" for GEOS, the C64 banner row
+  until the menu returns whatever the Special IO (so the TDrive Special IOs need no entry of their own; TDrive+SwiftLink keeps the PIT
+  unmask through `Fab04_TDrive`). Also from upstream since `6518b966`: the Special IO "REU+USB Mouse/Disk" for GEOS, the C64 banner row
   composed on the Teensy, the C128 2 MHz bus test. Firmware builds; fw_host and upstream's `npm test` pass on the patched tree. On hardware, as a build numbered 0.9.0.57 before this
-  branch was renumbered (without 0.9.0.57's DMA SAVE/VERIFY and 0.9.0.58's agent) (owner, C128 in C64 mode, VDrive+Swift+REU):
+  branch was renumbered (without 0.9.0.57's DMA SAVE/VERIFY and 0.9.0.58's agent) (owner, C128 in C64 mode, TDrive+Swift+REU):
   `BUSTEST` clean in 4 runs with Ethernet on and `trls` traffic over TCP; with USB serial traffic a few late answers (the known USB core issue).
-  Also on hardware (owner, 2026-11-10, NTSC C128 in C64 mode, the same build with `-DMA`): TR menu and banner, VDrive launches from F2 and the SD browser,
+  Also on hardware (owner, 2026-11-10, NTSC C128 in C64 mode, the same build with `-DMA`): TR menu and banner, TDrive launches from F2 and the SD browser,
   clean directory listings, `VDSUITE` "run all" on SD and USB (the first full suite with DMA LOAD). Not yet on a C64.
 
 ## v0.9.0.58
 
 ### Added
-- **VDrive on the plain TeensyROM (no TR+), through the KERNAL's RAM vectors** (branch `plain-tr-vectors`): the C64 keeps its own
+- **TDrive on the plain TeensyROM (no TR+), through the KERNAL's RAM vectors** (branch `plain-tr-vectors`): the C64 keeps its own
   KERNAL (tape keeps working), its vectors point into a 246-byte 6502 agent served from IO1 `$DE08`, and the drive logic runs on the
-  Teensy (`d64/vdrive_vec.c`). The Special IO is "VDrive" on the plain TR and "VDrive Agent" on the TR+; the TR menu's PRG loader
+  Teensy (`d64/tdrive_vec.c`). The Special IO is "TDrive" on the plain TR and "TDrive Agent" on the TR+; the TR menu's PRG loader
   installs the agent at launch (`SYS56852` installs it by hand). Host tests and VICE (GeoRAM stands in for the served page);
   **nothing on hardware yet**, the menu loader change is not run anywhere. `docs/DESIGN.md` sections 52-54.
 
 ### Changed
-- On the TR+ the new "VDrive Agent" entry sits before Kernal Replace in the Special IO list: a stored default of Kernal Replace or
+- On the TR+ the new "TDrive Agent" entry sits before Kernal Replace in the Special IO list: a stored default of Kernal Replace or
   Debug now selects the entry below it; pick it again.
 
 ## v0.9.0.57
@@ -162,47 +177,47 @@
   mailbox round trip per byte, and `?VERIFY ERROR` comes out as before. Only `$0200-$CFFF` is read by DMA: a SAVE goes on through the window
   above `$D000`, and a VERIFY of a file that reaches outside that range uses the stock byte path. A firmware without DMA (or an older one)
   gets window SAVEs and the stock VERIFY from the same KERNAL. `docs/DESIGN.md` section 51; host, glue and VICE tests; **not on hardware**
-  (DMA reads of a running machine are new: see the remote-read note in `CLAUDE.md`). **Rebuild `kernal-tr.bin`** for `/VDrive/kernal.bin`
+  (DMA reads of a running machine are new: see the remote-read note in `CLAUDE.md`). **Rebuild `kernal-tr.bin`** for `/TDrive/kernal.bin`
   (new SHA-256 in the README); `kernal-tr-nodma.bin` is unchanged.
 
 ## v0.9.0.56
 
 ### Fixed
-- **Programs launched from the TR menu with a VDrive Special IO ran on the C64's own KERNAL** (0.9.0.54 and 0.9.0.55): freeing the
+- **Programs launched from the TR menu with a TDrive Special IO ran on the C64's own KERNAL** (0.9.0.54 and 0.9.0.55): freeing the
   KERNAL's 8 KB heap copy (0.9.0.54) also made the hand-over after the program transfer skip re-hooking the replacement KERNAL, so
-  VDrive Config hung after switching to lower case and other programs had no virtual drives. Works on hardware (owner: VDrive Config
+  TDrive Config hung after switching to lower case and other programs had no virtual drives. Works on hardware (owner: TDrive Config
   launches from the TR menu again). `docs/DESIGN.md` section 50.
 
 ## v0.9.0.55
 
 ### Fixed
-- **VDrive+REU one bank short when launched from the SD/USB browser** (512 KB from F2, 256 KB from the browser): the menu's 64 KB
+- **TDrive+REU one bank short when launched from the SD/USB browser** (512 KB from F2, 256 KB from the browser): the menu's 64 KB
   directory listing was freed only after the drive had opened its files above it, leaving a hole the REU's banks could not use.
-  It is now freed first. Works on hardware (owner: VDrive+REU 512 KB with `REUTEST` launched from the SD browser). `docs/DESIGN.md` section 50.
+  It is now freed first. Works on hardware (owner: TDrive+REU 512 KB with `REUTEST` launched from the SD browser). `docs/DESIGN.md` section 50.
   **Broke the auto-mount** of the image a program is launched from under the two REU Special IOs (fixed in 0.9.0.60).
 
 ## v0.9.0.54
 
 ### Fixed
-- **VDrive+REU still 256 KB after 0.9.0.53** (62 banks): VDrive now frees the 8 KB heap copy of the KERNAL that Kernal Replace's
-  start-up keeps (VDrive serves from its DTCM copy), and the VDrive+REU / VDrive+Swift+REU inits print the free RAM2 before the REU
+- **TDrive+REU still 256 KB after 0.9.0.53** (62 banks): TDrive now frees the 8 KB heap copy of the KERNAL that Kernal Replace's
+  start-up keeps (TDrive serves from its DTCM copy), and the TDrive+REU / TDrive+Swift+REU inits print the free RAM2 before the REU
   allocates. On hardware (owner): 512 KB from F2, still 256 KB from the SD browser (fixed in 0.9.0.55). **Broke menu launches with a
-  VDrive Special IO** (fixed in 0.9.0.56). `docs/DESIGN.md` section 50.
+  TDrive Special IO** (fixed in 0.9.0.56). `docs/DESIGN.md` section 50.
 
 ## v0.9.0.53
 
 ### Fixed
 - **REUs back to full size**: the drive's buffers (~9.4 KB: the drive state, the DMA LOAD buffer, the Alt-button list, the alias
   hashes) sat in RAM2 as `DMAMEM` statics, which shrink the heap the REU takes its 8 KB banks from. The REU got 63 banks and rounded
-  down to 32, so the plain "512KB REU" and VDrive+REU gave 256 KB (stock: 512 KB). They are now in RAM1 (DTCM). On hardware (owner):
-  the plain "512KB REU" 512 KB again; VDrive+REU still 256 KB (fixed in 0.9.0.54/0.9.0.55). `docs/DESIGN.md` section 50.
+  down to 32, so the plain "512KB REU" and TDrive+REU gave 256 KB (stock: 512 KB). They are now in RAM1 (DTCM). On hardware (owner):
+  the plain "512KB REU" 512 KB again; TDrive+REU still 256 KB (fixed in 0.9.0.54/0.9.0.55). `docs/DESIGN.md` section 50.
 
 ### Added
 - `REUTEST` on the test disk (`tests/asm/reutest.s`): the REU's real size by bank wrap, then a check of every byte.
 
 ### Build
 - **Releases carry firmware**: publishing a GitHub release builds three hex files in CI (`tools/build_firmware.sh`, on the upstream commit
-  in `firmware/UPSTREAM`) and attaches them: `TeensyROM_<ver>_full.hex` (plain TR, no VDrive yet), `TeensyROM+_<ver>_full.hex` (without
+  in `firmware/UPSTREAM`) and attaches them: `TeensyROM_<ver>_full.hex` (plain TR, no TDrive yet), `TeensyROM+_<ver>_full.hex` (without
   DMA LOAD) and `TeensyROM+_<ver>-DMA_full.hex` (with DMA LOAD; the menu shows `<ver>-DMA`).
 
 ## v0.9.0.52
@@ -214,7 +229,7 @@
   DEVICE NOT PRESENT. `VERIFY` and `SAVE` are unchanged. `docs/DESIGN.md` section 49; host, glue and VICE tests; timed on hardware,
   the other hardware checks (loads under ROM and across I/O, VDSUITE, SwiftLink) not done yet.
   **Rebuild `kernal-tr.bin`**: an older firmware fails every LOAD with this KERNAL.
-- Build switches: the firmware's DMA LOAD is compiled in only with `Fab04_VDriveDMALoad`, and the KERNAL's request only with
+- Build switches: the firmware's DMA LOAD is compiled in only with `Fab04_TDriveDMALoad`, and the KERNAL's request only with
   `VD_DMA_LOAD` (on by default). `VD_DMA_LOAD=0 tools/make_tr_patch.sh <tree>` writes a patch without either (for upstream
   TeensyROM pull requests); `make build/kernal-tr-nodma.bin` builds the matching KERNAL, byte for byte the 0.9.0.51 loop.
 
@@ -222,7 +237,7 @@
 
 ### Fixed
 - Remote commands that receive a payload (`WriteC64Mem` and the like) keep the Ethernet stack polled while they wait for its bytes.
-  With the timer interrupt masked while a Kernal Replace or VDrive handler runs, a wait could not receive the rest of a payload.
+  With the timer interrupt masked while a Kernal Replace or TDrive handler runs, a wait could not receive the rest of a payload.
   Also part of upstream TeensyROM PR 85. Not shown to fix anything seen: the `DMATEST` time-outs it was meant for turned out to be
   WiFi loss on the host's path (`docs/DESIGN.md` section 48).
 
@@ -233,15 +248,15 @@
 ## v0.9.0.50
 
 ### Changed
-- **VDrive Config's browser reads folder listings in 128-byte blocks**, the way the KERNAL's fast `LOAD` does (`FLOAD_OPEN` /
+- **TDrive Config's browser reads folder listings in 128-byte blocks**, the way the KERNAL's fast `LOAD` does (`FLOAD_OPEN` /
   `FLOAD_BLK` through the IO2 window), instead of one mailbox round trip per byte. Folders with many files open much faster (reported
   slow on a MEGA65 with a full card). Falls back to `OPEN` + `CHRIN` when the block commands are not answered. `docs/DESIGN.md`
-  section 47; py65 tests; not on hardware. Firmware only (VDrive Config is in the TR menu); `kernal-tr.bin` is unchanged.
+  section 47; py65 tests; not on hardware. Firmware only (TDrive Config is in the TR menu); `kernal-tr.bin` is unchanged.
 
 ## v0.9.0.49
 
 ### Added
-- **The banner's drive numbers with a VDrive KERNAL in the machine itself** (EPROM, MEGA65 core): `VDRIVE SD 8 USB 9` instead of the
+- **The banner's drive numbers with a TDrive KERNAL in the machine itself** (EPROM, MEGA65 core): `TDRIVE SD 8 USB 9` instead of the
   stock line. The menu prints the banner itself before the program loads, while its own handler answers IO1, so the firmware leaves
   the same two unit bytes it writes into a served image in four unused menu registers (`$DE3C-$DE3F`: tag `$D6 $64`, SD, USB), and
   clears them for a launch with another Special IO. `docs/DESIGN.md` section 46; py65 and host tests; not on hardware.
@@ -253,15 +268,15 @@
 ## v0.9.0.48
 
 ### Added
-- **A VDrive KERNAL in the machine itself**: an EPROM in the KERNAL socket, or a MEGA65 C64 core with `kernal-tr.bin` as its KERNAL,
+- **A TDrive KERNAL in the machine itself**: an EPROM in the KERNAL socket, or a MEGA65 C64 core with `kernal-tr.bin` as its KERNAL,
   works with the regular firmware; no separate build. The firmware sees that the C64's own KERNAL is already this build's, serves
-  nothing and answers the drives; a resident VDrive KERNAL of another revision gets its drives too, but no bus probe in the menu.
+  nothing and answers the drives; a resident TDrive KERNAL of another revision gets its drives too, but no bus probe in the menu.
   `docs/DESIGN.md` section 45; py65, host and VICE tests; works on a MEGA65 (Boris Schneider-Johne); not on an EPROM yet.
 
 ### Changed
-- The KERNAL touches the mailbox only while a VDrive Special IO answers (`$DE19` reads `$D6`). Without one (no TR, another Special
+- The KERNAL touches the mailbox only while a TDrive Special IO answers (`$DE19` reads `$D6`). Without one (no TR, another Special
   IO, the TR menu's own handler) serial calls go to the real bus at once, instead of waiting a ~1 s time-out per call, and no longer
-  write the IO1 registers at `$DE11`/`$DE15`, which under the TR menu are stored settings. **Rebuild `kernal-tr.bin`** for `/VDrive/kernal.bin`.
+  write the IO1 registers at `$DE11`/`$DE15`, which under the TR menu are stored settings. **Rebuild `kernal-tr.bin`** for `/TDrive/kernal.bin`.
 - With an unknown KERNAL (or a failed DMA read) the menu no longer runs its bus probe before the launch; it had nothing to give then.
 
 ## v0.9.0.47
@@ -273,14 +288,14 @@
   glue tests; works on a real C64.
 
 ### Changed
-- `trvdrive` get and the `/.vdrive` sidecar keep the case of an image path as it was given (`/GAME.D64`, was `/game.d64`).
+- `trvdrive` get and the `/.tdrive` sidecar keep the case of an image path as it was given (`/GAME.D64`, was `/game.d64`).
 
 ## v0.9.0.46
 
 ### Added
-- **Drive activity LED**: the TR+'s LED blinks (75 ms phases) while a VDrive unit services requests and gets its previous state back
+- **Drive activity LED**: the TR+'s LED blinks (75 ms phases) while a TDrive unit services requests and gets its previous state back
   180 ms after the last one; commands handed back to a real drive on the bus do not count. Contributed by ziggystar12, the creator of
-  Mean Hamster Engine, from his own VDrive build. Host tests (`tests/fw_host`); builds; works on a real C64 (`docs/DESIGN.md` section 43).
+  Mean Hamster Engine, from his own TDrive build. Host tests (`tests/fw_host`); builds; works on a real C64 (`docs/DESIGN.md` section 43).
 
 Firmware only: `kernal-tr.bin` is unchanged.
 
@@ -297,11 +312,11 @@ Firmware only: `kernal-tr.bin` is unchanged.
 ## v0.9.0.44
 
 ### Changed
-- **SHIFT+RUN/STOP loads from disk**: it types `LOAD"*",8,1` and `RUN` (stock: `LOAD` and `RUN`, from the tape, whose code the VDrive
+- **SHIFT+RUN/STOP loads from disk**: it types `LOAD"*",8,1` and `RUN` (stock: `LOAD` and `RUN`, from the tape, whose code the TDrive
   KERNAL reclaimed), so it starts the first file on the disk in device 8, loaded to the address in its file. The line shows on the screen
   as if typed. VICE on the five KERNAL ROMs the firmware patches; works on a real C64 (`docs/DESIGN.md` section 42).
 
-Firmware 0.9.0.44 (the KERNAL patch it lays over the C64's ROM) **or** a rebuilt `kernal-tr.bin` for `/VDrive/kernal.bin`.
+Firmware 0.9.0.44 (the KERNAL patch it lays over the C64's ROM) **or** a rebuilt `kernal-tr.bin` for `/TDrive/kernal.bin`.
 
 ## v0.9.0.43
 
@@ -313,19 +328,19 @@ Firmware 0.9.0.44 (the KERNAL patch it lays over the C64's ROM) **or** a rebuilt
   Host tests (py65 against the drive code) and VICE with a true-drive 1541; not on hardware (`docs/DESIGN.md` section 40).
 
 ### Changed
-- `VDCOPY` takes the TeensyROM menu's colours (as VDrive Config does), starts with a menu (`F` files, `D` disk, `Q` quit; RETURN at the
+- `VDCOPY` takes the TeensyROM menu's colours (as TDrive Config does), starts with a menu (`F` files, `D` disk, `Q` quit; RETURN at the
   file selection goes back to it) and keeps its tables at `$2800-$3FFF`.
-- **No KERNAL file to build or select any more.** The VDrive Special IOs no longer use the `<Shift-K>` KERNAL setting (it stays the plain
+- **No KERNAL file to build or select any more.** The TDrive Special IOs no longer use the `<Shift-K>` KERNAL setting (it stays the plain
   "Kernal Replace" Special IO's). At each launch the firmware reads the C64's own KERNAL ROM by DMA and patches it in memory, when it is one
   the patch has been tested on: 901227-03, 901227-02, 251104-04 (SX-64), 325179-01 and 325182-01 (a C128's C64 mode). A
-  `/VDrive/kernal.bin` on the SD card (a `kernal-tr.bin` built on a PC, for any other ROM) is used instead whenever it exists. With an unknown
+  `/TDrive/kernal.bin` on the SD card (a `kernal-tr.bin` built on a PC, for any other ROM) is used instead whenever it exists. With an unknown
   ROM and no such file the drives stay off (the serial console says why). `docs/DESIGN.md` section 40.
-- **`SYS64738` returns to the TR menu** while a VDrive Special IO runs (so does any program that jumps to the RESET vector), writing back what
+- **`SYS64738` returns to the TR menu** while a TDrive Special IO runs (so does any program that jumps to the RESET vector), writing back what
   is not saved yet. Two new read-only mailbox registers, `$DE19/$DE1A` (`$D6 $64`), let the KERNAL tell this from the reset of a launch.
   Tape transfers with PLAY pressed now restart the machine instead of crashing (their code space holds the new routine).
 
 Host tests (py65, firmware glue against the 901227-03 ROM), VICE (`basic`, and the five ROMs with `make test-variants`); works on a real C64 (`SYS64738` on a C128 not checked).
-Firmware 0.9.0.43 **and a new KERNAL**: built in by the firmware, or rebuild `kernal-tr.bin` for `/VDrive/kernal.bin`.
+Firmware 0.9.0.43 **and a new KERNAL**: built in by the firmware, or rebuild `kernal-tr.bin` for `/TDrive/kernal.bin`.
 
 ## v0.9.0.42
 
@@ -340,16 +355,16 @@ Firmware 0.9.0.43 **and a new KERNAL**: built in by the firmware, or rebuild `ke
 ### Changed
 - The Ethernet loop poll (Kernal Replace with Ethernet initialized: `fnet_poll()` from `loop()` instead of the 1 ms PIT interrupt) is now
   carried as upstream [TeensyROM PR 85](https://github.com/SensoriumEmbedded/TeensyROM/pull/85), byte for byte (`firmware/kernal-fnet-poll.patch`,
-  applied first by `tools/make_tr_patch.sh`); `kernalreplace-fixes.patch` keeps only `KernalFast` and the `LATE_ISR_TRACE` debug trace. The VDrive
-  Special IOs join the poll list, and the AT-command PIT unmask also builds under `Fab04_VDrive`. Plain SwiftLink on the stock KERNAL no
+  applied first by `tools/make_tr_patch.sh`); `kernalreplace-fixes.patch` keeps only `KernalFast` and the `LATE_ISR_TRACE` debug trace. The TDrive
+  Special IOs join the poll list, and the AT-command PIT unmask also builds under `Fab04_TDrive`. Plain SwiftLink on the stock KERNAL no
   longer switches to the loop poll, as in the PR (it was never measured). Firmware builds for TR+ and TR; not on hardware.
 
 ## v0.9.0.40
 
 ### Changed
-- `VDrive Config` takes the TR menu's colour theme and look: a reverse banner, keys in reverse in the option colour with their meaning in
+- `TDrive Config` takes the TR menu's colour theme and look: a reverse banner, keys in reverse in the option colour with their meaning in
   the sources colour, paths in the name colour, messages in the time colour. The colours come as a third `!STATE` line (the seven colour
-  references as hex digits, which the Teensy keeps after handing over to the VDrive handler); without it, the menu's defaults. Host tests
+  references as hex digits, which the Teensy keeps after handing over to the TDrive handler); without it, the menu's defaults. Host tests
   (py65, firmware glue); not on hardware.
 
 ## v0.9.0.39
@@ -363,9 +378,9 @@ Firmware 0.9.0.43 **and a new KERNAL**: built in by the firmware, or rebuild `ke
 ## v0.9.0.38
 
 ### Changed
-- The VDrive menu remap in `IOHandlers.ino` is now a macro defined before `IOHandlerSelectInit()` instead of a case inserted above
+- The TDrive menu remap in `IOHandlers.ino` is now a macro defined before `IOHandlerSelectInit()` instead of a case inserted above
   upstream's menu case, so the patch also applies on top of TeensyROM PR 81 (which rewrites that line and adds a GEOS case first);
-  the VDrive+SwiftLink remap leaves GEOS's handlers alone. No change in behaviour. Not on hardware.
+  the TDrive+SwiftLink remap leaves GEOS's handlers alone. No change in behaviour. Not on hardware.
 
 ## v0.9.0.37
 
@@ -373,15 +388,15 @@ Firmware 0.9.0.43 **and a new KERNAL**: built in by the firmware, or rebuild `ke
 - Rebased on upstream TeensyROM `fa509421`, which includes [PR 78](https://github.com/SensoriumEmbedded/TeensyROM/pull/78): Kernal Replace
   senses HIRAM by DMA on a C128, and its early return when HIRAM is known to be RAM replaces the hunk `kernalreplace-fixes.patch` carried.
   After the menu's bus probe the DMA sense state is reset when `KernalCheck` is hooked back in. The patch applies on upstream main and on
-  open PRs 79, 82 and 83. VDrive has not been run on a C128. This build and the next four corrupted directory listings on a C64
+  open PRs 79, 82 and 83. TDrive has not been run on a C128. This build and the next four corrupted directory listings on a C64
   (late bus answers; fixed in 0.9.0.42).
 
 ## v0.9.0.36
 
 ### Changed
 - The power-on banner shows the virtual drives' device numbers on the second line, as wide as the stock one:
-  `64K RAM  38911 FREE  VDRIVE SD 8 USB 9` (`SD10 USB11`, `NOSD` / `NOUSB` for a missing card or stick; the stock line without the VDrive firmware). The top line is the stock `COMMODORE 64 BASIC V2` again (the
-  `TRVDRIVE` bring-up text moved to `bringup/banner.s`, still built as `kernal-banner.bin`). The firmware writes each unit's number (fixed, or what the menu's
+  `64K RAM  38911 FREE  TDRIVE SD 8 USB 9` (`SD10 USB11`, `NOSD` / `NOUSB` for a missing card or stick; the stock line without the TDrive firmware). The top line is the stock `COMMODORE 64 BASIC V2` again (the
+  `TRTDRIVE` bring-up text moved to `bringup/banner.s`, still built as `kernal-banner.bin`). The firmware writes each unit's number (fixed, or what the menu's
   bus probe gave), or "absent", into the KERNAL copy it serves before the C64 starts; a KERNAL launched without the menu probe probes
   the real bus itself at power-on for automatic units, as the first disk access will (`docs/DESIGN.md` section 38). Firmware 0.9.0.36 and **a rebuilt `kernal-tr.bin`** (either
   alone works, without the numbers). Host tests (py65 with a fake bus, firmware glue) and VICE with true-drive 1541s; not on hardware.
@@ -403,26 +418,26 @@ Works on hardware (owner, 2026-10-30).
 
 ### Added
 - **Device numbers settled before the program starts.** The TR menu now probes the serial bus itself before every launch with a
-  VDrive Special IO (any PRG start: menu, remote launch, hot keys, auto-launch, "Exit to BASIC"), with the C64's own KERNAL, so
+  TDrive Special IO (any PRG start: menu, remote launch, hot keys, auto-launch, "Exit to BASIC"), with the C64's own KERNAL, so
   `PEEK(56854)` / `PEEK(56855)` (`$DE16/$DE17`) give the SD / USB numbers from the program's first instruction. Programs no longer need
   a bus access of their own first. The firmware holds the replacement KERNAL back during the probe; the KERNAL's own scan on the first
   disk access stays as the fallback (`docs/DESIGN.md` section 37). Both numbers fixed with `U0>`, or no card and no stick: no probe.
-  The patch now changes the menu too (`MainMenu.asm`, routine in `firmware/vdrive_probe.asm`, `TeensyROMC64.h` rebuilt by
+  The patch now changes the menu too (`MainMenu.asm`, routine in `firmware/tdrive_probe.asm`, `TeensyROMC64.h` rebuilt by
   `tools/make_tr_patch.sh` with the TR's own tool, so regenerating the patch needs ACME 0.97 and node).
 - **Back to the TR menu from a program:** mailbox command 16 (`POKE 56848,16`) writes back what is unsaved and resets into the TR
-  menu, as the menu button does. VDrive Config's `Q` uses it ("Exit to Menu"); without an answer it returns to BASIC as before.
-- `VDrive Config` is in the TR menu's Utilities (Teensy memory), run with the user's default VDrive Special IO (its REU / SwiftLink
+  menu, as the menu button does. TDrive Config's `Q` uses it ("Exit to Menu"); without an answer it returns to BASIC as before.
+- `TDrive Config` is in the TR menu's Utilities (Teensy memory), run with the user's default TDrive Special IO (its REU / SwiftLink
   kept).
 
 ### Changed
-- `VDrive Config.prg` is now machine code (`util/vdconfig.s`, assembled by `make util`; no petcat needed) instead of BASIC: the same
+- `TDrive Config.prg` is now machine code (`util/vdconfig.s`, assembled by `make util`; no petcat needed) instead of BASIC: the same
   screen and keys, but reading the list, the directory listings of the browser and every redraw no longer crawl through BASIC string
   handling. The screen is in the lower-case character set: paths show as they are on the card, messages in mixed case. The list
   header and the start-up message say which Alt-button gesture switches that list (1 tap SD, 2 taps USB). It reads the device numbers
   the menu's probe left (before this firmware it made one bus access first).
 
 Tests: unit and firmware glue host tests; `tests/test_vdconfig.py` runs the real PRG in py65; the menu's probe routine runs in VICE
-with true-drive 1541s (`make test-menuprobe`, needs ACME). Not on a C64 yet: the probe through the real menu and Teensy, VDrive Config
+with true-drive 1541s (`make test-menuprobe`, needs ACME). Not on a C64 yet: the probe through the real menu and Teensy, TDrive Config
 on screen, the return to the menu.
 
 ## v0.9.0.34
@@ -461,12 +476,12 @@ on screen, the return to the menu.
 ## v0.9.0.31
 
 ### Added
-- Special IO **VDrive+REU**: the virtual drive and the full **512 KB** REU together (VDrive+Swift+REU only has room for 128 KB;
-  `docs/DESIGN.md` section 34). With any VDrive Special IO as the default, menu programs paired with the REU now start with it
-  instead of the plain REU (or the 128 KB one of VDrive+Swift+REU), so they keep the drive. Host tests and firmware build; not on hardware.
+- Special IO **TDrive+REU**: the virtual drive and the full **512 KB** REU together (TDrive+Swift+REU only has room for 128 KB;
+  `docs/DESIGN.md` section 34). With any TDrive Special IO as the default, menu programs paired with the REU now start with it
+  instead of the plain REU (or the 128 KB one of TDrive+Swift+REU), so they keep the drive. Host tests and firmware build; not on hardware.
 
 ### Changed
-- The Special IO list is VDrive, VDrive+SwiftLink, VDrive+Swift+REU, VDrive+REU, Kernal Replace, Debug:
+- The Special IO list is TDrive, TDrive+SwiftLink, TDrive+Swift+REU, TDrive+REU, Kernal Replace, Debug:
   **if your stored default Special IO was Kernal Replace, choose it again in Settings.**
 
 ## v0.9.0.30
@@ -475,7 +490,7 @@ on screen, the return to the menu.
 - The TeensyROM patch is rebased onto upstream `5728ddc9` (196 commits, mostly GEOS: GeoRAM Special IO, RAM bank refactor,
   USB mouse, TR block I/O). Only a context line moved in `firmware/kernalreplace-fixes.patch` (`DMAWaitAssertReady` in `ISRs.c`);
   the patch still applies with the open upstream PRs (#60, #62, #63) merged. GeoRAM sits after Debug in the Special IO list, so
-  stored VDrive defaults keep their index. Firmware build only; not run on hardware.
+  stored TDrive defaults keep their index. Firmware build only; not run on hardware.
 
 ## v0.9.0.29
 
@@ -488,8 +503,8 @@ on screen, the return to the menu.
 
 ### Changed
 - The TeensyROM patch is rebased onto upstream `57a9d76` and placed so it also applies with the open upstream PRs merged
-  (#39, #61-#70). The Special IO list order is now VDrive, VDrive+SwiftLink, VDrive+Swift+REU, Kernal Replace, Debug:
-  **if your stored default Special IO was Kernal Replace, it now selects a VDrive entry; choose it again in Settings.**
+  (#39, #61-#70). The Special IO list order is now TDrive, TDrive+SwiftLink, TDrive+Swift+REU, Kernal Replace, Debug:
+  **if your stored default Special IO was Kernal Replace, it now selects a TDrive entry; choose it again in Settings.**
   Firmware build only; not run on hardware.
 
 ## v0.9.0.28
@@ -497,7 +512,7 @@ on screen, the return to the menu.
 ### Added
 - Direct sector access (firmware 0.9.0.16, `docs/DESIGN.md` section 21): `OPEN n,d,n,"#"` buffer channels, `U1`/`UA` and `U2`/`UB`
   (`B-R`/`B-W` as aliases), `B-P`, `B-A` / `B-F`; D64, D71 and D81. Unit tests and `BLKTEST` in VICE; not on hardware.
-- "VDrive+Swift+REU" Special IO: the virtual drive, SwiftLink and a 128 KB REU at the same time (firmware 0.9.0.28, `docs/DESIGN.md` section 32). With it as the default Special IO, menu programs paired with SwiftLink or the REU get it. Host tests, VICE, a firmware build, and works on a real C64.
+- "TDrive+Swift+REU" Special IO: the virtual drive, SwiftLink and a 128 KB REU at the same time (firmware 0.9.0.28, `docs/DESIGN.md` section 32). With it as the default Special IO, menu programs paired with SwiftLink or the REU get it. Host tests, VICE, a firmware build, and works on a real C64.
 
 - `MD:NAME` / `RD:NAME` make and remove (empty) folders on the card when nothing is mounted (CMD syntax; firmware 0.9.0.26, `docs/DESIGN.md` section 31). With an image mounted they answer 31 (no D81 partitions). Unit and glue host tests, not on hardware.
 - Plain files on the card: with nothing mounted, `LOAD"GAME.PRG",8` (also `"GAME"`, `"GA*"`, `"DIR/GAME.PRG"`) loads the file itself; reading only (firmware 0.9.0.25, `docs/DESIGN.md` section 30). Unit and glue host tests, not on hardware.
@@ -507,20 +522,20 @@ on screen, the return to the menu.
 - Append mode: `OPEN n,d,n,"NAME,A"` (or `"NAME,S,A"`) adds to the end of an existing file; a disk full puts the file back as it was (firmware 0.9.0.21, `docs/DESIGN.md` section 26). Unit tests only, not in VICE or on hardware.
 - REL (relative) files: `OPEN n,d,n,"NAME,L,"+CHR$(len)`, `P` positioning, one record per `PRINT#`, reads up to the last non-zero byte; D64/D71 up to 720 blocks, D81 with super side sectors; `C` and `S` handle them (firmware 0.9.0.20, `docs/DESIGN.md` section 25). Unit tests only, not in VICE or on hardware.
 - `C:new=old[,old2...]` copies a file on the mounted image, or joins up to 8 files into one (firmware 0.9.0.19, `docs/DESIGN.md` section 24). A failed copy leaves the disk unchanged. Unit tests only, not in VICE or on hardware.
-- `VDrive Config.prg` (`util/vdconfig.bas`, built by `make util`; firmware 0.9.0.18, `docs/DESIGN.md` section 23): a text-screen BASIC utility to
-  add / edit / delete / reorder the entries of `/vdrive-config.txt` for the SD and USB drives, show what each drive has mounted, and mount
+- `TDrive Config.prg` (`util/vdconfig.bas`, built by `make util`; firmware 0.9.0.18, `docs/DESIGN.md` section 23): a text-screen BASIC utility to
+  add / edit / delete / reorder the entries of `/tdrive-config.txt` for the SD and USB drives, show what each drive has mounted, and mount
   any image (from the list, or by browsing the card). New channel names `"!CONFIG"` (read, `,W` write) and `"!STATE"` give a C64 program the
   list file and the mounted image path (`vd_host_t` hooks `hf_*`). Tested in a small BASIC interpreter model on the host
   (`tests/test_vdconfig.py`), not on a C64 yet.
 - Alt-button disk switching (firmware 0.9.0.17, `docs/DESIGN.md` section 22). With the TR's Alt button setting on "None", one tap
-  mounts the next image listed in `/vdrive-config.txt` on the SD card, two taps within 1 s the next one from the same file on
+  mounts the next image listed in `/tdrive-config.txt` on the SD card, two taps within 1 s the next one from the same file on
   the USB stick (`/path/IMAGE.D64, colour, flashes` per line; missing images are skipped, nothing mounted = first entry), and
   the border flashes the entry's colour that many times (250 ms on, 750 ms off); a missing card or stick, a missing or empty
-  list or nothing usable flashes red for 2 s. Needs the new KERNAL image (`irq_border` in `patches/vdrive.s`, new `BORDER`
+  list or nothing usable flashes red for 2 s. Needs the new KERNAL image (`irq_border` in `patches/tdrive.s`, new `BORDER`
   mailbox register `$DE18`) together with the new firmware; an old KERNAL image only lacks the flash.
 - `VDCOPY` (`util/`, `make util`, also on `vdtest.d64`): copies files in 2 KB chunks between any two units (real drive, SD, USB;
   either direction). Directory list, `A` / `1,3,5-8` selection, optional replace; RUN/STOP aborts cleanly and removes the partial file.
-  First a BASIC program with a machine-code copy loop (worked on a real C64: vdrive to vdrive and vdrive to a 1541), now all machine code
+  First a BASIC program with a machine-code copy loop (worked on a real C64: tdrive to tdrive and tdrive to a 1541), now all machine code
   (tested in VICE with a true-drive 1541 in every direction; not yet on hardware).
 - `make test` runs on GitHub Actions for every push and pull request, and in cloud sessions with VICE's own ROMs (`tools/cloud_setup.sh`).
 
@@ -538,7 +553,7 @@ on screen, the return to the menu.
 - Real IEC drives (e.g. a 1541-II as device 9): every byte read through the ACPTR hook ran `LDA $20 / STA $EE` instead of
   the stock `STA $A5`, because the hook jumped into the operand byte (`$EE17`) rather than the instruction (`$EE16`).
   `$EE` is in the screen line-link table, so `LOAD"$",9` left earlier screen lines shifted/indented, and the clock-line
-  setup (`JSR $EE85`) was skipped. KERNAL image only (`patches/vdrive.s`); no firmware change, so `firmware/REV` stays 14.
+  setup (`JSR $EE85`) was skipped. KERNAL image only (`patches/tdrive.s`); no firmware change, so `firmware/REV` stays 14.
 
 ## v0.9.0.14
 - First public version

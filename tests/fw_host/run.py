@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compile firmware/IOH_VDrive.c against host stubs and run it; then check the images it wrote with c1541.
+"""Compile firmware/IOH_TDrive.c against host stubs and run it; then check the images it wrote with c1541.
 
 usage: run.py [STOCK.bin]   with a stock KERNAL the patched image the glue builds from it (VD_KernalImage) is compared with
                             tools/build.py's; without one (or with a ROM the glue does not know) only the other KERNAL checks run"""
@@ -10,22 +10,22 @@ SHARED = {"d64.c", "d64.h", "DiskImage.h", "WriteBack.h"}   # copies of TeensyRO
 ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
 tmp = pathlib.Path(tempfile.mkdtemp())
 try:
-    # build tree mirrors the firmware layout: Common/IO_Handlers/IOH_VDrive.c + Common/vdrive/*.c, and the shared disk image
+    # build tree mirrors the firmware layout: Common/IO_Handlers/IOH_TDrive.c + Common/tdrive/*.c, and the shared disk image
     # engine (d64.c, d64.h, DiskImage.h) in Source/Teensy/DiskImage, where the patch finds it in the TeensyROM tree
     base, di = tmp / "Source/Teensy/MinimalBoot/Common", tmp / "Source/Teensy/DiskImage"
-    (base / "IO_Handlers").mkdir(parents=True); (base / "vdrive").mkdir(); di.mkdir(parents=True)
-    shutil.copy(ROOT / "firmware/IOH_VDrive.c", base / "IO_Handlers/glue.c")
-    shutil.copy(ROOT / "firmware/IOH_VDriveSwift.c", base / "IO_Handlers/swift.c")
-    shutil.copy(ROOT / "firmware/IOH_VDriveREU.c", base / "IO_Handlers/vdreu.c")
-    shutil.copy(ROOT / "firmware/IOH_VDriveSwiftREU.c", base / "IO_Handlers/swiftreu.c")
-    shutil.copy(ROOT / "firmware/IOH_VDriveAgent.c", base / "IO_Handlers/agent.c")
+    (base / "IO_Handlers").mkdir(parents=True); (base / "tdrive").mkdir(); di.mkdir(parents=True)
+    shutil.copy(ROOT / "firmware/IOH_TDrive.c", base / "IO_Handlers/glue.c")
+    shutil.copy(ROOT / "firmware/IOH_TDriveSwift.c", base / "IO_Handlers/swift.c")
+    shutil.copy(ROOT / "firmware/IOH_TDriveREU.c", base / "IO_Handlers/vdreu.c")
+    shutil.copy(ROOT / "firmware/IOH_TDriveSwiftREU.c", base / "IO_Handlers/swiftreu.c")
+    shutil.copy(ROOT / "firmware/IOH_TDriveAgent.c", base / "IO_Handlers/agent.c")
     for f in (ROOT / "d64").iterdir():
         if f.name in SHARED: shutil.copy(f, di / f.name)
-        elif f.suffix in (".c", ".h"): shutil.copy(f, base / "vdrive" / f.name)
-    vh = base / "vdrive/vdrive.h"                                       # as tools/make_tr_patch.sh rewrites it
+        elif f.suffix in (".c", ".h"): shutil.copy(f, base / "tdrive" / f.name)
+    vh = base / "tdrive/tdrive.h"                                       # as tools/make_tr_patch.sh rewrites it
     vh.write_text(vh.read_text().replace('#include "d64.h"', '#include "../../../DiskImage/d64.h"'))
-    subprocess.run([sys.executable, "-I", str(ROOT / "tools/build.py"), "--table", str(base / "vdrive/vd_kpatch.h")], check=True)
-    subprocess.run([sys.executable, "-I", str(ROOT / "tools/build_agent.py"), str(base / "vdrive/vd_agent.h")], check=True)
+    subprocess.run([sys.executable, "-I", str(ROOT / "tools/build.py"), "--table", str(base / "tdrive/vd_kpatch.h")], check=True)
+    subprocess.run([sys.executable, "-I", str(ROOT / "tools/build_agent.py"), str(base / "tdrive/vd_agent.h")], check=True)
     stock = pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else None
     kstock, kpatched = tmp / "kstock.bin", tmp / "kpatched.bin"
     if stock and stock.exists():
@@ -33,16 +33,16 @@ try:
         subprocess.run([sys.executable, "-I", str(ROOT / "tools/build.py"), str(stock), str(kpatched)], check=True, capture_output=True)
     shutil.copy(ROOT / "tests/fw_host/stub.h", base / "stub.h")
     main = (ROOT / "tests/fw_host/main.cpp").read_text().replace('#include "glue.c"', '#include "IO_Handlers/glue.c"')
-    # the glue expects vdrive_io.h's VIO_/VD_ symbols; vdrive.h/d64.h arrive through the .c includes' headers
+    # the glue expects tdrive_io.h's VIO_/VD_ symbols; tdrive.h/d64.h arrive through the .c includes' headers
     (base / "main.cpp").write_text(main)
     exe = tmp / "fwhost"
-    r = subprocess.run(["c++", "-std=gnu++17", "-Wall", "-Wextra", "-Wno-unused-parameter", "-Werror", "-I", str(base / "vdrive"),
+    r = subprocess.run(["c++", "-std=gnu++17", "-Wall", "-Wextra", "-Wno-unused-parameter", "-Werror", "-I", str(base / "tdrive"),
                         "-o", str(exe), str(base / "main.cpp")], capture_output=True, text=True)
     if r.returncode:
         print(r.stdout + r.stderr); sys.exit(1)
     print("PASS firmware glue compiles as C++ (-Wall -Wextra -Werror) against host stubs")
     for flag in ("-DVD_TRACE", "-DVD_NO_TRACE", "-DVD_ALLOC_HEAP"):
-        r = subprocess.run(["c++", "-std=gnu++17", "-Wall", "-Wextra", "-Wno-unused-parameter", "-Werror", flag, "-I", str(base / "vdrive"),
+        r = subprocess.run(["c++", "-std=gnu++17", "-Wall", "-Wextra", "-Wno-unused-parameter", "-Werror", flag, "-I", str(base / "tdrive"),
                             "-fsyntax-only", str(base / "main.cpp")], capture_output=True, text=True)
         if r.returncode:
             print(r.stdout + r.stderr); sys.exit(1)
@@ -50,7 +50,7 @@ try:
     # the plain TeensyROM: no Fab04_*, only the agent handler (tests/fw_host/plain.cpp)
     shutil.copy(ROOT / "tests/fw_host/plain.cpp", base / "plain.cpp")
     plain = tmp / "fwplain"
-    r = subprocess.run(["c++", "-std=gnu++17", "-Wall", "-Wextra", "-Wno-unused-parameter", "-Werror", "-DPLAIN_TR", "-I", str(base / "vdrive"),
+    r = subprocess.run(["c++", "-std=gnu++17", "-Wall", "-Wextra", "-Wno-unused-parameter", "-Werror", "-DPLAIN_TR", "-I", str(base / "tdrive"),
                         "-o", str(plain), str(base / "plain.cpp")], capture_output=True, text=True)
     if r.returncode:
         print(r.stdout + r.stderr); sys.exit(1)
@@ -98,9 +98,9 @@ try:
     print(r.stdout, end="")
     ok = ok and r.returncode == 0
 
-    # without Fab04_VDriveDMALoad (the upstream build): no DMA hook, every LOAD part through the window, all other checks the same
+    # without Fab04_TDriveDMALoad (the upstream build): no DMA hook, every LOAD part through the window, all other checks the same
     exe2 = tmp / "fwhost_nodma"
-    r = subprocess.run(["c++", "-std=gnu++17", "-Wall", "-Wextra", "-Wno-unused-parameter", "-Werror", "-DVD_TEST_NO_DMA", "-I", str(base / "vdrive"),
+    r = subprocess.run(["c++", "-std=gnu++17", "-Wall", "-Wextra", "-Wno-unused-parameter", "-Werror", "-DVD_TEST_NO_DMA", "-I", str(base / "tdrive"),
                         "-o", str(exe2), str(base / "main.cpp")], capture_output=True, text=True)
     if r.returncode:
         print(r.stdout + r.stderr); sys.exit(1)
@@ -110,7 +110,7 @@ try:
         print("  [no DMA] exit %d after: %s" % (r.returncode, lines[-1] if lines else "(no output)"))
     for ln in lines:
         if ln.startswith("FAIL") or "DMA LOAD off" in ln: print("  [no DMA]", ln)
-    print(("PASS" if r.returncode == 0 else "FAIL"), "glue without Fab04_VDriveDMALoad: %d checks pass" % sum(1 for ln in lines if ln.startswith("PASS")))
+    print(("PASS" if r.returncode == 0 else "FAIL"), "glue without Fab04_TDriveDMALoad: %d checks pass" % sum(1 for ln in lines if ln.startswith("PASS")))
     ok = ok and r.returncode == 0
 
     out = subprocess.run(["c1541", "-attach", str(sd / "GAME.D64"), "-list"], capture_output=True, text=True, encoding="latin1").stdout.lower()

@@ -22,7 +22,7 @@ with tempfile.TemporaryDirectory() as t:
     subprocess.run([sys.executable, "-I", str(ROOT / "tools/build.py"), str(t / "stock.bin"), str(t / "k.bin")], check=True, capture_output=True)
     img = bytearray((t / "k.bin").read_bytes())
 
-TAG = b"VDUNITS:"                          # what the firmware searches for (VD_BannerUnits, firmware/IOH_VDrive.c)
+TAG = b"VDUNITS:"                          # what the firmware searches for (VD_BannerUnits, firmware/IOH_TDrive.c)
 tag = img.find(TAG)
 assert tag > 0 and img.find(TAG, tag + 1) < 0, "exactly one tag in the image"
 assert img[tag + 8:tag + 10] == b"\x00\x00", "built with no units: the stock line"
@@ -34,7 +34,7 @@ ST = 0x90
 
 def run(units, bus=(), regs=(0xDE,) * 4):
     """units: the two bytes the firmware writes; bus: device numbers a real drive answers at; regs: what $DE3C-$DE3F read (the TR menu's
-    IO1 offsets 60-63, where the firmware puts the same bytes for a VDrive KERNAL the C64 holds itself; floating $DE by default)
+    IO1 offsets 60-63, where the firmware puts the same bytes for a TDrive KERNAL the C64 holds itself; floating $DE by default)
     -> (text, probes, bus log)"""
     m = MPU()
     m.memory[0xE000:0xE000 + 8192] = list(img)
@@ -84,7 +84,7 @@ def run(units, bus=(), regs=(0xDE,) * 4):
 def check(units, bus, field, probes=None, regs=(0xDE,) * 4):
     """field: the 10-character drive field, or None for the stock line"""
     got, pr, log = run(units, bus, regs)
-    want = " 64K RAM SYSTEM  38911 BASIC BYTES FREE" if field is None else " 64K RAM  38911 FREE  VDRIVE " + field
+    want = " 64K RAM SYSTEM  38911 BASIC BYTES FREE" if field is None else " 64K RAM  38911 FREE  TDRIVE " + field
     assert got == want, (units, bus, got)
     assert len(got) == 39, got                          # like the stock line: one leading space, 38 characters
     if probes is not None: assert pr == probes, (units, bus, pr)
@@ -95,7 +95,7 @@ def check(units, bus, field, probes=None, regs=(0xDE,) * 4):
             assert (log[i + 2:i + 3] == ["UNLSN"]) == (n in bus), log
 
 
-check((0, 0), (), None, [])                                        # image as built / no VDrive firmware: the stock line, no bus traffic
+check((0, 0), (), None, [])                                        # image as built / no TDrive firmware: the stock line, no bus traffic
 check((0xFF, 0xFF), (), "SD 8 USB 9", [8, 9])                      # empty bus
 check((0xFF, 0xFF), (8, 10), "SD 9 USB11", [8, 9, 10, 11])         # real drives at 8 and 10 (the VICE `scan` set-up)
 check((0xFF, 0xFE), (8,), "SD 9 NOUSB", [8, 9])                    # no USB stick
@@ -111,7 +111,7 @@ check((0xFF, 0xFF), tuple(range(8, 31)), "NOSD NOUSB", list(range(8, 31)))   # e
 check((0xFF, 0xFF), tuple(range(8, 30)), "SD30 NOUSB", list(range(8, 31)))
 check((0xFF, 0xFF), tuple(range(8, 19)) + (20,), "SD19 USB21", list(range(8, 22)))
 
-# a VDrive KERNAL in the machine itself (image bytes 0 0): the copy in the TR menu's IO1 registers, when the tag $D6 $64 reads right
+# a TDrive KERNAL in the machine itself (image bytes 0 0): the copy in the TR menu's IO1 registers, when the tag $D6 $64 reads right
 R = lambda sd, usb: (0xD6, 0x64, sd, usb)
 check((0, 0), (), "SD 8 USB 9", [8, 9], regs=R(0xFF, 0xFF))           # automatic, not settled: probed here as before
 check((0, 0), (8, 10), "SD 9 USB11", [8, 9, 10, 11], regs=R(0xFF, 0xFF))

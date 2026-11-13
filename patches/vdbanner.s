@@ -1,7 +1,7 @@
 ; Power-on banner with the virtual drives' device numbers. The top line stays stock; the second becomes
-;      64K RAM  38911 FREE  VDRIVE SD 8 USB 9
+;      64K RAM  38911 FREE  TDRIVE SD 8 USB 9
 ; one leading space and 38 characters, like the stock " 64K RAM SYSTEM  38911 BASIC BYTES FREE". The drive field is always 10 wide:
-; "SD 8" / "SD10" / "NOSD", a space, "USB 9" / "USB11" / "NOUSB". Without the VDrive firmware the line is the stock one.
+; "SD 8" / "SD10" / "NOSD", a space, "USB 9" / "USB11" / "NOUSB". Without the TDrive firmware the line is the stock one.
 ;
 ; BASIC's start-up message routine (INITMS, $E422, in the KERNAL chip) prints the banner string at $E473 (`JSR STROUT` at $E42D),
 ; the free bytes ($BDCD, no leading space), then " BASIC BYTES FREE" + CR ($E460, from $E43D) and ends in `JMP $A644` (NEW). The banner
@@ -9,18 +9,18 @@
 ; (stock or ours), and $E43D jumps to vd_banner, which prints the rest of the line, the CR, and goes on to NEW.
 ;
 ; The mailbox is not live yet when this runs (the TR's menu handler owns IO1 until the program has been loaded), so the numbers
-; travel in the KERNAL image: vd_units, the two bytes after the tag "VDUNITS:" (not printed; VD_BannerUnits in firmware/IOH_VDrive.c
+; travel in the KERNAL image: vd_units, the two bytes after the tag "VDUNITS:" (not printed; VD_BannerUnits in firmware/IOH_TDrive.c
 ; searches the image for it), are written by the firmware into the image it serves, before the C64 starts: per unit (SD, USB)
 ; $FE = absent, 8-30 = a fixed number (U0>), $FF = automatic. An automatic unit gets the first number from 8 up that nobody answers on
 ; the real serial bus and that the other unit has not fixed, SD first, which is what the bus scan of the run's first disk access
-; (bus_scan in vdrive.s) will give it: the probe is the same LISTEN + SECOND $6F, but through the stock routines without the mailbox
+; (bus_scan in tdrive.s) will give it: the probe is the same LISTEN + SECOND $6F, but through the stock routines without the mailbox
 ; hooks (iec_listen / iec_second / iec_unlsn). A unit with no number (absent, or every number taken) shows as "NOSD" / "NOUSB".
-; The image as built says 0 / 0 (no VDrive firmware wrote it: plain Kernal Replace, an older firmware, or this KERNAL is in the
+; The image as built says 0 / 0 (no TDrive firmware wrote it: plain Kernal Replace, an older firmware, or this KERNAL is in the
 ; machine itself, an EPROM or a MEGA65 core): then the same two bytes are taken from the TR menu's IO1 at $DE3C-$DE3F when the tag
 ; $D6 $64 reads there (VD_BannerRegs; the menu prints the banner itself, under its own handler); else the stock line.
 ;
 ; Code in reclaimed tape space $FB97-$FCD0 (tape-only routines: called only from tape code at $F8A1-$F8D6 and from the tape
-; code vdrive.s already reclaimed). Zero page $FB-$FE: no program is running yet.
+; code tdrive.s already reclaimed). Zero page $FB-$FE: no program is running yet.
 
 .import iec_listen, iec_second, iec_unlsn
 
@@ -33,7 +33,7 @@ CHROUT = $FFD2
 NEW    = $A644
 S_FREE = $E460              ; stock " BASIC BYTES FREE", CR
 S_RAM_STOCK = $E49A         ; stock " 64K RAM SYSTEM  ", 0 (its first byte is now the 0 that ends the top lines; tools/build.py checks the rest)
-MENU_REGS = $DE3C           ; the TR menu's IO1 offsets 60-63 (VD_BannerRegs in firmware/IOH_VDrive.c)
+MENU_REGS = $DE3C           ; the TR menu's IO1 offsets 60-63 (VD_BannerRegs in firmware/IOH_TDrive.c)
 
 .segment "P_E42D"
         jsr vd_head             ; was JSR STROUT (the banner string at $E473)
@@ -53,7 +53,7 @@ vd_head:
         bpl @img
         jsr have_fw
         bne @vd
-        lda MENU_REGS           ; ...else, for a VDrive KERNAL the C64 holds itself (an EPROM, a MEGA65 core), the copy the firmware
+        lda MENU_REGS           ; ...else, for a TDrive KERNAL the C64 holds itself (an EPROM, a MEGA65 core), the copy the firmware
         cmp #$D6                ; puts in the TR menu's IO1 ($DE3C-$DE3F: the tag $D6 $64, then SD, USB; docs/DESIGN.md 46), whose
         bne @stock              ; handler still answers there: the menu prints this banner itself, before the program is loaded
         lda MENU_REGS+1
@@ -73,7 +73,7 @@ vd_head:
         ldy #>(S_RAM_STOCK+1)
         jmp STROUT
 
-; Z=1 when no VDrive firmware wrote the unit bytes (RES = 0 0: the stock line)
+; Z=1 when no TDrive firmware wrote the unit bytes (RES = 0 0: the stock line)
 have_fw:
         lda RES
         ora RES+1
@@ -113,9 +113,9 @@ vd_banner:
         cpx #2
         bcc @unit
 
-        lda #<s_vdrive
-        ldy #>s_vdrive
-        jsr STROUT              ; " FREE  VDRIVE "
+        lda #<s_tdrive
+        ldy #>s_tdrive
+        jsr STROUT              ; " FREE  TDRIVE "
         ldx #0
 @field: stx UNIT
         lda RES,x
@@ -186,8 +186,8 @@ prdec2: ldx #'0'
         jmp CHROUT
 
 s_ram:  .byte " 64K RAM  ", 0
-s_vdrive:
-        .byte " FREE  VDRIVE ", 0
+s_tdrive:
+        .byte " FREE  TDRIVE ", 0
 s_sd:   .byte "SD", 0
 s_usb:  .byte "USB", 0
 names:  .byte <s_sd, <s_usb

@@ -1,5 +1,5 @@
-// Host test for the plain TeensyROM's VDrive (built with -DPLAIN_TR: no Fab04_* at all): firmware/IOH_VDrive.c without its KERNAL
-// parts plus firmware/IOH_VDriveAgent.c, driven through the IO1 / IO2 handlers as the 6502 agent would (docs/DESIGN.md 53).
+// Host test for the plain TeensyROM's TDrive (built with -DPLAIN_TR: no Fab04_* at all): firmware/IOH_TDrive.c without its KERNAL
+// parts plus firmware/IOH_TDriveAgent.c, driven through the IO1 / IO2 handlers as the 6502 agent would (docs/DESIGN.md 53).
 #include "stub.h"
 #include <unistd.h>
 
@@ -20,16 +20,16 @@ bool USBFileSystemWait() { return fs_::exists(firstPartition.root); }
 volatile uint8_t BtnPressed = 0;
 bool (*fBusSnoop)(uint16_t Address, bool R_Wn) = nullptr;
 
-#include "IO_Handlers/glue.c"   // = firmware/IOH_VDrive.c
-#include "IO_Handlers/agent.c"  // = firmware/IOH_VDriveAgent.c
+#include "IO_Handlers/glue.c"   // = firmware/IOH_TDrive.c
+#include "IO_Handlers/agent.c"  // = firmware/IOH_TDriveAgent.c
 
 static int fails = 0;
 static void check(const char *what, bool ok) { printf("%s %s\n", ok ? "PASS" : "FAIL", what); if (!ok) fails++; }
 
-static uint8_t rd1(uint8_t a) { g_bus_out = 0x77; IO1Hndlr_VDriveAgent(a, true); return g_bus_out; }
-static void wr1(uint8_t a, uint8_t v) { g_bus_in = v; IO1Hndlr_VDriveAgent(a, false); }
-static uint8_t rd2(uint8_t a) { g_bus_out = 0x77; IO2Hndlr_VDriveAgent(a, true); return g_bus_out; }
-static void wr2(uint8_t a, uint8_t v) { g_bus_in = v; IO2Hndlr_VDriveAgent(a, false); }
+static uint8_t rd1(uint8_t a) { g_bus_out = 0x77; IO1Hndlr_TDriveAgent(a, true); return g_bus_out; }
+static void wr1(uint8_t a, uint8_t v) { g_bus_in = v; IO1Hndlr_TDriveAgent(a, false); }
+static uint8_t rd2(uint8_t a) { g_bus_out = 0x77; IO2Hndlr_TDriveAgent(a, true); return g_bus_out; }
+static void wr2(uint8_t a, uint8_t v) { g_bus_in = v; IO2Hndlr_TDriveAgent(a, false); }
 
 int main(int argc, char **argv)
 {
@@ -37,13 +37,13 @@ int main(int argc, char **argv)
     SD.root = argv[1]; firstPartition.root = "/nonexistent-usb";
     IO1[rWRegCurrMenuWAIT] = rmtSD;
 
-    check("plain TR: the agent is the VDrive handler, named \"VDrive\"", strcmp(IOHndlr_VDriveAgent.Name, "VDrive") == 0
-          && VD_IsHandler(IOH_VDriveAgent) && !VD_IsHandler(IOH_VDrive));
-    check("plain TR: remap leaves every handler alone", VDriveSwift_Remap(IOH_Swiftlink) == IOH_Swiftlink && VDriveSwift_Remap(IOH_VDriveAgent) == IOH_VDriveAgent);
-    check("PreStart is not the agent's for another handler", !VDrive_AgentPreStart(IOH_Swiftlink));
-    check("PreStart for the agent: the drive's PreStart runs", VDrive_AgentPreStart(IOH_VDriveAgent) && vio && vioReady && vio->vd.unit[0].present);
+    check("plain TR: the agent is the TDrive handler, named \"TDrive\"", strcmp(IOHndlr_TDriveAgent.Name, "TDrive") == 0
+          && VD_IsHandler(IOH_TDriveAgent) && !VD_IsHandler(IOH_TDrive));
+    check("plain TR: remap leaves every handler alone", TDriveSwift_Remap(IOH_Swiftlink) == IOH_Swiftlink && TDriveSwift_Remap(IOH_TDriveAgent) == IOH_TDriveAgent);
+    check("PreStart is not the agent's for another handler", !TDrive_AgentPreStart(IOH_Swiftlink));
+    check("PreStart for the agent: the drive's PreStart runs", TDrive_AgentPreStart(IOH_TDriveAgent) && vio && vioReady && vio->vd.unit[0].present);
     check("... and asks the menu for no bus probe (rwRegScratch stays 0)", IO1[rwRegScratch] == 0);
-    InitHndlr_VDriveAgent();
+    InitHndlr_TDriveAgent();
 
     bool same = true;
     for (unsigned i = 0; i < sizeof VD_Agent; i++) same = same && rd1((uint8_t)(VD_AgentOfs + i)) == VD_Agent[i];
@@ -51,7 +51,7 @@ int main(int argc, char **argv)
     check("IO1 $DE00-$DE07: open bus (a SwiftLink ACIA's place)", rd1(0x00) == 0x77 && rd1(0x07) == 0x77);
     wr1(0x80, 0x5C);
     check("IO1: the 6502's writes into the agent stay (its self-patched operands)", rd1(0x80) == 0x5C);
-    InitHndlr_VDriveAgent();
+    InitHndlr_TDriveAgent();
     check("... and a new launch serves a fresh copy", rd1(0x80) == VD_Agent[0x80 - VD_AgentOfs]);
 
     check("IO2 $DF09/$DF0A: the ID the menu's loader checks before calling INSTALL", rd2(VD_AgentRegs + VIO_ID0) == VIO_ID0_VAL && rd2(VD_AgentRegs + VIO_ID1) == VIO_ID1_VAL);
@@ -63,16 +63,16 @@ int main(int argc, char **argv)
     for (unsigned i = 0; i < sizeof frame; i++) wr2((uint8_t)(VIO_WIN_OFS + i), frame[i]);
     wr2(VD_AgentRegs + VIO_CMD, VV_C_VEC);
     check("CMD: BUSY at once", rd2(VD_AgentRegs + VIO_STAT) == VIO_BUSY);
-    PollingHndlr_VDriveAgent();
+    PollingHndlr_TDriveAgent();
     check("after a poll: OK, and the answer starts with PEEK $FFD5 (INSTALL first reads the jump table's LOAD: which KERNAL)",
           rd2(VD_AgentRegs + VIO_STAT) == VIO_OK && rd2(VIO_WIN_OFS + 0) == VV_OP_PEEK && rd2(VIO_WIN_OFS + 1) == 0xD5 && rd2(VIO_WIN_OFS + 2) == 0xFF
           && rd2(VIO_WIN_OFS + 3) == 3);
 
-    // a launch into C128 mode (upstream's C128Prg.ino calls VDrive_C128Launch, docs/DESIGN.md 55)
+    // a launch into C128 mode (upstream's C128Prg.ino calls TDrive_C128Launch, docs/DESIGN.md 55)
     EEPROM.write(eepAdNextIOHndlr, IOH_Swiftlink); IO1[rwRegNextIOHndlr] = IOH_Swiftlink; vioReady = false;
-    check("C128 launch, default not VDrive: the Special IO stays, no PreStart", !VDrive_C128Launch() && IO1[rwRegNextIOHndlr] == IOH_Swiftlink && !vioReady);
-    EEPROM.write(eepAdNextIOHndlr, IOH_VDriveAgent); IO1[rwRegNextIOHndlr] = IOH_VDriveAgent;
-    check("C128 launch, default VDrive: the agent, after the drive's PreStart", VDrive_C128Launch() && IO1[rwRegNextIOHndlr] == IOH_VDriveAgent && vioReady
+    check("C128 launch, default not TDrive: the Special IO stays, no PreStart", !TDrive_C128Launch() && IO1[rwRegNextIOHndlr] == IOH_Swiftlink && !vioReady);
+    EEPROM.write(eepAdNextIOHndlr, IOH_TDriveAgent); IO1[rwRegNextIOHndlr] = IOH_TDriveAgent;
+    check("C128 launch, default TDrive: the agent, after the drive's PreStart", TDrive_C128Launch() && IO1[rwRegNextIOHndlr] == IOH_TDriveAgent && vioReady
           && vio->vd.unit[0].present);
 
     printf("%s: %d failure(s)\n", fails ? "FAIL" : "PASS", fails);

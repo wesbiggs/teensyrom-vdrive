@@ -1,6 +1,6 @@
 0 rem vdsuite: the hardware checklist in one program (tests/basic/README.md)
 5 if peek(65533)=252 then poke55,0:poke56,96:clr:rem c64: basic ends at $6000 (reutest, soak above)
-10 print chr$(147);"vdrive test suite"
+10 print chr$(147);"tdrive test suite"
 20 d=8:input"device";d:open15,d,15
 30 dim fl$(20),sp(17),sf(17),im$(3),dn$(3),fr(3),lt(3),dh(3),sn$(17)
 40 for k=1 to 3:read dn$(k),im$(k),fr(k),lt(k),dh(k):next
@@ -8,7 +8,7 @@
 60 for k=1 to 8:read sn$(k):next:for k=11 to 17:read sn$(k):next
 70 data setup,d64 image,d71 image,d81 image,bad sectors,card files,cmd paths,clean up
 80 data bus stress,load test,ram under rom,reu,soak,status text,renumber
-100 print chr$(147);"vdrive test suite, device";d
+100 print chr$(147);"tdrive test suite, device";d
 110 for k=1 to 8:print k;sn$(k):next:print" 9 run all":print" 10 checks by hand"
 120 for k=11 to 17:print k;sn$(k):next:print" 0 quit"
 130 input"choice";m:if m=0 then close15:sys 64738
@@ -209,7 +209,7 @@
 9015 print"- with vdtest.d64 mounted:"
 9020 print"- run/stop during load"chr$(34)"big"chr$(34)",8,1:":print"  break, then load"chr$(34)"$"chr$(34)",8 works"
 9030 print"- load"chr$(34)"hello"chr$(34)" with no device number"
-9040 print"- vdrive+reu: reu-checker says 512 kb":print"  with an image mounted"
+9040 print"- tdrive+reu: reu-checker says 512 kb":print"  with an image mounted"
 9050 print"- vdcopy: sd to 1541 and back"
 9055 print"- s: on an image made read-only on a":print"  pc: 26, the file stays"
 9060 print"- d81 time: setup prints it the first":print"  time it makes vs81.d81"

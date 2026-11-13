@@ -1,6 +1,6 @@
 """VDSUITE (tests/basic/vdsuite.bas) and its card files: a plain PRG and a .d64 with an error table, plus the placeholders the suite needs.
 
-Used by tools/make_testdisk.py (the test disk and the files to copy to the card root) and tools/vdrive_mock.py (the mock's card in VICE).
+Used by tools/make_testdisk.py (the test disk and the files to copy to the card root) and tools/tdrive_mock.py (the mock's card in VICE).
 """
 import pathlib, subprocess, tempfile
 

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""The TR menu's launch-time bus probe (firmware/vdrive_probe.asm, inserted into MainMenu.asm by tools/make_tr_patch.sh) in VICE,
+"""The TR menu's launch-time bus probe (firmware/tdrive_probe.asm, inserted into MainMenu.asm by tools/make_tr_patch.sh) in VICE,
 with true-drive 1541s at 8 and 10 and the C64's own KERNAL, as in the menu.
 
 The routine is assembled with ACME (the menu's assembler) into a small harness at $C000 that does what XferCopyRun does around it:
-clear rwRegScratch, PreStart, wait, VDriveProbe. The TR's IO1 registers are RAM at $C900 here; a store checkpoint on the control
-register stops the CPU and this script plays the Teensy: KERNALPreStart() with VDrive_ProbeStep() (firmware/IOH_VDrive.c) over
+clear rwRegScratch, PreStart, wait, TDriveProbe. The TR's IO1 registers are RAM at $C900 here; a store checkpoint on the control
+register stops the CPU and this script plays the Teensy: KERNALPreStart() with TDrive_ProbeStep() (firmware/IOH_TDrive.c) over
 the real drive model's vio_probe_begin / vio_probe_free. The C side is tested in tests/fw_host and tests/test_vio.py.
 usage: menuprobe_vice.py        (needs acme, x64sc with its ROMs)
 """
@@ -14,7 +14,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 if not shutil.which("acme"):
     print("SKIP acme not installed: the menu's bus probe not run in VICE"); sys.exit(0)
-from vdrive_mock import Mon, MON_PORT
+from tdrive_mock import Mon, MON_PORT
 from d64py import VIO, R_DEV0, R_DEV1
 
 IO1 = 0xC900
@@ -32,7 +32,7 @@ HARNESS = """
    lda #rCtlKERNALPreStartWAIT
    sta wRegControl+IO1Port
    jsr WaitForTRDots
-   jsr VDriveProbe
+   jsr TDriveProbe
    lda #$42
    sta $c9ff
    rts
@@ -44,7 +44,7 @@ WaitForTRDots:  ;the Teensy (this script) answers while the CPU is stopped
 
 def main():
     work = pathlib.Path(tempfile.mkdtemp())
-    (work / "h.asm").write_text(HARNESS % (ROOT / "firmware" / "vdrive_probe.asm"))
+    (work / "h.asm").write_text(HARNESS % (ROOT / "firmware" / "tdrive_probe.asm"))
     subprocess.run(["acme", "-f", "plain", "-o", str(work / "h.bin"), str(work / "h.asm")], check=True)
     code = (work / "h.bin").read_bytes()
     (work / "vicerc").write_text("")
@@ -89,8 +89,8 @@ def main():
             check("harness finished", m.read(DONE, 1)[0] == 0x42)
             return offered
 
-        def vdrive(io):
-            """KERNALPreStart() as patched: VDrive_ProbeStep(), else VDrive_PreStart() (which begins the probe)"""
+        def tdrive(io):
+            """KERNALPreStart() as patched: TDrive_ProbeStep(), else TDrive_PreStart() (which begins the probe)"""
             st = {"probing": False}
             def f(s):
                 if st["probing"] and s:
@@ -108,21 +108,21 @@ def main():
             io.set_devices(*pins); return io
 
         io = units()
-        offered = run(vdrive(io))
+        offered = run(tdrive(io))
         check("both automatic: the menu offered 9 and 11 (8 and 10 are real 1541s): %r" % offered, offered == [0, 9, 11])
         check("... SD unit 9, USB unit 11: %r" % (devs(io),), devs(io) == (9, 11))
 
         io = units((9, 0))
-        offered = run(vdrive(io))
+        offered = run(tdrive(io))
         check("SD fixed at 9: 9 is offered (nobody answers there yet), refused, USB gets 11: %r" % offered, offered == [0, 9, 11])
         check("... %r" % (devs(io),), devs(io) == (9, 11))
 
         io = units((12, 13))
-        offered = run(vdrive(io))
+        offered = run(tdrive(io))
         check("both fixed: PreStart only, no probe: %r" % offered, offered == [0] and devs(io) == (12, 13))
 
         offered = run(lambda s: 0)
-        check("a TeensyROM without VDrive (scratch stays 0): no probe: %r" % offered, offered == [0])
+        check("a TeensyROM without TDrive (scratch stays 0): no probe: %r" % offered, offered == [0])
 
         offered = run(lambda s: 0 if s == 0xFF else 1)                          # never satisfied: every number up to 30, then the end marker
         want = [0, 9] + list(range(11, 31)) + [0xFF]

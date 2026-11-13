@@ -1,8 +1,8 @@
 /* Virtual IEC drive: the Teensy-side state machine behind the KERNAL mailbox.
  * Units 0/1 = devices 8/9, each backed by an optional mounted d64_t.
  * One mailbox command in, one result out; no I/O other than the d64 and host callbacks. */
-#ifndef VDRIVE_H
-#define VDRIVE_H
+#ifndef TDRIVE_H
+#define TDRIVE_H
 #include "d64.h"
 #include "vd_cfg.h"
 
@@ -69,7 +69,7 @@ typedef struct {
     void (*push)(void *ctx, int unit);
     int  (*pop)(void *ctx, int unit, d64_t **out);
     /* Host text files for the configuration utility (OPEN n,d,n,"!CONFIG" read, "!CONFIG,W" write, "!STATE" read only): the unit's disk
-     * switching list (/vdrive-config.txt) and a two-line description of what the unit has mounted ("path", "folder"). The host
+     * switching list (/tdrive-config.txt) and a two-line description of what the unit has mounted ("path", "folder"). The host
      * converts the text to / from PETSCII (a line ends with CR on the C64 side). Only one such file is open at a time on the host side.
      * hf_open: kind VD_HF_CONFIG / VD_HF_STATE; 0 ok, else a DOS error code (62 when there is no such file to read). hf_read: up to n bytes,
      * 0 = end of file. hf_write: 0 ok. hf_close: after the last write the host should flush. All optional (a missing hf_open = 62). */
@@ -78,7 +78,7 @@ typedef struct {
     int  (*hf_write)(void *ctx, int unit, const uint8_t *buf, int n);
     void (*hf_close)(void *ctx, int unit, int write);
     /* "N:NAME.D64,ID" with nothing mounted: make a new all-zero image file of `size` bytes in the current folder (never over an
-     * existing file: 63) and mount it like mount(); vdrive.c then writes the header and BAM. 0 ok, else a DOS error code. */
+     * existing file: 63) and mount it like mount(); tdrive.c then writes the header and BAM. 0 ok, else a DOS error code. */
     int  (*create)(void *ctx, int unit, const char *name, uint32_t size, d64_t **out);
     /* A plain file in the current folder, read with nothing mounted (LOAD"GAME.PRG"): one open at a time per unit.
      * plain_open: 0 ok (*size = its length) or a DOS error (62); plain_read: bytes read (<0 error); plain_close: done with it. */
@@ -89,15 +89,15 @@ typedef struct {
      * mkdir 63 if the name is taken; rmdir 62 if there is no such folder, 63 if it is not empty. */
     int  (*mkdir)(void *ctx, int unit, const char *name);
     int  (*rmdir)(void *ctx, int unit, const char *name);
-    /* S:NAME.D64 with nothing mounted: delete an image file in the current folder. 0 ok, else a DOS error: 62 no such file (vdrive.c
+    /* S:NAME.D64 with nothing mounted: delete an image file in the current folder. 0 ok, else a DOS error: 62 no such file (tdrive.c
      * counts it as 0 scratched), 26 the file is read-only on the card (FAT attribute) or the card is not writable. */
     int  (*scratch)(void *ctx, int unit, const char *name);
 } vd_host_t;
 enum { VD_HF_CONFIG = 0, VD_HF_STATE = 1 };
 
-struct vdrive_s;
+struct tdrive_s;
 typedef struct {
-    struct vdrive_s *owner;     /* back pointer: closing a channel may have to restore the host state */
+    struct tdrive_s *owner;     /* back pointer: closing a channel may have to restore the host state */
     uint8_t  index;             /* this unit's number (0/1) */
     uint8_t  restore_ch;        /* channel + 1 whose close restores the folder / image selected before a path listing; 0 = none */
     d64_t   *disk;              /* NULL: no image mounted */
@@ -109,7 +109,7 @@ typedef struct {
     uint8_t  err, err_t, err_s; /* DOS status */
 } vd_unit_t;
 
-typedef struct vdrive_s {
+typedef struct tdrive_s {
     vd_host_t host;
     vd_unit_t unit[2];
     uint8_t  dev[2];            /* IEC device number each unit answers to now; 0 = none (not claimed on the bus) */
@@ -119,31 +119,31 @@ typedef struct vdrive_s {
     uint8_t  sa;
     uint8_t  wlen;
     uint8_t  wbuf[VD_CMDBUF];
-} vdrive_t;
+} tdrive_t;
 
-void vdrive_init(vdrive_t *v);
-void vdrive_attach(vdrive_t *v, int unit, d64_t *disk, int present);
+void tdrive_init(tdrive_t *v);
+void tdrive_attach(tdrive_t *v, int unit, d64_t *disk, int present);
 /* pin0/pin1: device numbers the user fixed (8..30), 0 = automatic. Automatic units start on VD_DEV0/VD_DEV1 (or the next
  * free number) and are moved by the start-up scan below. */
-void vdrive_set_devices(vdrive_t *v, uint8_t pin0, uint8_t pin1);
+void tdrive_set_devices(tdrive_t *v, uint8_t pin0, uint8_t pin1);
 /* Start-up scan (the KERNAL probes the real serial bus for 8,9,... after reset):
  *   scan_begin  releases the numbers of all automatic units, so the probes reach the real bus; returns how many present
  *               units still need a number (0 = nothing to scan for).
  *   scan_free   the probe found nothing at `dev`: give it to the next automatic present unit (SD first, then USB).
  *               Returns how many units are still waiting. */
-int  vdrive_scan_begin(vdrive_t *v);
-int  vdrive_scan_free(vdrive_t *v, uint8_t dev);
-int  vdrive_unit_for(const vdrive_t *v, uint8_t dev);                /* unit 0/1 serving this device number, or -1 */
-void vdrive_set_host(vdrive_t *v, const vd_host_t *host);
-int  vdrive_chan_mode(const vdrive_t *v, int unit, int ch);   /* 0 closed, 1 file-read, 3 file-write, 4 directory, 5 buffer, 6/7 host text, 8 REL, 9 plain file */
-int  vdrive_active(const vdrive_t *v);                        /* unit of the open bus transaction: 0/1, 2 absent device, -1 none */
-int  vdrive_pending_err(const vdrive_t *v, int unit);         /* DOS error code waiting on the status channel (0 = none) */
+int  tdrive_scan_begin(tdrive_t *v);
+int  tdrive_scan_free(tdrive_t *v, uint8_t dev);
+int  tdrive_unit_for(const tdrive_t *v, uint8_t dev);                /* unit 0/1 serving this device number, or -1 */
+void tdrive_set_host(tdrive_t *v, const vd_host_t *host);
+int  tdrive_chan_mode(const tdrive_t *v, int unit, int ch);   /* 0 closed, 1 file-read, 3 file-write, 4 directory, 5 buffer, 6/7 host text, 8 REL, 9 plain file */
+int  tdrive_active(const tdrive_t *v);                        /* unit of the open bus transaction: 0/1, 2 absent device, -1 none */
+int  tdrive_pending_err(const tdrive_t *v, int unit);         /* DOS error code waiting on the status channel (0 = none) */
 
 /* Returns 1 if the transaction is not ours (fall back to the real IEC bus);
  * 0 if handled, with data and st filled in (st = bits to OR into KERNAL ST). */
-int vdrive_mailbox(vdrive_t *v, uint8_t cmd, uint8_t arg, uint8_t *data, uint8_t *st);
+int tdrive_mailbox(tdrive_t *v, uint8_t cmd, uint8_t arg, uint8_t *data, uint8_t *st);
 
-size_t vdrive_sizeof(void);
+size_t tdrive_sizeof(void);
 
 /* Host file names the C64 cannot use as they are get an alias of at most 16 characters (docs/DESIGN.md 44). `name` is the
  * host's ASCII name; `out` gets the C64 spelling, upper case. A name is usable as it is when it has at most 16 characters

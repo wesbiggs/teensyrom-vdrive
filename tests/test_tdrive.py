@@ -1,6 +1,6 @@
 import ctypes, pathlib, random, shutil, subprocess, sys, tempfile, unittest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / 'tools'))
-from d64py import LIB, Disk, VDrive, VD_LISTEN, VD_TALK, VD_CIOUT, VD_ACPTR
+from d64py import LIB, Disk, TDrive, VD_LISTEN, VD_TALK, VD_CIOUT, VD_ACPTR
 
 
 def c1541(img, *args):
@@ -13,7 +13,7 @@ def bam(image):
     return image[357 * 256 + 4: 357 * 256 + 0x90]
 
 
-class VDriveTests(unittest.TestCase):
+class TDriveTests(unittest.TestCase):
     def setUp(self):
         self.tmp = pathlib.Path(tempfile.mkdtemp())
         img = self.tmp / "d.d64"
@@ -26,7 +26,7 @@ class VDriveTests(unittest.TestCase):
             c1541(img, "-write", str(self.tmp / name), name)
             self.seed[name.upper().encode()] = data
         self.disk = Disk(img.read_bytes())
-        self.vd = VDrive()
+        self.vd = TDrive()
         self.vd.attach(0, self.disk)
         self.vd.attach(1, None, present=False)
 
@@ -324,14 +324,14 @@ class VDriveTests(unittest.TestCase):
         for cmd in (b"UI", b"UJ", b"U9"):
             self.vd.open(8, 2, b"SEED")
             self.vd.listen(8, 0x6F, cmd)
-            self.assertEqual(self.vd.status(), "73,TRVDRIVE V1.0,00,00\r", cmd)
+            self.assertEqual(self.vd.status(), "73,TRTDRIVE V1.0,00,00\r", cmd)
             self.assertEqual(self.vd.talk(8, 0x62)[0], b"", cmd)             # the channel was closed by the reset
             self.assertEqual(self.vd.load(8, b"SEED"), self.seed[b"SEED"])    # the disk is still mounted
 
     def test_ui_works_with_nothing_mounted_and_bus_speed_variants_are_ignored(self):
-        vd = VDrive(); vd.attach(0, None, present=True)
+        vd = TDrive(); vd.attach(0, None, present=True)
         vd.listen(8, 0x6F, b"UI")
-        self.assertEqual(vd.status(), "73,TRVDRIVE V1.0,00,00\r")
+        self.assertEqual(vd.status(), "73,TRTDRIVE V1.0,00,00\r")
         for cmd in (b"UI+", b"UI-"):
             vd.listen(8, 0x6F, cmd)
             self.assertEqual(vd.status(), "00, OK,00,00\r", cmd)
@@ -473,7 +473,7 @@ class VDriveTests(unittest.TestCase):
         self.assertEqual(self.vd.cmd(VD_CIOUT, 1)[0], 0)                # swallowed, not forwarded to real bus
 
     def test_no_disk_mounted_gives_not_ready(self):
-        vd = VDrive(); vd.attach(0, None, present=True)
+        vd = TDrive(); vd.attach(0, None, present=True)
         vd.open(8, 2, b"X")
         self.assertTrue(vd.status().startswith("74,DRIVE NOT READY"))
 
@@ -504,7 +504,7 @@ class BadSectorTests(unittest.TestCase):
         tab = bytearray([1] * n)
         for (t, s), code in bad.items(): tab[self.index(t, s)] = code
         self.disk = Disk((raw or self.raw) + bytes(tab))
-        self.vd = VDrive(); self.vd.attach(0, self.disk); self.vd.attach(1, None, present=False)
+        self.vd = TDrive(); self.vd.attach(0, self.disk); self.vd.attach(1, None, present=False)
         return self.vd
 
     def cmd(self, text): self.vd.listen(8, 0x6F, text); return self.vd.status()
@@ -591,7 +591,7 @@ class BadSectorTests(unittest.TestCase):
         plain = Disk(raw); t, s = plain.entries()[0]["track"], plain.entries()[0]["sector"]
         tab = bytearray([1] * 3200); tab[LIB.d64_sector_offset(plain.d, t, s) // 256] = 4
         disk = Disk(raw + bytes(tab))
-        vd = VDrive(); vd.attach(0, disk); vd.attach(1, None, present=False)
+        vd = TDrive(); vd.attach(0, disk); vd.attach(1, None, present=False)
         self.assertEqual(vd.load(8, b"FIRST"), b"")
         self.assertEqual(vd.status(), "22,READ ERROR,%02d,%02d\r" % (t, s))
 

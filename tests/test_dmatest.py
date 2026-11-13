@@ -38,10 +38,10 @@ PRG = build()
 
 
 class Sim(C64):
-    def __init__(self, vdrive=True):
+    def __init__(self, tdrive=True):
         super().__init__(PRG, drive=None, mem={1: 0x37})
         self.ram = self.mem._subject
-        if vdrive:
+        if tdrive:
             self.ram[0xDE19], self.ram[0xDE1A] = 0xD6, 0x64
         self.mem.subscribe_to_read(range(0xA000, 0xC000), lambda a: (a * 7 + 1) & 0xFF if self.ram[1] & 3 == 3 else None)
         self.mem.subscribe_to_read(range(0xE000, 0x10000), lambda a: (a * 13 + 5) & 0xFF if self.ram[1] & 2 else None)
@@ -83,7 +83,7 @@ class DmaTest(unittest.TestCase):
         self.assertEqual(s.w(OVR), 0)
         self.assertEqual(s.ram[1], 0x37)
         text = s.screen.text()
-        self.assertIn("VDRIVE HANDLER: YES", text)
+        self.assertIn("TDRIVE HANDLER: YES", text)
         self.assertIn("ROUNDS   0003", text)
         self.assertIn("2000-3FFF  0000 ----", text)
         self.assertIn("GUARDS     0000 ----", text)
@@ -122,9 +122,9 @@ class DmaTest(unittest.TestCase):
         self.assertEqual(s.ram[ACK], 2)
 
     def test_no_handler_id(self):
-        s = Sim(vdrive=False)
+        s = Sim(tdrive=False)
         self.assertEqual(s.run(), "key")
-        self.assertIn("VDRIVE HANDLER: NO", s.screen.text())
+        self.assertIn("TDRIVE HANDLER: NO", s.screen.text())
 
     def test_key_quits(self):
         s = self.s

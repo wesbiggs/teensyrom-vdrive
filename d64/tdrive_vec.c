@@ -1,4 +1,4 @@
-#include "vdrive_vec.h"
+#include "tdrive_vec.h"
 #include "vd_cfg.h"
 #include <string.h>
 
@@ -42,7 +42,7 @@ static const vv_kernal_t vv_kernal[2] = {
 #define K_ERROR(n)  (uint16_t)(KN->error1 + 3 * ((n) - 1))
 
 /* C128 in 128 mode: the drives in BASIC 7's start-up message (docs/DESIGN.md 59). Its fourth line, "ALL RIGHTS RESERVED" (row 4, 40
- * or 80 columns), becomes " ALL RIGHTS RESERVED  VDRIVE SD 8 USB 9", centered (column 1 / 21), like the C64 banner's second line. */
+ * or 80 columns), becomes " ALL RIGHTS RESERVED  TDRIVE SD 8 USB 9", centered (column 1 / 21), like the C64 banner's second line. */
 #define K_PLOT      0xFFF0      /* C clear: the cursor to row X, column Y */
 #define ED_PRINT    0xC00C      /* the C128 editor's jump table: print A on the screen (what CHROUT does for device 3) */
 #define B_MODE      0xD7        /* bit 7: the 80-column screen is the active one */
@@ -118,13 +118,13 @@ VD_COLD static void sc_call(vvec_t *e, const vv_ctx_t *c, uint16_t routine, uint
 VD_COLD static int bus(vvec_t *e, uint8_t cmd, uint8_t arg, uint8_t *d, uint8_t *st)
 {
     uint8_t dd = 0, s = 0;
-    int nm = vdrive_mailbox(&e->v->vd, cmd, arg, &dd, &s);
+    int nm = tdrive_mailbox(&e->v->vd, cmd, arg, &dd, &s);
     if (d) *d = dd;
     if (st) *st |= s;
     return nm;
 }
 
-static int ours(vvec_t *e, uint8_t dev) { return dev >= 4 && vdrive_unit_for(&e->v->vd, dev) >= 0; }
+static int ours(vvec_t *e, uint8_t dev) { return dev >= 4 && tdrive_unit_for(&e->v->vd, dev) >= 0; }
 
 /* ---- protothread ---- */
 #define PT_BEGIN(c)   switch ((c)->pc) { case 0:
@@ -148,14 +148,14 @@ static int ours(vvec_t *e, uint8_t dev) { return dev >= 4 && vdrive_unit_for(&e-
 /* the zero page as PEEKed from $AE ($AE-$C4 on a C64; to $C7 on a C128: BA, FNBANK) */
 #define ZP(a) c->buf[(a) - 0xAE]
 
-/* " ALL RIGHTS RESERVED  VDRIVE SD 8 USB 9" without the leading space: each unit "SD 8" / "SD10" / "NOSD", "USB 9" / "USB11" /
+/* " ALL RIGHTS RESERVED  TDRIVE SD 8 USB 9" without the leading space: each unit "SD 8" / "SD10" / "NOSD", "USB 9" / "USB11" /
  * "NOUSB" (patches/vdbanner.s); returns its length (38) */
-VD_COLD static uint8_t banner_text(const vdrive_t *vd, uint8_t *t)
+VD_COLD static uint8_t banner_text(const tdrive_t *vd, uint8_t *t)
 {
     static const char *const name[2] = { "SD", "USB" };
     uint8_t n = 0;
     for (const char *s = vv_banner_head; *s; s++) t[n++] = (uint8_t)*s;
-    for (const char *s = "  VDRIVE "; *s; s++) t[n++] = (uint8_t)*s;
+    for (const char *s = "  TDRIVE "; *s; s++) t[n++] = (uint8_t)*s;
     for (int u = 0; u < 2; u++) {
         uint8_t d = vd->unit[u].present ? vd->dev[u] : 0;
         if (u) t[n++] = ' ';
@@ -266,7 +266,7 @@ VD_COLD static int vv_run(vvec_t *e, vv_ctx_t *c)
      * LOAD or SAVE of a run, or at the C128's launch INSTALL (the banner above) */
     if (c->scan && v->scan_state == 1) {
         v->scan_state = 3;
-        c->n = (uint8_t)vdrive_scan_begin(&v->vd);
+        c->n = (uint8_t)tdrive_scan_begin(&v->vd);
         for (c->dev = 8; c->n && c->dev < 31; c->dev++) {
             sc_poke1(e, 0x90, 0);
             CALL(K_LISTEN, c->dev, 0, 0);
@@ -274,7 +274,7 @@ VD_COLD static int vv_run(vvec_t *e, vv_ctx_t *c)
                 CALL(K_SECOND, 0x6F, 0, 0);
                 if (!(c->rst & 0x80)) { CALL(K_UNLSN, 0, 0, 0); continue; }
             }
-            c->n = (uint8_t)vdrive_scan_free(&v->vd, c->dev);
+            c->n = (uint8_t)tdrive_scan_free(&v->vd, c->dev);
         }
         vio_publish_devices(v);
         sc_poke1(e, 0x90, c->st);

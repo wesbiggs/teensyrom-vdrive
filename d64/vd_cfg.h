@@ -1,4 +1,4 @@
-/* Build-time knobs shared by d64.c / vdrive.c / vdrive_io.c. */
+/* Build-time knobs shared by d64.c / tdrive.c / tdrive_io.c. */
 #ifndef VD_CFG_H
 #define VD_CFG_H
 /* Placement for code that is NOT reachable from the bus interrupt. The firmware

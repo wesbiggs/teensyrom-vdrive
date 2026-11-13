@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""VDrive Config.prg (util/vdconfig.s, machine code) run in py65 (tests/c64_sim.py answers its KERNAL calls) against a model of the drive.
+"""TDrive Config.prg (util/vdconfig.s, machine code) run in py65 (tests/c64_sim.py answers its KERNAL calls) against a model of the drive.
 
-The model follows d64/vdrive.c and firmware/IOH_VDrive.c: "!CONFIG[,W]" / "!STATE" host text files, "$path" listings by path (they do not change
+The model follows d64/tdrive.c and firmware/IOH_TDrive.c: "!CONFIG[,W]" / "!STATE" host text files, "$path" listings by path (they do not change
 what is mounted), "CD:" with paths, the error channel, and the rule that closing channel 15 closes every channel of the unit. The real channel
 code is tested in tests/fw_host; this tests the program's logic, screen layout and keystrokes."""
 import pathlib, re, sys, tempfile, unittest
@@ -9,7 +9,7 @@ import pathlib, re, sys, tempfile, unittest
 try:
     import py65  # noqa: F401
 except ImportError:
-    print("SKIP py65 not installed (pip install py65): VDrive Config not run"); sys.exit(0)
+    print("SKIP py65 not installed (pip install py65): TDrive Config not run"); sys.exit(0)
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tests")); sys.path.insert(0, str(ROOT / "tools"))
@@ -125,9 +125,9 @@ class FakeDrive:
                 self.chans[lf] = Chan("r", dev, text.encode(), str(sa)); self.set_status(u, 0); return
             if base == "!CONFIG":
                 if flag.upper() == "W":
-                    self.chans[lf] = Chan("w", dev, name=str(sa)); self.chans[lf].target = "/vdrive-config.txt"
-                    u.files["/vdrive-config.txt"] = b""; self.set_status(u, 0); return
-                data = u.files.get("/vdrive-config.txt")
+                    self.chans[lf] = Chan("w", dev, name=str(sa)); self.chans[lf].target = "/tdrive-config.txt"
+                    u.files["/tdrive-config.txt"] = b""; self.set_status(u, 0); return
+                data = u.files.get("/tdrive-config.txt")
                 if data is None: self.set_status(u, 62, "FILE NOT FOUND"); self.chans[lf] = Chan("none", dev, name=str(sa)); return
                 text = data.decode().replace("\r", "").replace("\n", "\r").upper().encode()
                 self.chans[lf] = Chan("r", dev, text, str(sa)); self.set_status(u, 0); return
@@ -163,7 +163,7 @@ class FakeDrive:
 
 def make_sd():
     f = {"/games": None, "/games/zork.d64": IMG * 100, "/games/sub": None, "/games/sub/deep.d64": IMG, "/util": None, "/util/tools.d64": IMG,
-         "/big.d81": IMG, "/readme.txt": b"hello", "/.vdrive": b"/big.d81", "/ninechars_ok.d64": IMG}
+         "/big.d81": IMG, "/readme.txt": b"hello", "/.tdrive": b"/big.d81", "/ninechars_ok.d64": IMG}
     return f
 
 
@@ -173,11 +173,11 @@ CONFIG = ("# my disks\r\n/GAMES/ZORK.D64, 5, 2\r\n/UTIL/TOOLS.D64,7\r\n\r\n/BIG.
 class T(unittest.TestCase):
     def start(self, sd=None, usb=None, cfg=CONFIG, usb_cfg=None, devs=(8, 9), mounted=None, fast=True):
         files = make_sd() if sd is None else sd
-        if cfg is not None: files["/vdrive-config.txt"] = cfg.encode()
+        if cfg is not None: files["/tdrive-config.txt"] = cfg.encode()
         ufiles = None
         if usb is not False and devs[1]:
             ufiles = {"/usb.d64": IMG, "/disks": None, "/disks/a.d64": IMG}
-            if usb_cfg is not None: ufiles["/vdrive-config.txt"] = usb_cfg.encode()
+            if usb_cfg is not None: ufiles["/tdrive-config.txt"] = usb_cfg.encode()
         self.drive = FakeDrive(files, ufiles)
         if mounted: self.drive.units[8].mounted = mounted; self.drive.units[8].cwd = mounted.rpartition("/")[0]
         self.b = C64(PRG, self.drive, {56854: devs[0], 56855: devs[1], 53280: 14, 53281: 6, 646: 14}, fast=fast)
@@ -197,12 +197,12 @@ class T(unittest.TestCase):
         m = re.match(r"^[> ][* ]\s*(\d+) (\S+)\s+(\d+)\s+(\d+)x$", self.row(r))
         return m.groups() if m else None
 
-    def config(self, dev=8): return self.drive.units[dev].files.get("/vdrive-config.txt", b"").decode()
+    def config(self, dev=8): return self.drive.units[dev].files.get("/tdrive-config.txt", b"").decode()
 
     # ---------------------------------------------------------------- tests
     def test_first_screen(self):
         self.start(mounted="/games/zork.d64")
-        self.assertIn("VDrive Config", self.row(0))
+        self.assertIn("TDrive Config", self.row(0))
         self.assertEqual(self.row(1), "SD  8: /games/zork.d64")
         self.assertEqual(self.row(2), "USB 9: (Nothing mounted)")
         self.assertEqual(self.row(3), "List: SD (4 entries)" + " " * 8 + "Alt: 1 tap")
@@ -232,7 +232,7 @@ class T(unittest.TestCase):
         # a firmware without the colour line: the TR menu's defaults (black, purple border and banner, light red, yellow, light blue, light green)
         self.start(mounted="/games/zork.d64")
         self.assertEqual((self.b.mem[53280], self.b.mem[53281]), (4, 0))
-        self.assertEqual(self.colours_at(0, "VDrive Config"), ({4}, {True}))
+        self.assertEqual(self.colours_at(0, "TDrive Config"), ({4}, {True}))
         self.assertEqual((self.b.mem[0x0427], self.b.mem[0xD827]), (0xA0, 4), "the banner's last column")
         self.assertEqual(self.colours_at(21, "Return"), ({7}, {True}))      # a key: reverse, option colour
         self.assertEqual(self.colours_at(21, " Mount"), ({14}, {False}))    # what it does: sources colour
@@ -245,12 +245,12 @@ class T(unittest.TestCase):
         self.assertEqual(self.colours_at(20, "Ready."), ({10}, {False}))    # messages: time colour
 
     def test_menu_colours_from_state(self):
-        self.drive = FakeDrive(make_sd() | {"/vdrive-config.txt": CONFIG.encode()})
+        self.drive = FakeDrive(make_sd() | {"/tdrive-config.txt": CONFIG.encode()})
         self.drive.colours = "6E1F3C5"                   # background 6, border 14, banner 1, time 15, option 3, sources 12, name 5
         self.b = C64(PRG, self.drive, {56854: 8, 56855: 0})
         self.assertEqual(self.b.run(), "key")
         self.assertEqual((self.b.mem[53280], self.b.mem[53281]), (14, 6))
-        self.assertEqual(self.colours_at(0, "VDrive Config"), ({1}, {True}))
+        self.assertEqual(self.colours_at(0, "TDrive Config"), ({1}, {True}))
         self.assertEqual(self.colours_at(22, "+/-"), ({3}, {True}))
         self.assertEqual(self.colours_at(22, " Reorder"), ({12}, {False}))
         self.assertEqual(self.colours_at(4, "/games/zork.d64"), ({5}, {True}))
@@ -263,7 +263,7 @@ class T(unittest.TestCase):
         self.assertEqual(self.colours_at(21, "Return"), ({3}, {True}))
 
     def test_menu_colours_partial_line_ignored(self):
-        self.drive = FakeDrive(make_sd() | {"/vdrive-config.txt": CONFIG.encode()})
+        self.drive = FakeDrive(make_sd() | {"/tdrive-config.txt": CONFIG.encode()})
         self.drive.colours = "6E1"                       # not all seven: the defaults stay
         self.b = C64(PRG, self.drive, {56854: 8, 56855: 0})
         self.assertEqual(self.b.run(), "key")
@@ -359,7 +359,7 @@ class T(unittest.TestCase):
         self.keys(RET)                                   # ".." goes back to the root
         self.assertEqual(self.row(3), "Browse: /")
         self.keys(LEFTARROW)
-        self.assertTrue("VDrive Config" in self.row(0) and self.row(3).startswith("List:"))
+        self.assertTrue("TDrive Config" in self.row(0) and self.row(3).startswith("List:"))
         self.assertEqual(self.config(), CONFIG)
 
     def test_browse_and_mount_any_image(self):
@@ -525,7 +525,7 @@ class T(unittest.TestCase):
         self.assertEqual(self.drive.chans, {}, "every file closed first")
 
     def test_quit_without_an_answer_returns_to_basic(self):
-        self.drive = FakeDrive(make_sd() | {"/vdrive-config.txt": CONFIG.encode()})
+        self.drive = FakeDrive(make_sd() | {"/tdrive-config.txt": CONFIG.encode()})
         self.b = C64(PRG, self.drive, {56854: 8, 56855: 0, 53280: 14, 53281: 6, 646: 14}, menu_answer=False)
         self.assertEqual(self.b.run(), "key")
         self.b.press("q")
@@ -538,13 +538,13 @@ class T(unittest.TestCase):
     def test_lower_case_screen(self):
         self.start()
         self.assertTrue(self.b.screen.lower)
-        self.assertEqual(self.row(0), " " * 13 + "VDrive Config")
+        self.assertEqual(self.row(0), " " * 13 + "TDrive Config")
         self.keys("a")
         self.assertTrue(any("DIR" in self.row(r) for r in range(4, 12)), "listing types in capitals")
 
     def test_uses_the_numbers_the_menu_probe_left(self):
         # the TR menu probed the bus before the launch (a real drive at 8): $DE16 already says 9, and nothing is probed again
-        self.drive = FakeDrive(make_sd() | {"/vdrive-config.txt": CONFIG.encode()})
+        self.drive = FakeDrive(make_sd() | {"/tdrive-config.txt": CONFIG.encode()})
         self.drive.units = {9: self.drive.units.pop(8)}
         self.b = C64(PRG, self.drive, {56854: 9, 56855: 0})
         probes = []

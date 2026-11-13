@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 """VICE-side mock of the TR+ virtual-drive mailbox (RAM at MBX, see Makefile).
 
-The drive itself is the real C code (d64/vdrive.c via ctypes); only the mailbox
+The drive itself is the real C code (d64/tdrive.c via ctypes); only the mailbox
 transport is faked here.
 
 Drives x64sc through its binary monitor: a store-checkpoint on MBX+0 (CMD)
 stops the CPU, this script plays the Teensy (state machine for IEC devices
 8/9 backed by a tiny in-memory 'disk'), writes DATA/STAT/ST and resumes.
-usage: vdrive_mock.py KERNAL.bin [basic|scan|variant]
-       vdrive_mock.py STOCK.bin agent|agentscan VDAGENT.prg
-       vdrive_mock.py - agent128|agent128scan VDAGENT128.prg
+usage: tdrive_mock.py KERNAL.bin [basic|scan|variant]
+       tdrive_mock.py STOCK.bin agent|agentscan VDAGENT.prg
+       tdrive_mock.py - agent128|agent128scan VDAGENT128.prg
   basic    the whole feature test, no physical drives (the SD drive ends up as device 8 after the start-up scan)
   scan     physical 1541s at 8 and 10: the SD and USB drives must end up at 9 and 11
   agent    the plain-TeensyROM build (docs/DESIGN.md 52, 53) on the stock KERNAL: the agent (vector/vdagent.s) served from GeoRAM's
-           page at $DE00 (the stand-in for the Teensy's IO1 page), all logic in d64/vdrive_vec.c (VVec); SYS to its INSTALL entry
+           page at $DE00 (the stand-in for the Teensy's IO1 page), all logic in d64/tdrive_vec.c (VVec); SYS to its INSTALL entry
   agentscan  the same with physical 1541s at 8 and 10: chaining to the real drives, copies between a real drive and ours
   agent128 the agent on a C128 in 128 mode (docs/DESIGN.md 56): x128 with its own ROMs (BASIC 7.0), the agent in GeoRAM as above,
            the mailbox in RAM at $3F00 / $3F80 (below $4000: RAM in the system bank) and mirrored into both RAM banks, since the
@@ -26,13 +26,13 @@ MBX = 0xC800
 WIN = 0xCA00                      # IO2 window (RAM here)
 CMD, ARG, DATA, STAT, ST, LEN, DEV0, DEV1 = (MBX + i for i in range(8))
 (C_LISTEN, C_TALK, C_SECOND, C_TKSA, C_CIOUT, C_ACPTR, C_UNLSN, C_UNTLK) = range(1, 9)
-NOT_MINE = 0xA5                   # STAT answer tokens (see d64/vdrive_io.h)
+NOT_MINE = 0xA5                   # STAT answer tokens (see d64/tdrive_io.h)
 ANSWERED = 0x5A
 
 # ---- drive backed by libd64 ------------------------------------------------
 import ctypes, os, random, shutil, tempfile, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from d64py import LIB, Disk, VDrive, VIO, VVec, R_DEV0, R_DEV1, R_CMD, WIN_SIZE
+from d64py import LIB, Disk, TDrive, VIO, VVec, R_DEV0, R_DEV1, R_CMD, WIN_SIZE
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "tests"))
 from test_vio import HostStruct               # ctypes layout of vd_host_t
 import suite_files
@@ -150,7 +150,7 @@ def main(kernal, scenario="basic", vecprg=None):
         drives = ["-drive8type", "1541", "-drive8truedrive", "-drive9type", "0", "-drive10type", "1541", "-drive10truedrive", "-drive11type", "0",
                   "-8", str(workdir / "real8.d64"), "-10", str(workdir / "real10.d64")]
         if c128: drives = ["-drive8type", "1541", "-drive8truedrive", "-drive9type", "0", "-drive10type", "0", "-8", str(workdir / "real8.d64")]
-    # the banner bytes as VD_BannerUnits (firmware/IOH_VDrive.c) writes them into the served image: SD automatic, USB automatic
+    # the banner bytes as VD_BannerUnits (firmware/IOH_TDrive.c) writes them into the served image: SD automatic, USB automatic
     # in `scan` (a stick is attached there) and absent in `basic`
     if not c128:
         kimg = bytearray(pathlib.Path(kernal).read_bytes())
@@ -249,7 +249,7 @@ def main(kernal, scenario="basic", vecprg=None):
         cbs.create = HostStruct.CREATE(h_create); cbs.mkdir = HostStruct.MKDIR(h_mkdir); cbs.rmdir = HostStruct.MKDIR(h_rmdir); cbs.scratch = HostStruct.MKDIR(h_scratch)
         cbs.plain_open = HostStruct.HOPEN(h_popen); cbs.plain_read = HostStruct.HREAD(h_pread)
         cbs.plain_close = HostStruct.HCLOSE(lambda c, u: hs.update(plain=None))
-        LIB.vdrive_set_host(io.v, ctypes.byref(cbs))
+        LIB.tdrive_set_host(io.v, ctypes.byref(cbs))
         io.attach(0, disk)
         if scan:
             usb = workdir / "usb.d64"
@@ -377,7 +377,7 @@ def main(kernal, scenario="basic", vecprg=None):
         if agent:
             good = agent_tests(m, run, check, service, log, disk, big, workdir, pathlib.Path(vecprg).read_bytes(), real if scan else None)
             return 0 if good and ok else 1
-        banner = " 64K RAM  38911 FREE  VDRIVE " + ("SD 9 USB11" if scan else "SD 8 NOUSB")
+        banner = " 64K RAM  38911 FREE  TDRIVE " + ("SD 9 USB11" if scan else "SD 8 NOUSB")
         check("banner: %r (the KERNAL probed the bus itself at power-on)" % banner, banner in m.screen())
         if scan:
             # the first transaction below is a LOAD: the Teensy answers "scan first", the KERNAL probes 8, 9, 10, 11 and reports the free ones
@@ -438,13 +438,13 @@ def main(kernal, scenario="basic", vecprg=None):
                 img_ = workdir / "usb_after.d64"; img_.write_bytes(usbd.dump())
                 subprocess.run(["c1541", "-attach", str(img_), "-read", name, str(f)], capture_output=True)
                 return f.read_bytes() if f.exists() else b""
-            # vdrive -> vdrive: SD (9) to USB (11); the SD listing is TEST BIG ... vdcopy RPRG RSEQ, so 1 = TEST and 2 = BIG
+            # tdrive -> tdrive: SD (9) to USB (11); the SD listing is TEST BIG ... vdcopy RPRG RSEQ, so 1 = TEST and 2 = BIG
             vdcopy("1", False, "1 COPIED, 0 SKIPPED, 0 FAILED", "9", "11")
             check("vdcopy: SD -> USB, TEST byte for byte", usb_file("test") == real["test"])
             vdcopy("2", False, "1 COPIED, 0 SKIPPED, 0 FAILED", "9", "11")
             check("vdcopy: SD -> USB, BIG (6000 bytes) byte for byte", usb_file("big") == big)
             vdcopy("1-2", False, "0 COPIED, 2 SKIPPED, 0 FAILED", "9", "11")
-            # vdrive -> real drive: SD (9) to the 1541 (8), BIG; the 1541 then lists RPRG RSEQ TEST BIG. Back to the SD with replace (8 -> 9)
+            # tdrive -> real drive: SD (9) to the 1541 (8), BIG; the 1541 then lists RPRG RSEQ TEST BIG. Back to the SD with replace (8 -> 9)
             # proves the bytes the real drive stored, and 8 -> 11 puts RPRG on the USB image.
             vdcopy("2", False, "1 COPIED, 0 SKIPPED, 0 FAILED", "9", "8")
             vdcopy("2", False, "0 COPIED, 1 SKIPPED, 0 FAILED", "9", "8")        # the real drive answers 63
@@ -457,7 +457,7 @@ def main(kernal, scenario="basic", vecprg=None):
             check("vdcopy: 1541 -> USB, RPRG byte for byte", usb_file("rprg") == real["rprg"])
 
             # --- util/vdcopy D: whole disks, sector by sector, through the true-drive 1541 at 8 ---
-            # Every byte to or from a vdrive unit stops VICE for this mock, so a whole disk would take ~10 minutes here: the test patches
+            # Every byte to or from a tdrive unit stops VICE for this mock, so a whole disk would take ~10 minutes here: the test patches
             # VDCOPY to copy tracks 17-19 (both sides of a speed-zone change, and track 18 with the BAM); tests/test_vdcopy.py copies all 683.
             from make_util import label
             m.write(label(workdir / "util", "vdcopy", "tfirst"), [17, 19])
@@ -511,7 +511,7 @@ def main(kernal, scenario="basic", vecprg=None):
             m.write(MBX + 9, [0x10, 0x03])          # no ID (the menu's handler during a launch): the stock cold start
             jump_settle(0xFCE2)   # what a reset does; no `go` while VICE runs (it leaves the monitor stopping after every command)
             check("reset without the ID: the stock cold start, banner and READY.", banner in m.screen() and any("READY." in r for r in m.screen()))
-            m.write(MBX + 9, [0xD6, 0x64])          # the VDrive handler again (the launch is over)
+            m.write(MBX + 9, [0xD6, 0x64])          # the TDrive handler again (the launch is over)
             run('LOAD"$",8\r', "SEARCHING FOR $"); run('LIST\r', '0 "MOCKDISK')      # the drive still answers after it
             return 0 if ok else 1
 
@@ -649,7 +649,7 @@ def main(kernal, scenario="basic", vecprg=None):
         # --- paths in LOAD names, UI, D71 / D81 images ---
         run('NEW\r')
         run('10 OPEN15,8,15,"UI":INPUT#15,A,B$:PRINT"UI=";A;B$:CLOSE15\r')
-        run('RUN\r', "UI= 73 TRVDRIVE V1.0")
+        run('RUN\r', "UI= 73 TRTDRIVE V1.0")
         run('NEW\r')
         run('OPEN15,8,15,"CD:/":CLOSE15\r')
         run('LOAD"$/MOCK.D64",8\r', "SEARCHING FOR $/MOCK.D64")      # lists the image (mounted only while it is listed)
@@ -743,16 +743,16 @@ def main(kernal, scenario="basic", vecprg=None):
         run('SYS64738\r', "SYS64738", limit=2)                                 # waits for the Teensy's reset: never idle
         check("SYS64738: VIO_MENU sent, nothing else (calls %r)" % [e[0] for e in log[n0:]], [e[0] for e in log[n0:]] == [16] and menu["asked"] == 1)
         check("SYS64738: the KERNAL waits for the reset (no banner, no READY.)", not any("38911" in r for r in m.screen()))
-        # without the ID (the TR menu's handler during a launch, or no VDrive) the cold start is the stock one
+        # without the ID (the TR menu's handler during a launch, or no TDrive) the cold start is the stock one
         m.write(MBX + 9, [0x10, 0x03])          # what the menu's $DE19/$DE1A hold after a tune with init $1003
         jump_settle(0xFCE2)   # through the RESET vector's target, as a reset (not the monitor's reset command, nor a `go` while VICE runs: both leave it stopping after every command)
         check("reset without the ID: banner and READY. (calls %r)" % [e[0] for e in log[n0 + 1:]],
               banner in m.screen() and any("READY." in r for r in m.screen()) and menu["asked"] == 1)
-        m.write(MBX + 9, [0xD6, 0x64])          # the VDrive handler again (the launch is over)
+        m.write(MBX + 9, [0xD6, 0x64])          # the TDrive handler again (the launch is over)
         run('LOAD"$",8\r', "SEARCHING FOR $"); run('LIST\r', '0 "MOCKDISK')      # the drive still answers after it
         run('NEW\r')
 
-        # --- no VDrive handler (no ID: no TR, another Special IO, a KERNAL in a ROM socket): nothing written to the mailbox, the real
+        # --- no TDrive handler (no ID: no TR, another Special IO, a KERNAL in a ROM socket): nothing written to the mailbox, the real
         #     bus at once (vd_here), not after vcall's ~1 s time-out per call ---
         n0 = len(log)
         m.write(MBX + 9, [0xDE, 0xDE]); m.write(MBX, [0x77, 0x55]); m.write(MBX + 5, [0x33])
@@ -797,7 +797,7 @@ def main(kernal, scenario="basic", vecprg=None):
         shutil.rmtree(workdir, ignore_errors=True)
 
 def agent_tests(m, run, check, service, log, disk, big, workdir, vec, real):
-    """The plain-TeensyROM build on the stock KERNAL: vector/vdagent.s in GeoRAM, the logic in d64/vdrive_vec.c. `real` is set in
+    """The plain-TeensyROM build on the stock KERNAL: vector/vdagent.s in GeoRAM, the logic in d64/tdrive_vec.c. `real` is set in
     agentscan (true-drive 1541s at 8 and 10)."""
     res = {"ok": True}
     def chk(label, cond):
@@ -843,7 +843,7 @@ def agent_tests(m, run, check, service, log, disk, big, workdir, vec, real):
         expect('NEW\r')
         expect('10 OPEN1,8,15:INPUT#1,A,B$:CLOSE1:OPEN2,9,15,"UI":INPUT#2,C,D$:CLOSE2\r')
         expect('20 PRINT A;B$;"/";C;D$\r')
-        expect('RUN\r', "CBM DOS V2.6 1541/ 73 TRVDRIVE")
+        expect('RUN\r', "CBM DOS V2.6 1541/ 73 TRTDRIVE")
         expect('LOAD"X",8\r', "FILE NOT FOUND", absent="DEVICE NOT PRESENT")
         expect('LOAD"X",10\r', "FILE NOT FOUND", absent="DEVICE NOT PRESENT")
         expect('LOAD"X",12\r', "DEVICE NOT PRESENT")
@@ -973,7 +973,7 @@ def agent128_tests(m, run, check, service, log, disk, big, workdir, vec, real, m
     chk("not installed: BASIC 7's own KERNAL, nothing reached the mailbox", not log)
     expect('SYS%d,165\r' % sys_at, "READY.")                         # A = $A5: as the boot ROM's loader, against the ROM's tables
     scr = m.screen()
-    line = " ALL RIGHTS RESERVED  VDRIVE " + ("SD 9 USB10" if real else "SD 8 NOUSB")
+    line = " ALL RIGHTS RESERVED  TDRIVE " + ("SD 9 USB10" if real else "SD 8 NOUSB")
     chk("the start-up message's last line: %r (docs/DESIGN.md 59)" % scr[4], scr[4] == line)
     at = next((i for i, r in enumerate(scr) if r.startswith("SYS")), -1)
     chk("the cursor put back: READY. where BASIC 7 prints it after any SYS (a blank line, then READY.), rows 5-6 untouched",
@@ -990,7 +990,7 @@ def agent128_tests(m, run, check, service, log, disk, big, workdir, vec, real, m
 
     if real:
         typed(['10 OPEN1,8,15:INPUT#1,A,B$:CLOSE1:OPEN2,9,15,"UI":INPUT#2,C,D$:CLOSE2', '20 PRINT A;B$;"/";C;D$'])
-        expect('RUN\r', "CBM DOS V2.6 1541/ 73 TRVDRIVE")
+        expect('RUN\r', "CBM DOS V2.6 1541/ 73 TRTDRIVE")
         expect('LOAD"X",8\r', "FILE NOT FOUND", absent="DEVICE NOT PRESENT")
         expect('LOAD"X",10\r', "FILE NOT FOUND", absent="DEVICE NOT PRESENT")   # the USB unit
         expect('LOAD"X",11\r', "DEVICE NOT PRESENT")

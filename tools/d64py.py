@@ -82,25 +82,25 @@ class Disk:
         return buf.raw[:n] if n > 0 else b""
 
 
-LIB.vdrive_sizeof.restype = ctypes.c_size_t
-LIB.vdrive_mailbox.restype = ctypes.c_int
+LIB.tdrive_sizeof.restype = ctypes.c_size_t
+LIB.tdrive_mailbox.restype = ctypes.c_int
 (VD_LISTEN, VD_TALK, VD_SECOND, VD_TKSA, VD_CIOUT, VD_ACPTR, VD_UNLSN, VD_UNTLK) = range(1, 9)
 
 
-class VDrive:
-    """Python view of vdrive_t that speaks the KERNAL mailbox protocol."""
+class TDrive:
+    """Python view of tdrive_t that speaks the KERNAL mailbox protocol."""
     def __init__(self):
-        self.v = ctypes.create_string_buffer(LIB.vdrive_sizeof())
-        LIB.vdrive_init(self.v)
+        self.v = ctypes.create_string_buffer(LIB.tdrive_sizeof())
+        LIB.tdrive_init(self.v)
         self.disks = {}
 
     def attach(self, unit, disk, present=True):
         self.disks[unit] = disk
-        LIB.vdrive_attach(self.v, unit, disk.d if disk else None, int(present))
+        LIB.tdrive_attach(self.v, unit, disk.d if disk else None, int(present))
 
     def cmd(self, c, arg=0):
         data, st = ctypes.c_uint8(), ctypes.c_uint8()
-        nm = LIB.vdrive_mailbox(self.v, c, arg, ctypes.byref(data), ctypes.byref(st))
+        nm = LIB.tdrive_mailbox(self.v, c, arg, ctypes.byref(data), ctypes.byref(st))
         return nm, data.value, st.value
 
     # --- KERNAL-shaped helpers (what OPEN/SAVE/LOAD/INPUT# do on the bus) ---
@@ -149,7 +149,7 @@ LIB.vio_hot_sizeof.restype = ctypes.c_size_t
 LIB.vio_io1_read.restype = ctypes.c_uint8
 LIB.vio_io2_read.restype = ctypes.c_uint8
 LIB.vio_poll.restype = ctypes.c_int
-LIB.vdrive_active.restype = ctypes.c_int
+LIB.tdrive_active.restype = ctypes.c_int
 (R_CMD, R_ARG, R_DATA, R_STAT, R_ST, R_LEN, R_DEV0, R_DEV1) = range(8)
 (F_LOAD_OPEN, F_LOAD_BLK, F_SAVE_OPEN, F_SAVE_BLK, F_SAVE_CLOSE, F_SCAN, F_FREE, F_MENU, F_LOAD_DMA,
  F_SAVE_DMA, F_VERIFY_OPEN) = range(9, 20)
@@ -160,7 +160,7 @@ DMA_ADDR = 0xC3                    # VIO_DMA_ADDR: the caller's load address
 DMA_WRITE_FN = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_uint16, ctypes.POINTER(ctypes.c_uint8), ctypes.c_uint16)
 DMA_READ_FN = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_uint16, ctypes.POINTER(ctypes.c_uint8), ctypes.c_uint16)
 BUSY, OK, NOTMINE, SCANREQ = 0x80, 0x5A, 0xA5, 0x3C
-WIN_SIZE = 128                                    # VIO_WIN: the IO2 window at $DF80 (d64/vdrive_io.h)
+WIN_SIZE = 128                                    # VIO_WIN: the IO2 window at $DF80 (d64/tdrive_io.h)
 
 
 class VIO:
@@ -179,18 +179,18 @@ class VIO:
     def win_read(self, n): return bytes(self.win_r(i) for i in range(n))
 
     def attach(self, unit, disk, present=True):
-        # vio_t starts with vdrive_t, so the same pointer works
-        LIB.vdrive_attach(self.v, unit, disk.d if disk else None, int(present))
+        # vio_t starts with tdrive_t, so the same pointer works
+        LIB.tdrive_attach(self.v, unit, disk.d if disk else None, int(present))
         self.keep.append(disk)
 
     def arm_scan(self): return LIB.vio_arm_scan(self.v)
     def probe_begin(self): return LIB.vio_probe_begin(self.v)
     def probe_free(self, dev): return LIB.vio_probe_free(self.v, ctypes.c_uint8(dev))
-    def vd_act(self): return LIB.vdrive_active(self.v)
+    def vd_act(self): return LIB.tdrive_active(self.v)
     def take_menu(self): return LIB.vio_take_menu(self.v)
 
     def set_devices(self, d0, d1):
-        LIB.vdrive_set_devices(self.v, ctypes.c_uint8(d0), ctypes.c_uint8(d1))
+        LIB.tdrive_set_devices(self.v, ctypes.c_uint8(d0), ctypes.c_uint8(d1))
         LIB.vio_publish_devices(self.v)
 
     def call(self, cmd, arg=0, length=0, allow_scan=False):
@@ -308,7 +308,7 @@ class VIO:
 
 
 class VVec:
-    """the vector engine (d64/vdrive_vec.c) on top of a VIO: answers the agent's VV_C_VEC / VV_C_CONT, anything else goes to vio_poll"""
+    """the vector engine (d64/tdrive_vec.c) on top of a VIO: answers the agent's VV_C_VEC / VV_C_CONT, anything else goes to vio_poll"""
     C64, C128 = 0, 1                  # VV_M_*: the machine whose KERNAL the agent hooks
     def __init__(self, io, base, machine=0):
         self.e = ctypes.create_string_buffer(LIB.vvec_sizeof())

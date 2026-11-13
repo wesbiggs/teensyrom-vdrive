@@ -3,7 +3,7 @@ and against c1541 -validate (which rebuilds the BAM from the data chains and the
 which must rebuild the same BAM as c1541 -validate."""
 import ctypes, pathlib, random, shutil, subprocess, sys, tempfile, unittest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / 'tools'))
-from d64py import LIB, Disk, VDrive
+from d64py import LIB, Disk, TDrive
 
 GEOM = {"d64": (18, 1, 0), "d71": (18, 1, 0), "d81": (40, 3, 1)}       # directory track, first directory sector, super side sector
 
@@ -22,7 +22,7 @@ class RelBase(unittest.TestCase):
         img = self.tmp / ("d." + self.FMT)
         subprocess.run(["c1541", "-format", "rdisk,rd", self.FMT, str(img)], capture_output=True, check=True)
         self.disk = Disk(img.read_bytes())
-        self.vd = VDrive()
+        self.vd = TDrive()
         self.vd.attach(0, self.disk)
         self.vd.attach(1, None, present=False)
         self.rnd = random.Random(7)

@@ -1,9 +1,9 @@
 ; vcall (one mailbox transaction) and bus_scan (the lazy probe of the real serial bus for automatic numbers) of the KERNAL patch
-; (patches/vdrive.s). Needs mailbox.inc first. Its $FFB1 / $FF93 / $FFAE calls reach the patch's hooks, which answer not-mine while
+; (patches/tdrive.s). Needs mailbox.inc first. Its $FFB1 / $FF93 / $FFAE calls reach the patch's hooks, which answer not-mine while
 ; the scan runs. (A separate file since the first plain-TR build shared it, DESIGN.md 52; the agent does its scan in C.)
 
 ; in: command in A, argument in $A7 (written to MBX_ARG here, after the check).
-; Preserves X, Y. Nothing is written to the mailbox unless the ID register reads right (vd_here): without a VDrive handler
+; Preserves X, Y. Nothing is written to the mailbox unless the ID register reads right (vd_here): without a TDrive handler
 ; (no TR, another Special IO, the TR menu's own handler; a KERNAL in a ROM socket sees all of them) every call goes to the
 ; real bus at once. That matters beyond speed: under the TR menu's handler $DE11 (ARG) and $DE15 (LEN) are EEPROM-backed
 ; settings (MIDI, timezone) that a write would change. Then it waits up to ~1 s for the Teensy; a mailbox that never answers

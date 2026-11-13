@@ -5,7 +5,7 @@ usage: build_agent.py OUT.h [--vice OUT.prg]
 
 Hardware layout (docs/DESIGN.md 53): linked at $DE08 (IO1, after the SwiftLink ACIA's $DE00-$DE07), the mailbox registers at
 IO2 $DF00-$DF0A and the window at $DF80. The header holds VD_AgentBase and VD_Agent[] (the bytes from $DE08), which
-firmware/IOH_VDriveAgent.c serves from IO1. --vice also writes the VICE build (mailbox in RAM at $C800 / $CA00) as a PRG."""
+firmware/IOH_TDriveAgent.c serves from IO1. --vice also writes the VICE build (mailbox in RAM at $C800 / $CA00) as a PRG."""
 import pathlib, subprocess, sys, tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Build build/util/vdcopy.prg from util/vdcopy.s and "build/util/VDrive Config.prg" from util/vdconfig.s (both all machine code, loading at
-$0801 with a BASIC SYS stub; their tables are BSS, not in the PRG: from $2800 for VDCOPY, $2000 for VDrive Config).
+"""Build build/util/vdcopy.prg from util/vdcopy.s and "build/util/TDrive Config.prg" from util/vdconfig.s (both all machine code, loading at
+$0801 with a BASIC SYS stub; their tables are BSS, not in the PRG: from $2800 for VDCOPY, $2000 for TDrive Config).
 
 usage: make_util.py [OUTDIR]       (needs ca65/ld65)
-build(outdir) returns the path of the VDCOPY PRG (also used by make_testdisk.py and vdrive_mock.py); build_config(outdir) the other one.
+build(outdir) returns the path of the VDCOPY PRG (also used by make_testdisk.py and tdrive_mock.py); build_config(outdir) the other one.
 """
 import pathlib, subprocess, sys
 
@@ -31,7 +31,7 @@ def build(out, mock=False):
     return _asm(out, "vdcopy", 0x1800, bss=0x2800, defs=["DEV0REG=$C806"] if mock else ())
 
 def build_config(out):
-    return _asm(out, "vdconfig", 0x3000, "VDrive Config.prg")
+    return _asm(out, "vdconfig", 0x3000, "TDrive Config.prg")
 
 if __name__ == "__main__":
     out = pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else root / "build" / "util"

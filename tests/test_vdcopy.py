@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """VDCOPY (util/vdcopy.s, machine code) run in py65 (tests/c64_sim.py answers its KERNAL calls) against the real drive code.
 
-Both units are d64/vdrive.c through libd64: unit 8 plays the real floppy drive (the program only knows the vdrive units from $DE16/$DE17,
+Both units are d64/tdrive.c through libd64: unit 8 plays the real floppy drive (the program only knows the tdrive units from $DE16/$DE17,
 and those say 9), unit 9 is the SD card with a host folder behind it (CD: mounts, N:NAME.D64 creates, "!STATE" gives the TR menu's
-colours). The real 1541's side of the sector copy (U1/U2/B-P on a true drive) runs in VICE (tools/vdrive_mock.py scan); this tests the
+colours). The real 1541's side of the sector copy (U1/U2/B-P on a true drive) runs in VICE (tools/tdrive_mock.py scan); this tests the
 program's logic, its screens and the bytes it moves."""
 import ctypes, pathlib, subprocess, sys, tempfile, unittest
 
@@ -15,7 +15,7 @@ except ImportError:
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tests")); sys.path.insert(0, str(ROOT / "tools"))
 from c64_sim import C64
-from d64py import LIB, Disk, VDrive
+from d64py import LIB, Disk, TDrive
 from test_vio import HostStruct
 import make_util, suite_files
 
@@ -38,7 +38,7 @@ def image(path, name, files=()):
 
 
 class Bus:
-    """The KERNAL's view of the serial bus for c64_sim: each logical file maps to LISTEN/TALK on the vdrive mailbox."""
+    """The KERNAL's view of the serial bus for c64_sim: each logical file maps to LISTEN/TALK on the tdrive mailbox."""
     def __init__(self, vd):
         self.vd, self.files, self.st = vd, {}, 0
         self.units = {FLOPPY, SD}
@@ -71,8 +71,8 @@ class T(unittest.TestCase):
         self.floppy = Disk(image(self.tmp / "floppy.d64", "old floppy,f1", [("old", bytes(300))]))
         self.colours = None
         self.disks = {}
-        self.vd = VDrive()
-        LIB.vdrive_set_devices(self.vd.v, ctypes.c_uint8(FLOPPY), ctypes.c_uint8(SD))
+        self.vd = TDrive()
+        LIB.tdrive_set_devices(self.vd.v, ctypes.c_uint8(FLOPPY), ctypes.c_uint8(SD))
         cb = self.cb = HostStruct()
 
         def mount(ctx, unit, name, out):
@@ -97,7 +97,7 @@ class T(unittest.TestCase):
         cb.unmount = HostStruct.UNMOUNT(lambda c, u: None)
         cb.hf_open = HostStruct.HFOPEN(hf_open); cb.hf_read = HostStruct.HFREAD(hf_read)
         cb.hf_close = HostStruct.HFCLOSE(lambda c, u, w: None)
-        LIB.vdrive_set_host(self.vd.v, ctypes.byref(cb))
+        LIB.tdrive_set_host(self.vd.v, ctypes.byref(cb))
         self.vd.attach(0, self.floppy)
         self.vd.attach(1, None)
 
@@ -122,7 +122,7 @@ class T(unittest.TestCase):
         self.assertEqual(self.start(), "key")
         t = self.text()
         self.assertIn("VDCOPY", self.row(0))
-        self.assertIn("VDRIVE: SD UNIT 9", t)
+        self.assertIn("TDRIVE: SD UNIT 9", t)
         self.assertIn(" F  COPY FILES", t)
         self.assertIn(" D  COPY A WHOLE DISK, SECTOR BY SECTOR", t)
         self.assertEqual(self.keys("Q"), "end")

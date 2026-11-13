@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""The cold-start hook (rst_hook, patches/vdrive.s) run in a 6502 simulator (py65; skipped when it is not installed).
+"""The cold-start hook (rst_hook, patches/tdrive.s) run in a 6502 simulator (py65; skipped when it is not installed).
 
 $FCE2 (the RESET vector, also SYS64738) jumps to rst_hook, which sends VIO_MENU only when the ID registers $DE19/$DE1A read
-$D6 $64 (the VDrive handler answers); otherwise the stock cold start goes on at $FCE5. Synthetic stock image as in
+$D6 $64 (the TDrive handler answers); otherwise the stock cold start goes on at $FCE5. Synthetic stock image as in
 test_irq_border.py (no Commodore ROM needed); the IO1 registers answer from a script, writes to them are recorded."""
 import pathlib, subprocess, sys, tempfile
 
@@ -63,7 +63,7 @@ def run(regs, answer=0x5A, steps=2_000_000):
 
 assert img[0x1CE2:0x1CE5] == bytes([0x4C]) + img[0x1CE3:0x1CE5] and img[0x1CE5:0x1CE7] == bytes.fromhex("9ad8"), "JMP at $FCE2, TXS / CLD kept"
 
-# VDrive answers: VIO_MENU goes out, then the CPU waits
+# TDrive answers: VIO_MENU goes out, then the CPU waits
 what, writes, _ = run({ID0: 0xD6, ID1: 0x64})
 assert what == "spin" and writes == SENT, (what, writes)
 

@@ -1,12 +1,12 @@
 # Build artifacts: everything a release ships, attached to the GitHub release when one is published.
-# Firmware: three hex files with tools/build_firmware.sh (the TeensyROM commit in firmware/UPSTREAM + firmware/teensyrom-vdrive.patch,
+# Firmware: three hex files with tools/build_firmware.sh (the TeensyROM commit in firmware/UPSTREAM + firmware/teensyrom-tdrive.patch,
 # TeensyROM's own build script):
 #   tr           TeensyROM_<ver>_full.hex        plain TR, without DMA LOAD
 #   tr-plus      TeensyROM+_<ver>_full.hex       TR+, without DMA LOAD (the VD_DMA_LOAD=0 build, docs/DESIGN.md 49)
-#   tr-plus-dma  TeensyROM+_<ver>-DMA_full.hex   TR+ with DMA LOAD (Fab04_VDriveDMALoad; the version on the menu reads <ver>-DMA)
-# The plain TR hex has no VDrive yet (VDrive sits under Fab04_KernalReplace, TR+ only); it is built so the release carries both boards' files.
+#   tr-plus-dma  TeensyROM+_<ver>-DMA_full.hex   TR+ with DMA LOAD (Fab04_TDriveDMALoad; the version on the menu reads <ver>-DMA)
+# The plain TR hex has no TDrive yet (TDrive sits under Fab04_KernalReplace, TR+ only); it is built so the release carries both boards' files.
 # Test files (tools/make_testdisk.py, tests/basic/README.md), to copy to the root of the SD card or USB stick:
-#   vdtest.d64   VDSUITE, DMATEST, LOADTEST's data files, HELLO, BIG, VDCOPY, VDrive Config
+#   vdtest.d64   VDSUITE, DMATEST, LOADTEST's data files, HELLO, BIG, VDCOPY, TDrive Config
 #   vdbad.d64    VDSUITE's bad-sector image (section 5)
 #   vdplain.prg  VDSUITE's plain card file (section 6)
 # Runs only on demand: publishing a release, or a manual run (Actions tab, "Run workflow"), which builds them all and keeps them as

@@ -1,5 +1,5 @@
 ; REUTEST: how big is the REU really, and does every byte of it keep its own data?
-; Written for the VDrive+Swift+REU Special IO, whose REU size comes from the RAM left after SwiftLink (docs/DESIGN.md 32),
+; Written for the TDrive+Swift+REU Special IO, whose REU size comes from the RAM left after SwiftLink (docs/DESIGN.md 32),
 ; but works with any 1700/1764/1750-style REU at $DF00.
 ;   1. The status register's chip bit (bit 4: 1 = 256 Kbit chips, a 1764/1750; 0 = a 1700).
 ;   2. Size: one tag byte at offset 0 of each 64 KB bank, written from bank 7 down to bank 0, then read back from bank 0 up.

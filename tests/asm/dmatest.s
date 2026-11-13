@@ -1,4 +1,4 @@
-; DMATEST: do the TR+'s DMA writes reach C64 RAM while a VDrive handler serves the KERNAL (Kernal Replace's /GAME snoop running)?
+; DMATEST: do the TR+'s DMA writes reach C64 RAM while a TDrive handler serves the KERNAL (Kernal Replace's /GAME snoop running)?
 ; The question behind a DMA LOAD (docs/DESIGN.md 48). The program waits; the host (tools/dmatest.py) writes a pattern with the
 ; remote WriteC64Mem command into four areas, then writes SEED and ROUND at $03F0. The program checks every byte, under ROM with
 ; $01 = $34, and acknowledges the round at $03F2. It also checks three guard pages the host never writes (a DMA write landing outside
@@ -31,7 +31,7 @@ ROMERR   = $0380            ; rounds whose KERNAL sum differed
 ROMSUM   = $0382            ; the sum at start
 SUM      = $0384
 LASTR    = $0386
-IDOK     = $0387            ; 1: $DE19/$DE1A read $D6 $64 (a VDrive handler answers)
+IDOK     = $0387            ; 1: $DE19/$DE1A read $D6 $64 (a TDrive handler answers)
 ROW      = $0388
 VEND     = $0389            ; end of the cleared block
 
@@ -64,7 +64,7 @@ reg      = $FF              ; area index
         sta $FFFA
         lda #>nmirti
         sta $FFFB
-        lda $DE19               ; a VDrive handler answers ID $D6 $64
+        lda $DE19               ; a TDrive handler answers ID $D6 $64
         cmp #$D6
         bne :+
         lda $DE1A
@@ -426,8 +426,8 @@ abank:  .byte 0, 1, 0, 1, 0
 gpage:  .byte $1F, $40, $9F
 names:  .byte "2000-3FFF  ", "A000-BFFF  ", "C000-CFFF  ", "E000-FEFF  ", "GUARDS     "
 hdr:    .byte "DMATEST: TR+ DMA WRITES INTO RAM", 13, 13, 0
-idn:    .byte "VDRIVE HANDLER: YES", 13, 0
-noidn:  .byte "VDRIVE HANDLER: NO (ID NOT $D6 $64)", 13, 0
+idn:    .byte "TDRIVE HANDLER: YES", 13, 0
+noidn:  .byte "TDRIVE HANDLER: NO (ID NOT $D6 $64)", 13, 0
 rndn:   .byte "ROUNDS   ", 0
 ovrn:   .byte 13, "OVERRUN  ", 0
 romn:   .byte 13, "ROM SUM  ", 0

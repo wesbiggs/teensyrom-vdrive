@@ -33,13 +33,13 @@ build/vdagent128-vice.prg: vector/vdagent.s vector/agent.cfg patches/mailbox.inc
 	ca65 -I patches -D 'MBX=$$3F00' -D 'WIN=$$3F80' -o build/vdagent128-vice.o vector/vdagent.s
 	ld65 -C vector/agent.cfg -S 0xDE08 -o $@ build/vdagent128-vice.o
 
-test-agent: build/vdagent-vice.prg build/vdagent128-vice.prg build/libd64.dylib   # the agent + d64/vdrive_vec.c in VICE: the stock C64 KERNAL (mock `agent`, `agentscan`) and a C128 in 128 mode (`agent128`, `agent128scan`; skipped without x128)
-	python3 -I tools/vdrive_mock.py $(STOCK) agent build/vdagent-vice.prg
-	python3 -I tools/vdrive_mock.py $(STOCK) agentscan build/vdagent-vice.prg
-	if command -v x128 >/dev/null; then python3 -I tools/vdrive_mock.py - agent128 build/vdagent128-vice.prg && \
-	   python3 -I tools/vdrive_mock.py - agent128scan build/vdagent128-vice.prg; else echo "x128 not found: agent128 skipped"; fi
+test-agent: build/vdagent-vice.prg build/vdagent128-vice.prg build/libd64.dylib   # the agent + d64/tdrive_vec.c in VICE: the stock C64 KERNAL (mock `agent`, `agentscan`) and a C128 in 128 mode (`agent128`, `agent128scan`; skipped without x128)
+	python3 -I tools/tdrive_mock.py $(STOCK) agent build/vdagent-vice.prg
+	python3 -I tools/tdrive_mock.py $(STOCK) agentscan build/vdagent-vice.prg
+	if command -v x128 >/dev/null; then python3 -I tools/tdrive_mock.py - agent128 build/vdagent128-vice.prg && \
+	   python3 -I tools/tdrive_mock.py - agent128scan build/vdagent128-vice.prg; else echo "x128 not found: agent128 skipped"; fi
 
-D64SRC = d64/d64.c d64/vdrive.c d64/vdrive_io.c d64/vdrive_vec.c
+D64SRC = d64/d64.c d64/tdrive.c d64/tdrive_io.c d64/tdrive_vec.c
 build/libd64.dylib: $(D64SRC) $(wildcard d64/*.h)
 	cc -std=c99 -Wall -Wextra -Werror -fPIC -shared -o $@ $(D64SRC)
 	c++ -x c++ -std=gnu++17 -Wall -Wextra -Werror -fsyntax-only $(D64SRC)   # firmware compiles these as C++
@@ -48,18 +48,18 @@ test-d64: build/libd64.dylib
 	python3 -I tests/test_d64.py
 	python3 -I tests/test_d64_write.py
 	python3 -I tests/test_d71_d81.py
-	python3 -I tests/test_vdrive.py
+	python3 -I tests/test_tdrive.py
 	python3 -I tests/test_rel.py
 	python3 -I tests/test_vio.py
 	python3 -I tests/test_vvec.py
 
 test-devcfg:
-	cc -std=c99 -Wall -Wextra -Werror -DVD_DEV0=10 -DVD_DEV1=11 -o build/devcfg tests/devcfg.c d64/d64.c d64/vdrive.c && ./build/devcfg
+	cc -std=c99 -Wall -Wextra -Werror -DVD_DEV0=10 -DVD_DEV1=11 -o build/devcfg tests/devcfg.c d64/d64.c d64/tdrive.c && ./build/devcfg
 
 test-fw:
 	python3 -I tests/fw_host/run.py $(STOCK)   # with the stock ROM: the firmware's in-memory patch == kernal-tr.bin
 
-test-vdconfig:   # VDrive Config.prg (util/vdconfig.s) in py65 with its KERNAL calls answered by a drive model (skipped without py65)
+test-vdconfig:   # TDrive Config.prg (util/vdconfig.s) in py65 with its KERNAL calls answered by a drive model (skipped without py65)
 	python3 -I tests/test_vdconfig.py
 
 test-vdcopy: build/libd64.dylib   # VDCOPY (util/vdcopy.s) in py65 against the real drive code on both units: whole-disk and file copies (skipped without py65)
@@ -74,21 +74,21 @@ test-border:   # the border-flash routine in a 6502 simulator (skipped without p
 test-reset:   # the cold-start hook (SYS64738 back to the TR menu) in a 6502 simulator (skipped without py65)
 	python3 -I tests/test_reset_hook.py
 
-test-gate:   # the mailbox gate (no VDrive handler: no mailbox writes, the real bus at once) in a 6502 simulator (skipped without py65)
+test-gate:   # the mailbox gate (no TDrive handler: no mailbox writes, the real bus at once) in a 6502 simulator (skipped without py65)
 	python3 -I tests/test_vcall_gate.py
 
 test-banner:   # the power-on banner's drive numbers in a 6502 simulator with a fake serial bus (skipped without py65)
 	python3 -I tests/test_banner.py
 
-test-menuprobe: build/libd64.dylib   # the TR menu's launch-time bus probe (firmware/vdrive_probe.asm) in VICE, 1541s at 8 and 10 (skipped without acme)
+test-menuprobe: build/libd64.dylib   # the TR menu's launch-time bus probe (firmware/tdrive_probe.asm) in VICE, 1541s at 8 and 10 (skipped without acme)
 	python3 -I tests/menuprobe_vice.py
 
 test-variants: build/libd64.dylib   # the patch on each ROM the firmware patches in memory (VD_KnownKernals), in VICE; ROMs found next to STOCK
 	python3 -I tests/variants_vice.py $(STOCK)
 
 test: build/kernal-vd.bin build/kernal-vd-nodma.bin build/kernal-tr-nodma.bin build/libd64.dylib test-d64 test-devcfg test-fw test-border test-reset test-gate test-banner test-vdconfig test-vdcopy test-dmatest test-hash test-menuprobe test-variants test-agent
-	python3 -I tools/vdrive_mock.py build/kernal-vd.bin
-	python3 -I tools/vdrive_mock.py build/kernal-vd-nodma.bin scan
+	python3 -I tools/tdrive_mock.py build/kernal-vd.bin
+	python3 -I tools/tdrive_mock.py build/kernal-vd-nodma.bin scan
 
 shot: build/kernal-tr.bin
 	x64sc -warp -kernal $(CURDIR)/build/kernal-tr.bin -limitcycles 5000000 -exitscreenshot $(CURDIR)/build/banner.png

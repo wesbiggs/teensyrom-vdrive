@@ -36,6 +36,6 @@ Notes:
 * `11`-`15` need a C64 (or a C128 in C64 mode); `11`-`14` also need the program as loaded (the machine code sits after the BASIC text; editing a
   line drops it). VDSUITE lowers the top of BASIC to `$6000` at start: REUTEST's buffers and the soak's file live above it.
 * `VDSUITE` changes the selection (it ends at the card root, nothing mounted) and works in `/VDSCRATCH` on the card: its three images (quick-formatted on every run), `VSCMD.D64`, and `T2/E.D64`. `8` (also the last step of `9`) deletes them all with `S:` and the folders with `RD:`; a single section run on its own leaves them for the next one, reused, so the `N:` times show only when an image is made. It loads with the KERNAL's `LOAD` through `SYS` (BASIC's `LOAD` stops with `?LOAD ERROR` on a time-out, which a bad sector gives) to `$C000`, and uses `$0340` for the name.
-* In VICE (`make test`, `tools/vdrive_mock.py`) all sections run except `12` (its `LDD000` would overwrite the mock's mailbox at `$C800`); `11` there checks
+* In VICE (`make test`, `tools/tdrive_mock.py`) all sections run except `12` (its `LDD000` would overwrite the mock's mailbox at `$C800`); `11` there checks
   the mock's RAM mailbox, so only the hardware says anything about bus timing.
 * `DMATEST` stays a program of its own (it writes `$2000-$3FFF`, where VDSUITE's BASIC is): `docs/DESIGN.md` section 48.

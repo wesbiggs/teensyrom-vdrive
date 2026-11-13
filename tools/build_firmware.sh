@@ -1,8 +1,8 @@
 #!/bin/sh
-# Build a release firmware hex: the TeensyROM commit named in firmware/UPSTREAM, firmware/teensyrom-vdrive.patch applied,
+# Build a release firmware hex: the TeensyROM commit named in firmware/UPSTREAM, firmware/teensyrom-tdrive.patch applied,
 # built with TeensyROM's own tools/build-firmware.mjs.
 # usage: tools/build_firmware.sh tr|tr-plus|tr-plus-dma [outdir] [--install-toolchain]
-#   tr, tr-plus: without DMA LOAD, as the VD_DMA_LOAD=0 patch (docs/DESIGN.md 49): Fab04_VDriveDMALoad taken out again and the KERNAL table
+#   tr, tr-plus: without DMA LOAD, as the VD_DMA_LOAD=0 patch (docs/DESIGN.md 49): Fab04_TDriveDMALoad taken out again and the KERNAL table
 #     (vd_kpatch.h) rebuilt with tools/build.py -D VD_DMA_LOAD=0 (needs ca65/ld65). TeensyROM+_<ver>_full.hex, TeensyROM_<ver>_full.hex.
 #   tr-plus-dma: the committed patch as it is (DMA LOAD on), version <ver>-DMA (menu title and TeensyROM+_<ver>-DMA_full.hex).
 #   outdir defaults to build/firmware; the TeensyROM tree goes to build/teensyrom-<target> (fresh every run).
@@ -15,7 +15,7 @@ BOARD="${TARGET%-dma}"
 case "$OUT" in --*) OUT=build/firmware ;; esac
 INSTALL=0; for a in "$@"; do [ "$a" = --install-toolchain ] && INSTALL=1; done
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-# firmware/UPSTREAM: the commit, then the repository that has it (default: SensoriumEmbedded's; VDrive builds on the fork's
+# firmware/UPSTREAM: the commit, then the repository that has it (default: SensoriumEmbedded's; TDrive builds on the fork's
 # kernalreplace-fixes branch, which carries the shared disk image engine, Source/Teensy/DiskImage, ahead of upstream)
 read -r SHA REPO < "$HERE/firmware/UPSTREAM"
 REPO="${REPO:-https://github.com/SensoriumEmbedded/TeensyROM.git}"
@@ -26,26 +26,26 @@ rm -rf "$TR"; mkdir -p "$TR"; cd "$TR"
 git init -q
 git fetch -q --depth 1 "$REPO" "$SHA"
 git -c advice.detachedHead=false checkout -q FETCH_HEAD
-git apply "$HERE/firmware/teensyrom-vdrive.patch"
+git apply "$HERE/firmware/teensyrom-tdrive.patch"
 C=Source/Teensy/MinimalBoot/Common
 if [ "$TARGET" = tr-plus-dma ]; then
   python3 -I - "$C/Common_Defs.h" <<'PY'
 import re, sys
 p = sys.argv[1]; s = open(p).read()
 s, n = re.subn(r'(#define TRVersion\s+"[^"]+)"', r'\1-DMA"', s, count=1)
-assert n == 1 and "#define Fab04_VDriveDMALoad" in s, "TRVersion / Fab04_VDriveDMALoad not found"
+assert n == 1 and "#define Fab04_TDriveDMALoad" in s, "TRVersion / Fab04_TDriveDMALoad not found"
 open(p, "w").write(s)
 PY
 else
-  # what VD_DMA_LOAD=0 tools/make_tr_patch.sh writes: no Fab04_VDriveDMALoad, the KERNAL table without the DMA request
+  # what VD_DMA_LOAD=0 tools/make_tr_patch.sh writes: no Fab04_TDriveDMALoad, the KERNAL table without the DMA request
   python3 -I - "$C/Common_Defs.h" <<'PY'
 import re, sys
 p = sys.argv[1]; s = open(p).read()
-s, n = re.subn(r'^[ \t]*#define Fab04_VDriveDMALoad\b.*\n', '', s, flags=re.M)
-assert n == 1, "Fab04_VDriveDMALoad define not found"
+s, n = re.subn(r'^[ \t]*#define Fab04_TDriveDMALoad\b.*\n', '', s, flags=re.M)
+assert n == 1, "Fab04_TDriveDMALoad define not found"
 open(p, "w").write(s)
 PY
-  python3 -I "$HERE/tools/build.py" --table "$C/vdrive/vd_kpatch.h" -D VD_DMA_LOAD=0
+  python3 -I "$HERE/tools/build.py" --table "$C/tdrive/vd_kpatch.h" -D VD_DMA_LOAD=0
 fi
 # Committed so the tree is clean: the build date comes from the commit, and newer upstream build scripts mark a dirty tree's version ('*', -dirty).
 git add -A

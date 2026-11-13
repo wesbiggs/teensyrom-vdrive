@@ -4,14 +4,14 @@
  * (the registers and a few zero-page bytes, in the mailbox window, command VV_C_VEC); the answer is a short script for the agent:
  * POKE / PEEK C64 memory, CONT (more to come) and GO (load the registers and jump: return, chain to the vector we replaced,
  * a KERNAL error exit, or a call of a ROM routine whose result comes back as a frame). OPEN..SAVE, the file table and the
- * serial-bus scan are done here, on top of the byte-level drive (vdrive_mailbox); "not ours" chains to the old vector.
+ * serial-bus scan are done here, on top of the byte-level drive (tdrive_mailbox); "not ours" chains to the old vector.
  *
  * Handlers are protothreads: one that needs memory or a ROM call yields and goes on when the agent's next frame arrives.
  * A call that comes in while another waits for a ROM routine (that routine printed through CHROUT, or failed into CLRCHN) runs
  * on a context of its own above it. */
-#ifndef VDRIVE_VEC_H
-#define VDRIVE_VEC_H
-#include "vdrive_io.h"
+#ifndef TDRIVE_VEC_H
+#define TDRIVE_VEC_H
+#include "tdrive_io.h"
 
 #ifdef __cplusplus
 extern "C" {

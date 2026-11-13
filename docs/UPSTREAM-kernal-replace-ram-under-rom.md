@@ -1,6 +1,6 @@
 # Kernal Replace corrupts reads of the RAM under the KERNAL (draft report for TeensyROM)
 
-Found while testing the VDrive KERNAL on a TR+ (PCB v0.4, real C64, firmware 0.9). Nothing here depends on VDrive.
+Found while testing the TDrive KERNAL on a TR+ (PCB v0.4, real C64, firmware 0.9). Nothing here depends on TDrive.
 
 ## Symptom
 With Special IO = Kernal Replace and any KERNAL image (even the unmodified 901227-03), reading RAM at `$E000-$FFFF` with the KERNAL banked
@@ -29,9 +29,9 @@ those windows is taken over (Ultimax-style) and the CPU gets the bus instead of 
 is known to be RAM, and the timing of the first read after a `$01` write.
 
 ## Where it was seen
-Real C64 (breadbin), TR+ firmware 0.9 plus the VDrive patch (the handler is not involved: Special IO = Kernal Replace alone shows it).
+Real C64 (breadbin), TR+ firmware 0.9 plus the TDrive patch (the handler is not involved: Special IO = Kernal Replace alone shows it).
 
-## Fix (VDrive firmware 0.9.0.13, `firmware/kernalreplace-fixes.patch`)
+## Fix (TDrive firmware 0.9.0.13, `firmware/kernalreplace-fixes.patch`)
 Confirmed on hardware: once HIRAM is known to be RAM (sensed, and no write to `$00`/`$01` since), `KernalCheck` returns before `SetGameAssert`.
 `VAULTTEST` is then clean (0 errors in every column), with the stock image and ours. Quest for the King plays for long stretches.
 Upstream since [TeensyROM PR 78](https://github.com/SensoriumEmbedded/TeensyROM/pull/78) (with the C128 DMA HIRAM sense); `kernalreplace-fixes.patch` no longer carries it (0.9.0.37).
@@ -51,10 +51,10 @@ Three more findings from that work, useful for the Kernal Replace code in genera
   (about 6% of calls take over 5 us, a few 50 us) never coincided with a late phi2 interrupt; late interrupts fell to about one per 2 s.
   Late ISRs hit hardest at the first read after a `$01` write (the sense above): programs that switch `$01` constantly (Quest for the King, CCGMS
   with SwiftLink NMIs) got corrupt reads, NMIs or freezes. The TeensyROM developer terminal in Rx polling mode (rather than interrupt mode) worked well.
-  **0.9.0.14 fix (Teensy.ino `loop()`):** while a Kernal Replace, VDrive or SwiftLink handler runs and the stack is initialized, mask `IRQ_PIT` and call
+  **0.9.0.14 fix (Teensy.ino `loop()`):** while a Kernal Replace, TDrive or SwiftLink handler runs and the stack is initialized, mask `IRQ_PIT` and call
   `fnet_poll()` from `loop()` every ms. Blocking calls (`connect`, DHCP, DNS inside AT commands) wait for the stack and would hang, so `ProcessATCommand`
   unmasks PIT while it runs. Hardware: no stalls or flow-control problems in CCGMS over TCP (a rare glitch lines up with a rare late ISR),
-  q4k and VDrive fine with Ethernet on. The counters are in `ISRs.c` (`LateIsrCnt`, `LateIsrBkt[]`), printed by `Teensy.ino` as `LATE-ISR ...`; compiled in only with `LATE_ISR_TRACE`.
+  q4k and TDrive fine with Ethernet on. The counters are in `ISRs.c` (`LateIsrCnt`, `LateIsrBkt[]`), printed by `Teensy.ino` as `LATE-ISR ...`; compiled in only with `LATE_ISR_TRACE`.
   A start-up trace (`TRACE +ms ...`, same define) showed that 0.9.0.14 still had ~15 late ISRs in the first ~0.4 s after a launch, enough to crash q4k: `loop()` only masked the PIT timer once it saw the new handler. **0.9.0.15:** `PreStart` masks `IRQ_PIT` and starts the `loop()` poll immediately (`FnetLoopPollStart()`, held by `FnetPollHold` until the main menu returns); afterwards 0-1 late ISRs per second.
   **Upstream:** submitted as [TeensyROM PR 85](https://github.com/SensoriumEmbedded/TeensyROM/pull/85), Kernal Replace only (plain SwiftLink on the stock KERNAL was never measured, so it is not in the list); carried here as `firmware/kernal-fnet-poll.patch` from 0.9.0.41; merged upstream in `ac24701b` with review fixes (the PIT unmask moved to the SwiftLink dispatch, so browser commands get it too), patch dropped in 0.9.0.57.
 * **Tried and dropped:** a "serve map" (TR answers only the bytes that differ from the stock ROM, the real ROM serves the rest) broke disk access and made the

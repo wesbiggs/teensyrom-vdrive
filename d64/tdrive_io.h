@@ -5,11 +5,11 @@
  *                                                  +8 BORDER (R): request for the KERNAL's IRQ routine, see VIO_BRD_* (disk-switch feedback)
  *                                                  +9 ID0, +10 ID1 (R): VIO_ID0_VAL / VIO_ID1_VAL while the handler answers (the KERNAL's reset hook, see VIO_MENU)
  *   IO2 ($DF80): 128-byte window (RW): file name in, data blocks in/out. $DF00-$DF7F is not ours: the REU's registers live
- *                there in the "VDrive+REU" and "VDrive+Swift+REU" handlers (IOH_VDriveREU.c); the others leave it unanswered.
+ *                there in the "TDrive+REU" and "TDrive+Swift+REU" handlers (IOH_TDriveREU.c); the others leave it unanswered.
  *
  * ISR side (vio_io*_read/write) is O(1) and never touches storage. Everything
  * else runs from vio_poll() in the main loop. Portable C: host tests and the
- * Teensy glue (IOH_VDrive.c) use the same code.
+ * Teensy glue (IOH_TDrive.c) use the same code.
  *
  * Everything the bus ISR touches lives in the small vio_hot_t, which the firmware keeps in fast RAM1
  * (DTCM); the large drive state (vio_t) can sit in slower RAM2 because only the main loop uses it.
@@ -19,15 +19,15 @@
  * floating-bus misread (which returns the previous bus byte, $DE here) can never look like "done".
  *
  * Bus scan: the Teensy cannot see the serial bus, so when a unit has no fixed device number it asks the 6502 to probe it. It does
- * so lazily, on the first transaction of a run (the VDrive handler only becomes active once the program has been loaded): that
+ * so lazily, on the first transaction of a run (the TDrive handler only becomes active once the program has been loaded): that
  * command is answered with SCANREQ instead of being executed; the KERNAL sends SCAN, then FREE for each number where its
  * LISTEN found nobody, until the answer says nobody is waiting, and then repeats the original command. Asked once only: a
  * KERNAL that does not understand SCANREQ just times out on that one call and the defaults stay.
  * The TR menu probes the bus itself before it starts a program (vio_probe_begin / vio_probe_free, the same steps driven from the
  * menu's registers), so DEV0/DEV1 are right from the program's first instruction; after that probe nothing more is asked. */
-#ifndef VDRIVE_IO_H
-#define VDRIVE_IO_H
-#include "vdrive.h"
+#ifndef TDRIVE_IO_H
+#define TDRIVE_IO_H
+#include "tdrive.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -61,7 +61,7 @@ enum {
     VIO_SCAN       = 14,   /* start of the reset-time bus scan: releases the automatic units' numbers. DATA = units that need a number */
     VIO_FREE       = 15,   /* ARG = a device number nobody answered at; it goes to the next unit that needs one. DATA = units still waiting */
     VIO_MENU       = 16,   /* back to the TR menu: answered OK, then the Teensy writes back what is unsaved and resets the C64 into its menu
-                              (VDrive Config's Q; the KERNAL's cold start, SYS64738, once it has read VIO_ID0_VAL / VIO_ID1_VAL) */
+                              (TDrive Config's Q; the KERNAL's cold start, SYS64738, once it has read VIO_ID0_VAL / VIO_ID1_VAL) */
     VIO_FLOAD_DMA  = 17,   /* the next part of a fast LOAD, ARG/LEN = the address its first byte goes to (the KERNAL's $AE/$AF). Answered as
                               VIO_FLOAD_BLK (DATA = bytes in the window), or, when the host can DMA and the address allows it (vio_dma_ok), with
                               DATA = 0: up to dma_max bytes were written into C64 RAM by DMA and the end pointer into $AE/$AF (VIO_DMA_PTR).
@@ -86,18 +86,18 @@ enum {
  * there, a DMA read the machine's own ROM chip */
 #define vio_dma_rd_ok(a) ((a) >= 0x0200 && (a) < 0xD000)
 #define VIO_DMA_SAVE 0xAC  /* the KERNAL's SAVE pointer and end ($AC/$AD, $AE/$AF), read by VIO_FSAVE_DMA */
-#define VIO_DMA_SA   0xA4  /* the original secondary address of a LOAD / VERIFY (fl_hook in patches/vdrive.s keeps it there) */
+#define VIO_DMA_SA   0xA4  /* the original secondary address of a LOAD / VERIFY (fl_hook in patches/tdrive.s keeps it there) */
 #define VIO_DMA_ADDR 0xC3  /* the caller's load address ($C3/$C4), used with secondary address 0 */
 
 /* Registers + window: the only memory the bus ISR reads or writes (~140 bytes). Keep in DTCM. */
 typedef struct {
-    volatile uint8_t cmd, arg, data, stat, st, len, dev0, dev1, border, id0, id1, pending;   /* cmd..id1 are in register order (see the static_assert in IOH_VDrive.c) */
+    volatile uint8_t cmd, arg, data, stat, st, len, dev0, dev1, border, id0, id1, pending;   /* cmd..id1 are in register order (see the static_assert in IOH_TDrive.c) */
     uint8_t window[VIO_WIN];
 } vio_hot_t;
 
 /* Drive state and fast-path bookkeeping: main loop only. */
 typedef struct {
-    vdrive_t vd;                       /* must stay first: callers pass a vio_t* where a vdrive_t* is wanted */
+    tdrive_t vd;                       /* must stay first: callers pass a vio_t* where a tdrive_t* is wanted */
     vio_hot_t *h;
     uint8_t fl_active, fl_eof, fl_dev, fs_active, fs_dev;
     uint8_t fl_verify;                 /* the channel was opened by VIO_FVERIFY_OPEN: VIO_FLOAD_DMA compares instead of writing */
@@ -125,7 +125,7 @@ int     vio_probe_free(vio_t *v, uint8_t dev);   /* nobody answered at dev durin
 int     vio_take_menu(vio_t *v);             /* 1 once after VIO_MENU: the host should return to its menu */
 void    vio_set_dma(vio_t *v, int (*write)(void *ctx, uint16_t addr, const uint8_t *buf, uint16_t len),
                     int (*read)(void *ctx, uint16_t addr, uint8_t *buf, uint16_t len), void *ctx, uint8_t *buf, uint16_t max);
-void    vio_publish_devices(vio_t *v);       /* copy the current device numbers to the DEV0/DEV1 registers (call after vdrive_set_devices) */
+void    vio_publish_devices(vio_t *v);       /* copy the current device numbers to the DEV0/DEV1 registers (call after tdrive_set_devices) */
 
 size_t  vio_sizeof(void);
 size_t  vio_hot_sizeof(void);

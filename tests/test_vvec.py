@@ -1,4 +1,4 @@
-"""The vector engine (d64/vdrive_vec.c) against a Python stand-in for the agent (vector/vdagent.s): the script ops, INSTALL and its
+"""The vector engine (d64/tdrive_vec.c) against a Python stand-in for the agent (vector/vdagent.s): the script ops, INSTALL and its
 fast-path vectors, chaining, the re-hook after RESTOR, a call that arrives while a ROM routine runs, and contexts left over by
 RUN/STOP+RESTORE. The whole thing runs in VICE in `make test-agent`; this covers the cases VICE cannot easily set up.
 C128Test: the same engine with the C128's 128-mode KERNAL (docs/DESIGN.md 56) against a model of its MMU: two RAM banks, the ROMs of
@@ -438,7 +438,7 @@ class C128Test(unittest.TestCase):
         text, plots, listened, t = self.launch()
         self.assertEqual((t[0], t[4] & 1), (RTS, 0), "hooked, C clear")
         self.assertEqual(self.ag.w16(0x0330), ENTRIES + 3 * E["LOAD"])
-        self.assertEqual(text, {4: "ALL RIGHTS RESERVED  VDRIVE SD 8 NOUSB"})
+        self.assertEqual(text, {4: "ALL RIGHTS RESERVED  TDRIVE SD 8 NOUSB"})
         self.assertEqual(len(text[4]), 38)
         self.assertEqual(plots, [(4, 1), (5, 0)], "column 1 of row 4 (centered), then the cursor back where it was")
         self.assertEqual(listened, [], "fixed numbers: no scan")
@@ -447,7 +447,7 @@ class C128Test(unittest.TestCase):
         """the VDC's screen is not read: the cursor where the start-up message leaves it is the check"""
         self.io.attach(1, None, present=True); self.io.set_devices(8, 11)
         text, plots, _, _ = self.launch(cursor=(6, 0), mode=0x80)
-        self.assertEqual(text, {4: "ALL RIGHTS RESERVED  VDRIVE SD 8 USB11"})
+        self.assertEqual(text, {4: "ALL RIGHTS RESERVED  TDRIVE SD 8 USB11"})
         self.assertEqual(plots, [(4, 21), (6, 0)], "column 21 of 80")
 
     def test_no_banner_elsewhere(self):
@@ -479,7 +479,7 @@ class C128Test(unittest.TestCase):
         self.screen_row("ALL RIGHTS RESERVED")
         text, plots, listened, t = self.launch(listen=lambda d: d == 8)   # a real drive at 8
         self.assertEqual(listened, [8, 9, 10])
-        self.assertEqual(text, {4: "ALL RIGHTS RESERVED  VDRIVE SD 9 USB10"})
+        self.assertEqual(text, {4: "ALL RIGHTS RESERVED  TDRIVE SD 9 USB10"})
         self.assertEqual(self.ag.mem[0x90], 0, "ST as it was")
         self.name(b"X")
         self.ag.mem[0xBA], self.ag.mem[0xB9] = 9, 0

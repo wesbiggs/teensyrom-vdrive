@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""The mailbox gate (vd_here, called by vcall in patches/vdrive.s) in a 6502 simulator (py65; skipped when it is not installed).
+"""The mailbox gate (vd_here, called by vcall in patches/tdrive.s) in a 6502 simulator (py65; skipped when it is not installed).
 
-A KERNAL in a ROM socket (a MEGA65's C64 core, a burnt EPROM) runs with no VDrive handler too: no TR, another Special IO, the TR
+A KERNAL in a ROM socket (a MEGA65's C64 core, a burnt EPROM) runs with no TDrive handler too: no TR, another Special IO, the TR
 menu's own handler. vcall then must not write the mailbox at all and hand every call straight to the real bus, not wait for its
 ~1 s time-out. With the handler there, a late (bit-mixed) read of ID0 must not send a transaction to the real bus: vd_here tries
 4 times. Runs LISTEN ($ED0C, the hook) on a synthetic stock image as in test_reset_hook.py; reaching $F0A4 (stock LISTEN's

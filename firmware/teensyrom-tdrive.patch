@@ -1,12 +1,12 @@
 diff --git a/Source/C64/C128PrgBoot/C128PrgBoot.asm b/Source/C64/C128PrgBoot/C128PrgBoot.asm
-index 3ad4ded..d3614cb 100644
+index 3ad4ded..97b1cf4 100644
 --- a/Source/C64/C128PrgBoot/C128PrgBoot.asm
 +++ b/Source/C64/C128PrgBoot/C128PrgBoot.asm
 @@ -91,6 +91,27 @@ loaded  lda prgEnd
  
          lda #SYSTEM_BANK
          sta MMU_CR
-+        ; VDrive agent (teensyrom-vdrive, docs/DESIGN.md 56): let it hook the KERNAL's vectors now that the program is in memory
++        ; TDrive agent (teensyrom-vdrive, docs/DESIGN.md 56): let it hook the KERNAL's vectors now that the program is in memory
 +        lda $df09
 +        cmp #$d6
 +        bne +
@@ -31,7 +31,7 @@ index 3ad4ded..d3614cb 100644
  -       lda runKeys,x
          sta KEYBOARD_BUFFER,x
 diff --git a/Source/C64/MainMenuCRT/source/MainMenu.asm b/Source/C64/MainMenuCRT/source/MainMenu.asm
-index fca3660..8dcbc2b 100644
+index fca3660..0cda23e 100644
 --- a/Source/C64/MainMenuCRT/source/MainMenu.asm
 +++ b/Source/C64/MainMenuCRT/source/MainMenu.asm
 @@ -903,9 +903,12 @@ XferCopyRun:
@@ -39,11 +39,11 @@ index fca3660..8dcbc2b 100644
     
  ;Check for Kernal Replace Special IO and start it now
 +   lda #0
-+   sta rwRegScratch+IO1Port ;VDrive: a nonzero answer asks for VDriveProbe
++   sta rwRegScratch+IO1Port ;TDrive: a nonzero answer asks for TDriveProbe
     lda #rCtlKERNALPreStartWAIT
     sta wRegControl+IO1Port
     jsr WaitForTRDots ;use WaitForTRWaitMsg instead?
-+   jsr VDriveProbe
++   jsr TDriveProbe
  
     
  ; initialize mem/ints to be ready for PRG
@@ -51,62 +51,62 @@ index fca3660..8dcbc2b 100644
     jmp PRGLoadStartReloc     
     ;rts ;SelectItem never returns
  
-+;VDrive: with a VDrive Special IO and a virtual drive without a fixed number, the PreStart before this holds the replacement
++;TDrive: with a TDrive Special IO and a virtual drive without a fixed number, the PreStart before this holds the replacement
 +;KERNAL back and asks (rwRegScratch nonzero) for a probe of the serial bus, done here with the C64's own KERNAL, so the
 +;program finds the right numbers in $DE16/$DE17 from its first instruction. Each number from 8 up that no drive answers
 +;is offered with another PreStart (rwRegScratch = the number); the answer is how many drives still wait. $ff: none left.
-+;(teensyrom-vdrive firmware/vdrive_probe.asm, inserted into MainMenu.asm by tools/make_tr_patch.sh; docs/DESIGN.md 37)
-+VDriveProbe:
++;(teensyrom-vdrive firmware/tdrive_probe.asm, inserted into MainMenu.asm by tools/make_tr_patch.sh; docs/DESIGN.md 37)
++TDriveProbe:
 +   lda rwRegScratch+IO1Port
-+   beq VDriveProbeDone ;nothing to probe
++   beq TDriveProbeDone ;nothing to probe
 +   lda #8
-+   sta smcVDriveProbeDev+1
-+VDriveProbeNext:
-+   lda smcVDriveProbeDev+1
++   sta smcTDriveProbeDev+1
++TDriveProbeNext:
++   lda smcTDriveProbeDev+1
 +   cmp #31
-+   bcs VDriveProbeOut
++   bcs TDriveProbeOut
 +   lda #0
 +   sta $90 ;ST
-+smcVDriveProbeDev
++smcTDriveProbeDev
 +   lda #8 ;the number probed (self modified code)
 +   jsr $ffb1 ;LISTEN
 +   lda $90
-+   bmi VDriveProbeFree ;nothing on the bus at all
++   bmi TDriveProbeFree ;nothing on the bus at all
 +   lda #$6f
 +   jsr $ff93 ;SECOND (command channel, nothing is sent on it)
 +   lda $90
-+   bmi VDriveProbeFree
++   bmi TDriveProbeFree
 +   jsr $ffae ;UNLSN: a real drive answers at this number
-+   inc smcVDriveProbeDev+1
-+   jmp VDriveProbeNext
-+VDriveProbeOut:
++   inc smcTDriveProbeDev+1
++   jmp TDriveProbeNext
++TDriveProbeOut:
 +   lda #$ff ;8-30 all taken
-+   bne VDriveProbeTell
-+VDriveProbeFree:
-+   lda smcVDriveProbeDev+1
-+   inc smcVDriveProbeDev+1
-+VDriveProbeTell:
++   bne TDriveProbeTell
++TDriveProbeFree:
++   lda smcTDriveProbeDev+1
++   inc smcTDriveProbeDev+1
++TDriveProbeTell:
 +   sta rwRegScratch+IO1Port
 +   lda #rCtlKERNALPreStartWAIT
 +   sta wRegControl+IO1Port
 +   jsr WaitForTRDots
 +   lda rwRegScratch+IO1Port
-+   bne VDriveProbeNext ;a drive still waits for a number
-+VDriveProbeDone:
++   bne TDriveProbeNext ;a drive still waits for a number
++TDriveProbeDone:
 +   rts
 +
  AnyKeyErrMsgWait:
     lda #rpudSIDPauseMask    ;Pause SID playback on error
     sta smcSIDPauseStop+1
 diff --git a/Source/C64/MainMenuCRT/source/PRGLoadStartReloc.s b/Source/C64/MainMenuCRT/source/PRGLoadStartReloc.s
-index 53998d0..3e33320 100644
+index 53998d0..07e38ed 100644
 --- a/Source/C64/MainMenuCRT/source/PRGLoadStartReloc.s
 +++ b/Source/C64/MainMenuCRT/source/PRGLoadStartReloc.s
 @@ -96,6 +96,19 @@ MsgRunning:
     cmp #rihsReady
     bne -
     
-+   ;VDrive agent (teensyrom-vdrive, docs/DESIGN.md 53): let it hook the KERNAL's vectors now that the program is in memory
++   ;TDrive agent (teensyrom-vdrive, docs/DESIGN.md 53): let it hook the KERNAL's vectors now that the program is in memory
 +   lda $df09
 +   cmp #$d6
 +   bne +
@@ -123,21 +123,21 @@ index 53998d0..3e33320 100644
     lda #0    ;set to non-zero to skip printing MsgRunning
     bne +
 diff --git a/Source/Teensy/C128Prg.ino b/Source/Teensy/C128Prg.ino
-index 0e90f4c..2139ee7 100644
+index 0e90f4c..d6e3100 100644
 --- a/Source/Teensy/C128Prg.ino
 +++ b/Source/Teensy/C128Prg.ino
 @@ -82,10 +82,17 @@ FLASHMEM void LaunchC128BasicPrg(uint8_t *Prg, uint32_t Size)
        SendMsgPrintfln(PSTR("Too big for C128 BASIC"));
        return;
     }
-+#ifdef VDrive_Agent
-+   const bool VDriveAgent = VDrive_C128Launch(); //teensyrom-vdrive: with a VDrive Special IO this launch runs the agent (IOH_VDriveAgent.c)
++#ifdef TDrive_Agent
++   const bool TDriveAgent = TDrive_C128Launch(); //teensyrom-vdrive: with a TDrive Special IO this launch runs the agent (IOH_TDriveAgent.c)
 +#endif
     SendMsgPrintfln(PSTR("Starting C128 mode"));
     BootComplete = true;
     doReset = true;
-+#ifdef VDrive_Agent
-+   if (IsEmptyBasicPrg(Prg) && !VDriveAgent) //teensyrom-vdrive: with the agent, the boot ROM's loader installs it, so it runs this too
++#ifdef TDrive_Agent
++   if (IsEmptyBasicPrg(Prg) && !TDriveAgent) //teensyrom-vdrive: with the agent, the boot ROM's loader installs it, so it runs this too
 +#else
     if (IsEmptyBasicPrg(Prg))
 +#endif
@@ -145,16 +145,16 @@ index 0e90f4c..2139ee7 100644
        ExitToC128Basic();
        IOHandlerSelectInit();
 diff --git a/Source/Teensy/IOHandlers.ino b/Source/Teensy/IOHandlers.ino
-index 2055a5d..826f854 100644
+index 2055a5d..07aea4b 100644
 --- a/Source/Teensy/IOHandlers.ino
 +++ b/Source/Teensy/IOHandlers.ino
 @@ -41,6 +41,10 @@ void IOHandlerNextInit()
     IOHandlerInit(IO1[rwRegNextIOHndlr]);
  }
  
-+#ifdef VDrive_Any
-+   //menu programs keep the virtual drive: SwiftLink / REU ones get the matching VDrive Special IO (VDriveSwift_Remap)
-+   #define IOHandlerInit(h) IOHandlerInit(VDriveSwift_Remap(h))
++#ifdef TDrive_Any
++   //menu programs keep the virtual drive: SwiftLink / REU ones get the matching TDrive Special IO (TDriveSwift_Remap)
++   #define IOHandlerInit(h) IOHandlerInit(TDriveSwift_Remap(h))
 +#endif
  void IOHandlerSelectInit()
  { //called after cart loaded, PRG x-fer finished, or exit to basic (rsIOHWSelInit)
@@ -163,27 +163,27 @@ index 2055a5d..826f854 100644
     }
     else IOHandlerNextInit();
  }
-+#ifdef VDrive_Any
++#ifdef TDrive_Any
 +   #undef IOHandlerInit
 +#endif
  
  void IOHandlerInit(uint8_t NewIOHandler)
  { //called from above and directly from SetUpMainMenuROM
 diff --git a/Source/Teensy/MainMenuItems.h b/Source/Teensy/MainMenuItems.h
-index 75cea2d..465ffc3 100644
+index 75cea2d..dbf9501 100644
 --- a/Source/Teensy/MainMenuItems.h
 +++ b/Source/Teensy/MainMenuItems.h
 @@ -1,6 +1,14 @@
  
  //add PROGMEM to declaration of all main menu binaries:
  #include "TRMenuFiles/ROMs/ccgms_2021_Swiftlink_DE_38400.prg.h"
-+#ifdef VDrive_Any
++#ifdef TDrive_Any
 +   #include "TRMenuFiles/ROMs/vdconfig.prg.h"
 +#endif
-+#ifdef Fab04_VDrive
-+   #define IOH_VDriveMenu IOH_VDrive        //VDrive Config runs with the default VDrive Special IO (VDriveSwift_Remap)
++#ifdef Fab04_TDrive
++   #define IOH_TDriveMenu IOH_TDrive        //TDrive Config runs with the default TDrive Special IO (TDriveSwift_Remap)
 +#else
-+   #define IOH_VDriveMenu IOH_VDriveAgent   //the plain TR's only one
++   #define IOH_TDriveMenu IOH_TDriveAgent   //the plain TR's only one
 +#endif
  //#include "TRMenuFiles/ROMs/v1541wrap.prg.h"
  #include "TRMenuFiles/ROMs/SST.prg.h"
@@ -192,27 +192,27 @@ index 75cea2d..465ffc3 100644
       rtFilePrg  , IOH_Swiftlink    , (char*)"CCGMS 2021 Term       +SwiftLink ", (uint8_t*)ccgms_2021_Swift_DE_38k_prg, sizeof(ccgms_2021_Swift_DE_38k_prg) ,
  /*2*/rtFilePrg  , IOH_None         , (char*)"Exit to BASIC"                    , (uint8_t*)empty_prg                  , sizeof(empty_prg) ,    //used by location, see ExitToBASIC:
  /*3*/rtFilePrg  , IOH_None         , (char*)"LOAD\"*\",8,1  and  RUN"          , (uint8_t*)Load8Run_prg               , sizeof(Load8Run_prg) , //used by location, see Load8Run:
-+#ifdef VDrive_Any
-+     rtFilePrg  , IOH_VDriveMenu   , (char*)"VDrive Config             +VDrive", (uint8_t*)vdconfig_prg               , sizeof(vdconfig_prg) ,
++#ifdef TDrive_Any
++     rtFilePrg  , IOH_TDriveMenu   , (char*)"TDrive Config             +TDrive", (uint8_t*)vdconfig_prg               , sizeof(vdconfig_prg) ,
 +#endif
       rtFilePrg  , IOH_None         , (char*)"Exit to C128 BASIC         +C128" , (uint8_t*)c128basic_prg              , sizeof(c128basic_prg) ,
       rtFilePrg  , IOH_TR_BASIC     , (char*)"BASIC with TeensyROM Commands"    , (uint8_t*)TRCBC_prg                  , sizeof(TRCBC_prg) ,
       rtFileCrt  , IOH_None         , (char*)"Super Expander 64"                , (uint8_t*)super_expander_64_crt      , sizeof(super_expander_64_crt) ,
 diff --git a/Source/Teensy/MinimalBoot/Common/Common_Defs.h b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
-index 2c5d19a..9ae2d25 100644
+index 2c5d19a..9ca2d05 100644
 --- a/Source/Teensy/MinimalBoot/Common/Common_Defs.h
 +++ b/Source/Teensy/MinimalBoot/Common/Common_Defs.h
 @@ -14,9 +14,13 @@
     #define Fab04_REU                  //include REU  Special IO
     #define Fab04_Freezers             //include Freezer cart support
     #define Fab04_KernalReplace        //include Kernal Replacement support
-+   #define Fab04_VDrive               //virtual IEC drive for the replacement KERNAL (needs Fab04_KernalReplace)
-+   #define Fab04_VDriveDMALoad        //VDrive LOAD writes C64 RAM by DMA (needs Fab04_FullDMACapable); off: the 128-byte window only
++   #define Fab04_TDrive               //virtual IEC drive for the replacement KERNAL (needs Fab04_KernalReplace)
++   #define Fab04_TDriveDMALoad        //TDrive LOAD writes C64 RAM by DMA (needs Fab04_FullDMACapable); off: the 128-byte window only
     //#define Fab04_GlobalKernalReplace  //force kernal enable on all PRG launches, regardless of Special IO settings
     #define Fab04_DebugSignals         //For debug only
  #endif
-+#define VDrive_Agent   //virtual IEC drive through the KERNAL's RAM vectors and a 6502 agent served from IO1 (no Kernal Replace)
-+#define VDrive_Any     //any VDrive Special IO: the agent, and on the TR+ the replacement-KERNAL ones (Fab04_VDrive)
++#define TDrive_Agent   //virtual IEC drive through the KERNAL's RAM vectors and a 6502 agent served from IO1 (no Kernal Replace)
++#define TDrive_Any     //any TDrive Special IO: the agent, and on the TR+ the replacement-KERNAL ones (Fab04_TDrive)
  
  // The extension loader rides with the Fab 0.4 feature set: DoHostInstall blanks the screen
  // through the full DMA Fab04_FullDMACapable gates, and tools/build-firmware.mjs only turns
@@ -221,7 +221,7 @@ index 2c5d19a..9ae2d25 100644
  
  
 -#define TRVersion              "0.9"    //*VERSION*
-+#define TRVersion              "0.9.0.66"    //*VERSION*  (stock 0.9 + VDrive rev 66)
++#define TRVersion              "0.9.0.68"    //*VERSION*  (stock 0.9 + TDrive rev 68)
  // Special builds: tools/build-firmware.mjs --tag <name> defines TRVersionSuffix as "-<name>",
  // and a build with uncommitted edits to the image sources adds "*". Arduino IDE builds have
  // none. Leave TRVersion to releases: it names the hex and the browser's User-Agent.
@@ -229,8 +229,8 @@ index 2c5d19a..9ae2d25 100644
  #define FWCheckToken      0x64E0  // Check firmware type
  #define FWMinimalToken    0x64E1  // Minimal firmware response
  #define FWFullToken       0x64E2  // Full firmware response
-+#define VDriveGetToken    0x64E3  // VDrive: read what a unit has mounted
-+#define VDriveSetToken    0x64E4  // VDrive: mount an image on a unit / unmount
++#define TDriveGetToken    0x64E3  // TDrive: read what a unit has mounted
++#define TDriveSetToken    0x64E4  // TDrive: mount an image on a unit / unmount
  
  
  #define eepMagicNum         0xfeed6415 // 01: 6/22/23  net settings added 
@@ -239,13 +239,13 @@ index 2c5d19a..9ae2d25 100644
     eepAdPwrUpDefaults3= 4234, // (1:uint8_t)    power up default reg3, see bit mask defs RegPowerUpDefaultMasks3
     
 -   eepAdNext          = 4235, // Next address to be used
-+   eepAdVDriveDevs    = 4235, // (2:uint8_t x2)  VDrive KERNAL device numbers of the SD / USB units, 0 = default (VD_DEV0/1)
++   eepAdTDriveDevs    = 4235, // (2:uint8_t x2)  TDrive KERNAL device numbers of the SD / USB units, 0 = default (VD_DEV0/1)
 +   eepAdNext          = 4237, // Next address to be used
     eepAdUnused        = eepAdNext, // Reserved for future use, initialized to 0
     eepAdUnusedSize    = (4284-eepAdUnused), //Max size = 4284 (emulated in flash)
  };
 diff --git a/Source/Teensy/MinimalBoot/Common/IOHandlers.h b/Source/Teensy/MinimalBoot/Common/IOHandlers.h
-index 5e83b3e..c1d1b26 100644
+index 5e83b3e..357986e 100644
 --- a/Source/Teensy/MinimalBoot/Common/IOHandlers.h
 +++ b/Source/Teensy/MinimalBoot/Common/IOHandlers.h
 @@ -119,6 +119,12 @@ struct stcIOHandlers
@@ -253,11 +253,11 @@ index 5e83b3e..c1d1b26 100644
     #ifdef Fab04_KernalReplace
        #include "IO_Handlers/IOH_KernalReplace.c"
 +   #endif    
-+   #ifdef VDrive_Any
-+      #include "IO_Handlers/IOH_VDrive.c"
++   #ifdef TDrive_Any
++      #include "IO_Handlers/IOH_TDrive.c"
 +   #endif    
-+   #ifdef VDrive_Agent
-+      #include "IO_Handlers/IOH_VDriveAgent.c"   //needs IOH_VDrive.c
++   #ifdef TDrive_Agent
++      #include "IO_Handlers/IOH_TDriveAgent.c"   //needs IOH_TDrive.c
     #endif    
        #include "IO_Handlers/IOH_TeensyROM.c" 
     #ifdef Fab04_Freezers
@@ -265,11 +265,11 @@ index 5e83b3e..c1d1b26 100644
     #endif
        #include "IO_Handlers/IOH_TR_BASIC.c" 
        #include "IO_Handlers/IOH_Swiftlink.c"
-+   #ifdef Fab04_VDrive
-+      #include "IO_Handlers/IOH_VDriveSwift.c"   //needs IOH_VDrive.c and IOH_Swiftlink.c above
++   #ifdef Fab04_TDrive
++      #include "IO_Handlers/IOH_TDriveSwift.c"   //needs IOH_TDrive.c and IOH_Swiftlink.c above
 +   #ifdef Fab04_REU
-+      #include "IO_Handlers/IOH_VDriveREU.c"        //needs IOH_VDrive.c and IOH_REU.c above
-+      #include "IO_Handlers/IOH_VDriveSwiftREU.c"   //needs IOH_VDriveSwift.c and IOH_VDriveREU.c above
++      #include "IO_Handlers/IOH_TDriveREU.c"        //needs IOH_TDrive.c and IOH_REU.c above
++      #include "IO_Handlers/IOH_TDriveSwiftREU.c"   //needs IOH_TDriveSwift.c and IOH_TDriveREU.c above
 +   #endif
 +   #endif
        #include "IO_Handlers/IOH_ASID.c"
@@ -279,36 +279,36 @@ index 5e83b3e..c1d1b26 100644
     #ifdef Fab04_REU
        &IOHndlr_REU,                //IOH_REU,
     #endif  
-+   #ifdef Fab04_VDrive
-+      &IOHndlr_VDrive,             //IOH_VDrive,
-+      &IOHndlr_VDriveSwift,        //IOH_VDriveSwift,
++   #ifdef Fab04_TDrive
++      &IOHndlr_TDrive,             //IOH_TDrive,
++      &IOHndlr_TDriveSwift,        //IOH_TDriveSwift,
 +   #ifdef Fab04_REU
-+      &IOHndlr_VDriveSwiftREU,     //IOH_VDriveSwiftREU,
-+      &IOHndlr_VDriveREU,          //IOH_VDriveREU,
++      &IOHndlr_TDriveSwiftREU,     //IOH_TDriveSwiftREU,
++      &IOHndlr_TDriveREU,          //IOH_TDriveREU,
 +   #endif
 +   #endif  
-+   #ifdef VDrive_Agent
-+      &IOHndlr_VDriveAgent,        //IOH_VDriveAgent,
++   #ifdef TDrive_Agent
++      &IOHndlr_TDriveAgent,        //IOH_TDriveAgent,
 +   #endif  
     #ifdef Fab04_KernalReplace
        &IOHndlr_KernalReplace,      //IOH_KernalReplace,
     #endif  
 diff --git a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_KernalReplace.c b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_KernalReplace.c
-index 449bef5..b8246b5 100644
+index 449bef5..c6f30cb 100644
 --- a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_KernalReplace.c
 +++ b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_KernalReplace.c
 @@ -344,8 +344,16 @@ FLASHMEM void FreeKernalBin()
  
  void FnetLoopPollStart(); //Teensy.ino
  
-+#ifdef Fab04_VDrive
-+bool (*KernalImageSource)(uint8_t *Bin) = NULL; //fills Bin (8192 bytes) instead of the <Shift-K> file, false: nothing to serve (VDrive, set by KERNALPreStart())
-+static bool KernalFastOnly = false; //VDrive: the image is in KernalFast and KernalBin was freed after the copy (InitHndlr_KernalReplace still hooks it)
++#ifdef Fab04_TDrive
++bool (*KernalImageSource)(uint8_t *Bin) = NULL; //fills Bin (8192 bytes) instead of the <Shift-K> file, false: nothing to serve (TDrive, set by KERNALPreStart())
++static bool KernalFastOnly = false; //TDrive: the image is in KernalFast and KernalBin was freed after the copy (InitHndlr_KernalReplace still hooks it)
 +#endif
 +
  FLASHMEM void InitHndlr_KERNALReplace_PreStart() //not called automatically via init; called earlier, manually, from KERNALPreStart()
  {
-+#ifdef Fab04_VDrive
++#ifdef Fab04_TDrive
 +   KernalFastOnly = false;
 +#endif
  #ifdef Fab04_GlobalKernalReplace
@@ -318,7 +318,7 @@ index 449bef5..b8246b5 100644
        return;
     }
  
-+#ifdef Fab04_VDrive
++#ifdef Fab04_TDrive
 +   if (KernalImageSource != NULL)
 +   {
 +      if (!KernalImageSource(KernalBin))
@@ -341,8 +341,8 @@ index 449bef5..b8246b5 100644
  #ifndef KERNAL_NO_DTCM
     memcpy(KernalFast, KernalBin, 8192); //fast copy for the bus ISR
 +#endif
-+#if defined(Fab04_VDrive) && !defined(KERNAL_NO_DTCM)
-+   if (KernalImageSource != NULL) { FreeKernalBin(); KernalFastOnly = true; } //VDrive serves KernalFast only: the 8 KB heap copy would cost the REU a bank
++#if defined(Fab04_TDrive) && !defined(KERNAL_NO_DTCM)
++   if (KernalImageSource != NULL) { FreeKernalBin(); KernalFastOnly = true; } //TDrive serves KernalFast only: the 8 KB heap copy would cost the REU a bank
  #endif
     KSenseApplyMode();
     KDS_State = KDS_Idle;
@@ -350,7 +350,7 @@ index 449bef5..b8246b5 100644
     //Only after a PRG load (the handshake owns fBusSnoop) whose PreStart loaded a kernal. PreStart
     //runs on PRG launches only, but a generic CRT inherits Kernal Replace as its Special IO too:
     //hooked there, KernalCheck reads an unloaded KernalBin and drives GAME/EXROM over the cart's own.
-+#ifdef Fab04_VDrive
++#ifdef Fab04_TDrive
 +   if (fBusSnoop != &HandshakeSnoop || (KernalBin == NULL && !KernalFastOnly)) return;
 +#else
     if (fBusSnoop != &HandshakeSnoop || KernalBin == NULL) return;
@@ -359,7 +359,7 @@ index 449bef5..b8246b5 100644
     KDS_Read01Valid = false;
     PendingfBusSnoop = KernalCheckArm(); //not fBusSnoop directly -- may still be mid PRG-load handshake, see HandshakeSnoop
 diff --git a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_Swiftlink.c b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_Swiftlink.c
-index 90cd86e..b59600e 100644
+index 90cd86e..ebb8bd1 100644
 --- a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_Swiftlink.c
 +++ b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_Swiftlink.c
 @@ -160,7 +160,7 @@ extern void EEPwriteStr(uint16_t addr, const char* buf);
@@ -367,7 +367,7 @@ index 90cd86e..b59600e 100644
  extern void FreeDriveDirMenu();
  extern void SetRandomSeed();
 -#ifdef Fab04_GlobalKernalReplace
-+#if defined(Fab04_GlobalKernalReplace) || defined(Fab04_VDrive)
++#if defined(Fab04_GlobalKernalReplace) || defined(Fab04_TDrive)
  extern volatile bool FnetLoopPoll; //Teensy.ino
  #endif
  extern uint32_t RAM2BytesFree();
@@ -376,7 +376,7 @@ index 90cd86e..b59600e 100644
              TxMsg[TxMsgOffset-1] = 0; //terminate it
              Printf_dbg_sw("TxMsg: %s\n", TxMsg);
 -#ifdef Fab04_GlobalKernalReplace
-+#if defined(Fab04_GlobalKernalReplace) || defined(Fab04_VDrive)
++#if defined(Fab04_GlobalKernalReplace) || defined(Fab04_TDrive)
              //SwiftLink can run while the KERNAL is replaced: AT commands (connect, DHCP, DNS) and browser commands (DNS) block here
              //waiting for the stack, which then needs its PIT poll timer (masked while the poll runs from loop(), see FnetLoopPollService in Teensy.ino)
              if (FnetLoopPoll) NVIC_ENABLE_IRQ(IRQ_PIT);
@@ -385,26 +385,26 @@ index 90cd86e..b59600e 100644
                 if (!BrowserMode) SendATresponse(Resp);
              }
 -#ifdef Fab04_GlobalKernalReplace
-+#if defined(Fab04_GlobalKernalReplace) || defined(Fab04_VDrive)
++#if defined(Fab04_GlobalKernalReplace) || defined(Fab04_TDrive)
              if (FnetLoopPoll) NVIC_DISABLE_IRQ(IRQ_PIT);
  #endif
              TxMsgOffset = 0;
-diff --git a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c
+diff --git a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_TDrive.c b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_TDrive.c
 new file mode 100644
-index 0000000..3233e0f
+index 0000000..0c04218
 --- /dev/null
-+++ b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDrive.c
++++ b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_TDrive.c
 @@ -0,0 +1,1480 @@
-+// The VDrive Special IOs: the virtual IEC drive and its SD / USB glue. On the TeensyROM+ (Fab04_VDrive) "VDrive KERNAL" and its
-+// combined handlers serve a replacement KERNAL; on both boards (VDrive_Agent) IOH_VDriveAgent.c reaches the same drive through the
-+// KERNAL's RAM vectors and a 6502 agent (docs/DESIGN.md 53). The KERNAL-only parts are under Fab04_VDrive.
-+// "VDrive" Special IO for TeensyROM+: replacement KERNAL + virtual IEC drive.
++// The TDrive Special IOs: the virtual IEC drive and its SD / USB glue. On the TeensyROM+ (Fab04_TDrive) "TDrive KERNAL" and its
++// combined handlers serve a replacement KERNAL; on both boards (TDrive_Agent) IOH_TDriveAgent.c reaches the same drive through the
++// KERNAL's RAM vectors and a 6502 agent (docs/DESIGN.md 53). The KERNAL-only parts are under Fab04_TDrive.
++// "TDrive" Special IO for TeensyROM+: replacement KERNAL + virtual IEC drive.
 +//   unit 0 = SD card, unit 1 = USB drive. Device numbers are automatic by default: the first free numbers from 8 up
-+//   (the KERNAL probes the real serial bus on the first disk access of a run, see vdrive_io.h), so 8 (SD) and 9 (USB) when
++//   (the KERNAL probes the real serial bus on the first disk access of a run, see tdrive_io.h), so 8 (SD) and 9 (USB) when
 +//   no other drive is attached. A number can be fixed from BASIC with  OPEN15,8,15,"U0>"+CHR$(10):CLOSE15  (this drive becomes
 +//   device 10, kept in EEPROM; CHR$(0) makes it automatic again). Each unit serves a mounted .d64 / .d71 / .d81 (or lists the host
 +//   directory so one can be picked with  OPEN15,8,15,"CD:GAME.D64"  /  "CD:_" to unmount, or  LOAD"$/GAMES/GAME.D64",8).
-+// Uses the KERNAL bus hook from IOH_KernalReplace.c with its own image (VD_KernalImage below: /VDrive/kernal.bin on the SD card, else
++// Uses the KERNAL bus hook from IOH_KernalReplace.c with its own image (VD_KernalImage below: /TDrive/kernal.bin on the SD card, else
 +// the C64's own KERNAL patched in memory; the <Shift-K> file stays the plain Kernal Replace's) and adds the IO1/IO2 mailbox the
 +// patched KERNAL talks to.
 +//
@@ -418,47 +418,47 @@ index 0000000..3233e0f
 +#define VD_COLD FLASHMEM          // everything except the bus-ISR register accessors lives in flash
 +#include "../../../DiskImage/DiskImage.h"   // the D64/D71/D81 engine shared with GEOS, the TR block device and the menu
 +#include "../../../DiskImage/WriteBack.h"   // when an image's writes are synced to the card (shared with the TR block device)
-+#include "../vdrive/vdrive.c"
-+#include "../vdrive/vdrive_io.c"
++#include "../tdrive/tdrive.c"
++#include "../tdrive/tdrive_io.c"
 +
-+void VDrive_PreStart(bool agent = false);   // called from KERNALPreStart(), see StatusFunctions.c; agent: for IOH_VDriveAgent
-+uint8_t VDriveSwift_Remap(uint8_t ioh);   // IOH_VDriveSwift.c (IOH_VDriveAgent.c on the plain TR); used by KERNALPreStart() and IOHandlerSelectInit()
-+void IO2Hndlr_VDrive(uint8_t Address, bool R_Wn);
-+void VDrive_NoteLaunch();   // KERNALPreStart(), before anything there can free the menu's listing (below)
++void TDrive_PreStart(bool agent = false);   // called from KERNALPreStart(), see StatusFunctions.c; agent: for IOH_TDriveAgent
++uint8_t TDriveSwift_Remap(uint8_t ioh);   // IOH_TDriveSwift.c (IOH_TDriveAgent.c on the plain TR); used by KERNALPreStart() and IOHandlerSelectInit()
++void IO2Hndlr_TDrive(uint8_t Address, bool R_Wn);
++void TDrive_NoteLaunch();   // KERNALPreStart(), before anything there can free the menu's listing (below)
 +
-+#ifdef Fab04_VDrive
-+#include "../vdrive/vd_kpatch.h"   // VD_KernalPatch[]: patches/*.s as runs (tools/build.py --table)
++#ifdef Fab04_TDrive
++#include "../tdrive/vd_kpatch.h"   // VD_KernalPatch[]: patches/*.s as runs (tools/build.py --table)
 +bool VD_KernalImage(uint8_t *img);   // KernalImageSource for InitHndlr_KERNALReplace_PreStart() (IOH_KernalReplace.c), set by KERNALPreStart()
-+bool VDrive_ProbeStep();  // likewise, first: the menu's bus probe (below)
-+void InitHndlr_VDrive();
-+void PollingHndlr_VDrive();
-+void IO1Hndlr_VDrive(uint8_t Address, bool R_Wn);
++bool TDrive_ProbeStep();  // likewise, first: the menu's bus probe (below)
++void InitHndlr_TDrive();
++void PollingHndlr_TDrive();
++void IO1Hndlr_TDrive(uint8_t Address, bool R_Wn);
 +
-+stcIOHandlers IOHndlr_VDrive =
++stcIOHandlers IOHndlr_TDrive =
 +{
-+  "VDrive KERNAL",          //Name of handler (IOHNameLength max)
-+  &InitHndlr_VDrive,        //Called once at handler startup
-+  &IO1Hndlr_VDrive,         //IO1 R/W handler: mailbox registers
-+  &IO2Hndlr_VDrive,         //IO2 R/W handler: 128-byte data window at $DF80
++  "TDrive KERNAL",          //Name of handler (IOHNameLength max)
++  &InitHndlr_TDrive,        //Called once at handler startup
++  &IO1Hndlr_TDrive,         //IO1 R/W handler: mailbox registers
++  &IO2Hndlr_TDrive,         //IO2 R/W handler: 128-byte data window at $DF80
 +  NULL,                     //ROML Read handler, in addition to any ROM data sent
 +  NULL,                     //ROMH Read handler, in addition to any ROM data sent
-+  &PollingHndlr_VDrive,     //Polled in main routine: does all file system work
++  &PollingHndlr_TDrive,     //Polled in main routine: does all file system work
 +  NULL,                     //called at the end of EVERY c64 cycle
 +};
 +#endif
 +
-+// The VDrive Special IOs: the remote control and the listings while a program runs treat them all alike. VD_IsKernalHandler: the
++// The TDrive Special IOs: the remote control and the listings while a program runs treat them all alike. VD_IsKernalHandler: the
 +// ones that serve a KERNAL (PreStart loads it).
-+#if defined(Fab04_VDrive) && defined(Fab04_REU)
-+   #define VD_IsKernalHandler(h) ((h) == IOH_VDrive || (h) == IOH_VDriveSwift || (h) == IOH_VDriveSwiftREU || (h) == IOH_VDriveREU)
-+#elif defined(Fab04_VDrive)
-+   #define VD_IsKernalHandler(h) ((h) == IOH_VDrive || (h) == IOH_VDriveSwift)
++#if defined(Fab04_TDrive) && defined(Fab04_REU)
++   #define VD_IsKernalHandler(h) ((h) == IOH_TDrive || (h) == IOH_TDriveSwift || (h) == IOH_TDriveSwiftREU || (h) == IOH_TDriveREU)
++#elif defined(Fab04_TDrive)
++   #define VD_IsKernalHandler(h) ((h) == IOH_TDrive || (h) == IOH_TDriveSwift)
 +#else
 +   #define VD_IsKernalHandler(h) false
 +#endif
-+#define VD_IsHandler(h) (VD_IsKernalHandler(h) || (h) == IOH_VDriveAgent)
++#define VD_IsHandler(h) (VD_IsKernalHandler(h) || (h) == IOH_TDriveAgent)
 +
-+#define VD_MboxBase    0x10  // mailbox at $DE10-$DE1A: $DE00-$DE07 stays free for the SwiftLink ACIA (see IOH_VDriveSwift.c)
++#define VD_MboxBase    0x10  // mailbox at $DE10-$DE1A: $DE00-$DE07 stays free for the SwiftLink ACIA (see IOH_TDriveSwift.c)
 +#define VD_CwdLen      96
 +#define VD_PathLen     (2 * VD_CwdLen + 4)   // folder + '/' + a host name (imgName: under VD_CwdLen characters)
 +
@@ -473,7 +473,7 @@ index 0000000..3233e0f
 +   uint8_t *errTab;          // the image's error table (malloc, RAM2) when it marks any sector bad; NULL = none
 +   bool     mounted;
 +   struct ImageWriteBack wb; // img's unsynced writes (DiskImage/WriteBack.h)
-+   bool     quiet;           // temporary selection for a listing by path: leave the /.vdrive sidecar alone
++   bool     quiet;           // temporary selection for a listing by path: leave the /.tdrive sidecar alone
 +   char     imgName[VD_CwdLen];   // host (ASCII) name of the mounted image, in cwd (the C64 may have used its alias)
 +   char     snapCwd[VD_CwdLen];   // folder / image selected before a listing by path (push / pop)
 +   char     snapImg[VD_CwdLen];   // "" = nothing was mounted
@@ -486,12 +486,12 @@ index 0000000..3233e0f
 +#ifndef VD_ALLOC_HEAP
 +static vio_t vioStore;
 +#endif
-+// DMA LOAD (VIO_FLOAD_DMA, docs/DESIGN.md 49), SAVE and VERIFY (VIO_FSAVE_DMA, VIO_FVERIFY_OPEN, 51), only with Fab04_VDriveDMALoad
++// DMA LOAD (VIO_FLOAD_DMA, docs/DESIGN.md 49), SAVE and VERIFY (VIO_FSAVE_DMA, VIO_FVERIFY_OPEN, 51), only with Fab04_TDriveDMALoad
 +// (Common_Defs.h; needs Fab04_FullDMACapable): one part of a file at a time, read here and then written into C64 RAM by DMA (or read
 +// from C64 RAM by DMA, then saved or compared). 2 KB halts the CPU for about 2.5 ms per part (IRQs and NMIs wait that long); RAM1, like
 +// the rest (see vioStore). Without the flag no DMA hook is set: the drive answers every LOAD part through the 128-byte window, SAVE goes
 +// by window blocks and VERIFY the KERNAL's stock way, the same KERNAL included.
-+#ifdef Fab04_VDriveDMALoad
++#ifdef Fab04_TDriveDMALoad
 +#ifndef VD_DmaPart
 +#define VD_DmaPart 2048
 +#endif
@@ -501,7 +501,7 @@ index 0000000..3233e0f
 +static vio_t     *vio = NULL;       // everything else (main loop only; vioStore, or the heap with VD_ALLOC_HEAP)
 +static volatile bool vioReady = false;
 +static uint32_t   lastActivityMs = 0;
-+static void     (*vdDrivePoll)() = NULL;   // the running VDrive handler's drive poll (set by its init; the remote control's waits call it)
++static void     (*vdDrivePoll)() = NULL;   // the running TDrive handler's drive poll (set by its init; the remote control's waits call it)
 +static stcVDUnit  vdUnit[2];
 +
 +// ---- PETSCII <-> ASCII (names are uppercase on the C64 side) -------------------------------
@@ -535,7 +535,7 @@ index 0000000..3233e0f
 +}
 +
 +// ---- aliases: host names the C64 can't use as they are (over 16 characters, or characters it can't type) ------------------
-+// vd_alias() (vdrive.c) makes the C64 spelling. An alias holds only while no other entry of the folder shows the same name
++// vd_alias() (tdrive.c) makes the C64 spelling. An alias holds only while no other entry of the folder shows the same name
 +// (a real name or another alias); otherwise it is dropped (not listed, not found), never numbered. Every alias holds a '^',
 +// so a name without one never costs a folder scan.
 +FLASHMEM static int VD_Shown(const char *host, char out[17])   // 0 = real name, 1 = alias, -1 = not shown
@@ -595,18 +595,18 @@ index 0000000..3233e0f
 +{
 +   if (!u->mounted || !u->wb.Dirty) return;
 +   if (ImageWriteBackSynced(&u->wb, u->img.sync(), millis()))
-+      Serial.printf("VDrive %d: writes are not reaching the card; retrying\n", (int)(u - vdUnit) + 8);
++      Serial.printf("TDrive %d: writes are not reaching the card; retrying\n", (int)(u - vdUnit) + 8);
 +}
 +
 +FLASHMEM static void VD_CloseImage(stcVDUnit *u)
 +{
-+   if (u->img.isOpen() && !u->img.close()) Serial.printf("VDrive %d: last writes did not reach the card\n", (int)(u - vdUnit) + 8);
++   if (u->img.isOpen() && !u->img.close()) Serial.printf("TDrive %d: last writes did not reach the card\n", (int)(u - vdUnit) + 8);
 +   ImageWriteBackForget(&u->wb);
 +}
 +
-+// ---- remembered mount: "/.vdrive" on each unit's own file system holds the last mounted image's path --------
++// ---- remembered mount: "/.tdrive" on each unit's own file system holds the last mounted image's path --------
 +// Dot-named, so the TR menu (0.9+) and our own host listing hide it. Written on every successful mount, removed on unmount.
-+#define VD_Sidecar "/.vdrive"
++#define VD_Sidecar "/.tdrive"
 +
 +FLASHMEM static void VD_SidecarClear(stcVDUnit *u)
 +{
@@ -624,7 +624,7 @@ index 0000000..3233e0f
 +   f.close();
 +}
 +
-+// ---- host services for vdrive.c (CD:, host directory listing) --------------------------------
++// ---- host services for tdrive.c (CD:, host directory listing) --------------------------------
 +// Bad sectors: an image with one error byte per sector after the data (175,531 / 197,376 / 351,062 / 822,400 bytes) gets the
 +// table copied to the heap when any byte in it is a read error, so a bad sector costs no extra card access; all-OK tables
 +// (the usual case) are dropped. No memory: the image mounts without it.
@@ -640,7 +640,7 @@ index 0000000..3233e0f
 +   for (int i = 0; i < n; i++) if (d64_errcode(t[i])) nbad++;
 +   if (!nbad) { free(t); return; }
 +   u->errTab = t; u->d.errtab = t;
-+   Printf_dbg("VDrive: error table, %d bad sectors\n", nbad);
++   Printf_dbg("TDrive: error table, %d bad sectors\n", nbad);
 +}
 +
 +FLASHMEM static void VD_Unmount(void *ctx, int unit)
@@ -677,7 +677,7 @@ index 0000000..3233e0f
 +   strlcpy(u->imgName, leaf, sizeof u->imgName);
 +   *out = &u->d;
 +   VD_SidecarSave(u, path);
-+   Printf_dbg("VDrive %d: mounted %s%s\n", unit + 8, path, writable ? "" : " (read-only)");
++   Printf_dbg("TDrive %d: mounted %s%s\n", unit + 8, path, writable ? "" : " (read-only)");
 +   return 0;
 +}
 +
@@ -688,7 +688,7 @@ index 0000000..3233e0f
 +   return VD_MountHost(unit, path, out);
 +}
 +
-+// "N:NAME.D64,ID" with nothing mounted: a new all-zero image file in the current folder, then mounted (vdrive.c formats it).
++// "N:NAME.D64,ID" with nothing mounted: a new all-zero image file in the current folder, then mounted (tdrive.c formats it).
 +// Written in 4 KB pieces: a D81 is 800 KB and the whole command must finish inside the KERNAL's ~1.6 s mailbox wait.
 +FLASHMEM static int VD_Create(void *ctx, int unit, const char *name, uint32_t size, d64_t **out)
 +{
@@ -708,11 +708,11 @@ index 0000000..3233e0f
 +   free(zero);
 +   f.close();
 +   if (!ok) { u->fs->remove(path); return 72; }                                   // DISK FULL (the card)
-+   Printf_dbg("VDrive %d: created %s (%lu bytes)\n", unit + 8, path, (unsigned long)size);
++   Printf_dbg("TDrive %d: created %s (%lu bytes)\n", unit + 8, path, (unsigned long)size);
 +   return VD_MountHost(unit, path, out);
 +}
 +
-+// Plain files in the current folder, read with nothing mounted: LOAD"GAME.PRG" (vdrive.c tries NAME.PRG and patterns itself).
++// Plain files in the current folder, read with nothing mounted: LOAD"GAME.PRG" (tdrive.c tries NAME.PRG and patterns itself).
 +FLASHMEM static void VD_PlainClose(void *ctx, int unit)
 +{
 +   stcVDUnit *u = &vdUnit[unit];
@@ -763,7 +763,7 @@ index 0000000..3233e0f
 +   return u->fs->rmdir(path) ? 0 : 26;
 +}
 +
-+// S:NAME.D64 with nothing mounted: delete an image file (vdrive.c checks the name). A file with the FAT read-only attribute
++// S:NAME.D64 with nothing mounted: delete an image file (tdrive.c checks the name). A file with the FAT read-only attribute
 +// cannot be opened for writing (SdFat), so it stays: 26 WRITE PROTECT ON.
 +FLASHMEM static int VD_Scratch(void *ctx, int unit, const char *name)
 +{
@@ -777,7 +777,7 @@ index 0000000..3233e0f
 +   if (!w) return 26;
 +   w.close();
 +   if (!u->fs->remove(path)) return 26;
-+   Printf_dbg("VDrive %d: scratched %s\n", unit + 8, path);
++   Printf_dbg("TDrive %d: scratched %s\n", unit + 8, path);
 +   return 0;
 +}
 +
@@ -898,11 +898,11 @@ index 0000000..3233e0f
 +   return 0;
 +}
 +
-+// ---- host text files for the configuration utility (VDrive Config.prg): OPEN n,d,n,"!CONFIG[,W]" and "!STATE" ---------------------
-+// !CONFIG is the unit's /vdrive-config.txt (see the Alt button section below), !STATE three lines: the mounted image's path, the
++// ---- host text files for the configuration utility (TDrive Config.prg): OPEN n,d,n,"!CONFIG[,W]" and "!STATE" ---------------------
++// !CONFIG is the unit's /tdrive-config.txt (see the Alt button section below), !STATE three lines: the mounted image's path, the
 +// folder and the TR menu's colour references (IO1[rwRegColorRefStart..], NumColorRefs hex digits, so the utility matches the menu).
 +// Text crosses as PETSCII with CR line ends. One file at a time; opening another (or closing the channel) ends the first.
-+#define VD_ConfigName "/vdrive-config.txt"
++#define VD_ConfigName "/tdrive-config.txt"
 +extern volatile uint8_t* IO1;     // defined in IOH_TeensyROM.c, which is included after this file
 +static File       hfFile;
 +static int        hfKind = -1;
@@ -980,16 +980,16 @@ index 0000000..3233e0f
 +   return 0;
 +}
 +
-+// ---- fixed device numbers in EEPROM (0 / out of range = automatic, see vdrive_set_devices) --------------------
++// ---- fixed device numbers in EEPROM (0 / out of range = automatic, see tdrive_set_devices) --------------------
 +FLASHMEM static void VD_SaveDevices(void *ctx, uint8_t pin0, uint8_t pin1)
 +{
-+   EEPROM.write(eepAdVDriveDevs, pin0);        // written by "U0>"+CHR$(n) on the drive's command channel
-+   EEPROM.write(eepAdVDriveDevs + 1, pin1);
++   EEPROM.write(eepAdTDriveDevs, pin0);        // written by "U0>"+CHR$(n) on the drive's command channel
++   EEPROM.write(eepAdTDriveDevs + 1, pin1);
 +}
 +
 +FLASHMEM static void VD_LoadDevices()
 +{
-+   vdrive_set_devices(&vio->vd, EEPROM.read(eepAdVDriveDevs), EEPROM.read(eepAdVDriveDevs + 1));   // validates: unset / garbage / duplicate = automatic
++   tdrive_set_devices(&vio->vd, EEPROM.read(eepAdTDriveDevs), EEPROM.read(eepAdTDriveDevs + 1));   // validates: unset / garbage / duplicate = automatic
 +}
 +
 +// ---- mount at start-up: the image opened in the TeensyROM menu, else the one remembered in the sidecar ------------------
@@ -1015,18 +1015,18 @@ index 0000000..3233e0f
 +   memcpy(u->cwd, path, dl); u->cwd[dl] = 0;
 +   d64_t *d = NULL;
 +   int r = VD_MountHost(unit, path, &d);
-+   if (r == 0) vdrive_attach(&vio->vd, unit, d, 1);
++   if (r == 0) tdrive_attach(&vio->vd, unit, d, 1);
 +   else u->cwd[0] = 0;
 +   return r;
 +}
 +
-+// The menu source and DriveDirPath of this launch, noted by VDrive_NoteLaunch() before KERNALPreStart() frees the menu's listing
++// The menu source and DriveDirPath of this launch, noted by TDrive_NoteLaunch() before KERNALPreStart() frees the menu's listing
 +// for an REU Special IO (docs/DESIGN.md 50): upstream's FreeDriveDirMenu() turns the menu back to the Teensy one and DriveDirPath to
-+// "/", so VDrive_PreStart() read "not from an image" and mounted the remembered one (0.9.0.55-0.9.0.57).
++// "/", so TDrive_PreStart() read "not from an image" and mounted the remembered one (0.9.0.55-0.9.0.57).
 +static uint8_t vdLaunchMenu = 0xFF;          // 0xFF: nothing noted, PreStart reads the live values
 +static char vdLaunchPath[VD_PathLen];
 +
-+FLASHMEM void VDrive_NoteLaunch()
++FLASHMEM void TDrive_NoteLaunch()
 +{
 +   vdLaunchMenu = IO1[rWRegCurrMenuWAIT];
 +   size_t n = strlen(DriveDirPath);
@@ -1061,19 +1061,19 @@ index 0000000..3233e0f
 +// ---- handler ---------------------------------------------------------------------------------
 +extern bool SDFullInit();
 +extern bool USBFileSystemWait();
-+#ifdef Fab04_VDrive
++#ifdef Fab04_TDrive
 +void InitHndlr_KernalReplace();   // re-stages the KERNAL bus hook (IOH_KernalReplace.c)
 +#endif
 +
 +// All storage access (SD/USB probing, sizing) happens here, called from KERNALPreStart() while the C64 is still
 +// waiting for the TR ("WaitForTRDots"). Doing it later is unsafe: SD reads mask interrupts, and once the replacement
 +// KERNAL is live every C64 instruction fetch from $E000-$FFFF depends on the bus ISR running.
-+#ifdef Fab04_VDrive
++#ifdef Fab04_TDrive
 +FLASHMEM static void VD_ProbeBegin();
 +void VD_BannerUnits(uint8_t *img, int size, bool settled);   // below
 +void VD_BannerRegs(bool on, bool settled);
 +
-+#ifdef Fab04_VDriveDMALoad
++#ifdef Fab04_TDriveDMALoad
 +// vio's DMA write: the CPU waits in the KERNAL's mailbox loop meanwhile (vcall), and the bus ISR skips the snoop for the transfer.
 +FLASHMEM static int VD_DmaWrite(void *, uint16_t addr, const uint8_t *buf, uint16_t len)
 +{
@@ -1088,19 +1088,19 @@ index 0000000..3233e0f
 +#endif
 +#endif
 +
-+static bool vdNoMenuProbe = false;  // VD_KernalImage: the C64 keeps a KERNAL that is not this build's VDrive one (see there); one PreStart
++static bool vdNoMenuProbe = false;  // VD_KernalImage: the C64 keeps a KERNAL that is not this build's TDrive one (see there); one PreStart
 +
-+FLASHMEM void VDrive_PreStart(bool agent)
++FLASHMEM void TDrive_PreStart(bool agent)
 +{
 +#ifdef VD_ALLOC_HEAP
 +   if (vio == NULL) vio = (vio_t *)malloc(sizeof(vio_t));
 +#else
 +   vio = &vioStore;                 // vio_init() clears it on every start
 +#endif
-+   if (vio == NULL) { Serial.println("VDrive: out of memory"); return; }
++   if (vio == NULL) { Serial.println("TDrive: out of memory"); return; }
 +   vioReady = false;
 +   vio_init(vio, &vioHot);
-+#ifdef Fab04_VDriveDMALoad
++#ifdef Fab04_TDriveDMALoad
 +   vio_set_dma(vio, VD_DmaWrite, VD_DmaRead, NULL, vdDmaBuf, sizeof vdDmaBuf);
 +#endif
 +
@@ -1114,15 +1114,15 @@ index 0000000..3233e0f
 +   host.mkdir = VD_MkDir;  host.rmdir = VD_RmDir;  host.scratch = VD_Scratch;
 +   if (hfFile) hfFile.close();        // the drive state (and with it any open channel) was just reset
 +   hfKind = -1;
-+   vdrive_set_host(&vio->vd, &host);
++   tdrive_set_host(&vio->vd, &host);
 +   VD_LoadDevices();
 +
 +   for (int i = 0; i < 2; i++) { VD_CloseImage(&vdUnit[i]); vdUnit[i].mounted = false; vdUnit[i].quiet = false; vdUnit[i].cwd[0] = 0;
 +                                 free(vdUnit[i].errTab); vdUnit[i].errTab = NULL; }
 +   vdUnit[0].fs = &SD;              vdUnit[0].vol = &SD.sdfs;
 +   vdUnit[1].fs = &firstPartition;  vdUnit[1].vol = &firstPartition.mscfs;
-+   vdrive_attach(&vio->vd, 0, NULL, SDFullInit());
-+   vdrive_attach(&vio->vd, 1, NULL, USBFileSystemWait());
++   tdrive_attach(&vio->vd, 0, NULL, SDFullInit());
++   tdrive_attach(&vio->vd, 1, NULL, USBFileSystemWait());
 +   uint8_t menu = vdLaunchMenu != 0xFF ? vdLaunchMenu : IO1[rWRegCurrMenuWAIT];
 +   const char *dirPath = vdLaunchMenu != 0xFF ? vdLaunchPath : DriveDirPath;
 +   VD_StartupMount(0, menu == rmtSD, dirPath);
@@ -1130,20 +1130,20 @@ index 0000000..3233e0f
 +   vdLaunchMenu = 0xFF;             // one launch only
 +   int scanPending = vio_arm_scan(vio);   // automatic numbers: probed by the menu next (else on the first disk access, by the KERNAL
 +   vio_publish_devices(vio);              //   or, with the agent, by the vector engine: docs/DESIGN.md 53)
-+#ifdef Fab04_VDrive
++#ifdef Fab04_TDrive
 +   if (!agent) {
 +      VD_BannerUnits(KernalFast, 8192, false);   // the image InitHndlr_KERNALReplace_PreStart() just loaded, before the C64 prints its banner
-+      VD_BannerRegs(true, false);                // and the same for a VDrive KERNAL the C64 holds itself
++      VD_BannerRegs(true, false);                // and the same for a TDrive KERNAL the C64 holds itself
 +   }
 +#endif
 +   vioReady = true;                 // only now may the bus handlers answer
-+   Serial.printf("VDrive: dev %d (SD) %s, dev %d (USB) %s%s\n",
++   Serial.printf("TDrive: dev %d (SD) %s, dev %d (USB) %s%s\n",
 +                 vio->vd.dev[0], vio->vd.unit[0].present ? "ready" : "absent",
 +                 vio->vd.dev[1], vio->vd.unit[1].present ? "ready" : "absent",
 +                 !scanPending ? "" : agent ? " (numbers are settled on the first disk access)"
 +                 : !vdNoMenuProbe ? " (numbers are settled by the bus probe)"
 +                 : " (no bus probe in the menu: the C64's own KERNAL is not this build's; the KERNAL scans on its first disk access)");
-+#ifdef Fab04_VDrive
++#ifdef Fab04_TDrive
 +   if (scanPending && !agent && !vdNoMenuProbe) VD_ProbeBegin();   // the agent leaves rwRegScratch at 0: the menu skips its probe, the engine scans
 +#endif
 +   vdNoMenuProbe = false;
@@ -1154,8 +1154,8 @@ index 0000000..3233e0f
 +// false when the request was not done now; VD_AltPoll() asks again while the request is current.
 +static bool (*vdBorderOut)(uint8_t reg) = NULL;
 +
-+#ifdef Fab04_VDrive
-+// ---- the menu's bus probe before launch (MainMenu.asm, VDriveProbe; docs/DESIGN.md 37) -------------------------------------
++#ifdef Fab04_TDrive
++// ---- the menu's bus probe before launch (MainMenu.asm, TDriveProbe; docs/DESIGN.md 37) -------------------------------------
 +// Only the 6502 can see which numbers real drives hold. The TR menu probes the bus right after this PreStart, so DEV0/DEV1
 +// are right from the program's first instruction (the KERNAL's own scan, on the first disk access, is the fallback and is
 +// not asked for after this one). It probes with the C64's own KERNAL: the replacement is held back until the probe ends,
@@ -1185,15 +1185,15 @@ index 0000000..3233e0f
 +   fBusSnoop = vdProbeSnoop ? KernalCheckArm() : NULL;   // the C64's or the C128's check, with HIRAM_State set for it
 +   VD_BannerUnits(KernalFast, 8192, true);   // the probed numbers, so the banner need not probe again
 +   VD_BannerRegs(true, true);
-+   Serial.printf("VDrive: bus probe gave dev %d (SD), %d (USB)\n", vio->vd.dev[0], vio->vd.dev[1]);
++   Serial.printf("TDrive: bus probe gave dev %d (SD), %d (USB)\n", vio->vd.dev[0], vio->vd.dev[1]);
 +}
 +
 +// true: this PreStart call was a probe step, answered in rwRegScratch; false: an ordinary PreStart (rwRegScratch = 0)
-+FLASHMEM bool VDrive_ProbeStep()
++FLASHMEM bool TDrive_ProbeStep()
 +{
 +   uint8_t dev = IO1[rwRegScratch];
 +   if (!vdProbing || dev == 0)                // a new launch (any Special IO): a probe left over from a reset is dropped,
-+   {                                         // and so are the banner registers of an earlier VDrive launch
++   {                                         // and so are the banner registers of an earlier TDrive launch
 +      vdProbing = false;
 +      VD_BannerRegs(false, false);
 +      return false;
@@ -1204,7 +1204,7 @@ index 0000000..3233e0f
 +   return true;
 +}
 +
-+// The power-on banner's second line ends in "VDRIVE SD 8 USB 9" (patches/vdbanner.s). The C64 prints it before this handler owns the
++// The power-on banner's second line ends in "TDRIVE SD 8 USB 9" (patches/vdbanner.s). The C64 prints it before this handler owns the
 +// mailbox, so the numbers travel in the KERNAL image being served: the two bytes after the tag "VDUNITS:" (not printed) say per unit
 +// (SD, USB) $FE = absent or no number ("NOSD" / "NOUSB"), 8-30 = the number, $FF = automatic and not settled yet; 0 / 0, as built,
 +// means "not written" and prints the stock line. PreStart writes the pinned numbers and $FF for automatic units; when the menu's bus
@@ -1216,7 +1216,7 @@ index 0000000..3233e0f
 +static_assert(VD_BannerRegBase + 4 <= IO1Size, "the banner registers must lie inside the menu's IO1 array");
 +static const uint8_t VD_BannerTag[8] = { 'V', 'D', 'U', 'N', 'I', 'T', 'S', ':' };
 +
-+FLASHMEM static bool VD_HasBannerTag(const uint8_t *img)   // in an 8 KB image: a VDrive KERNAL from 0.9.0.36 on
++FLASHMEM static bool VD_HasBannerTag(const uint8_t *img)   // in an 8 KB image: a TDrive KERNAL from 0.9.0.36 on
 +{
 +   for (int a = 0; a + (int)sizeof VD_BannerTag <= 8192; a++)
 +      if (memcmp(img + a, VD_BannerTag, sizeof VD_BannerTag) == 0) return true;
@@ -1239,11 +1239,11 @@ index 0000000..3233e0f
 +      }
 +}
 +
-+// The same two bytes for a VDrive KERNAL the C64 holds itself (an EPROM, a MEGA65 core: docs/DESIGN.md 46), which the firmware
++// The same two bytes for a TDrive KERNAL the C64 holds itself (an EPROM, a MEGA65 core: docs/DESIGN.md 46), which the firmware
 +// cannot write into. The menu prints the banner itself after PreStart (MainMenu.asm, XferCopyRun: the KERNAL's init routines and
 +// INITMS, no reset) while the menu's own handler still answers IO1, and it answers a plain read with IO1[n]. Offsets 60-63
 +// ($DE3C-$DE3F) lie inside IO1Size between rwRegPwrUpDefaults3 (52) and StartSIDRegs (64), used by nothing: the tag $D6 $64, then SD,
-+// USB. Cleared by every other PreStart (VDrive_ProbeStep), so a launch with another Special IO never shows a stale VDRIVE field.
++// USB. Cleared by every other PreStart (TDrive_ProbeStep), so a launch with another Special IO never shows a stale TDRIVE field.
 +FLASHMEM void VD_BannerRegs(bool on, bool settled)
 +{
 +   IO1[VD_BannerRegBase + 0] = on ? 0xD6 : 0;
@@ -1253,15 +1253,15 @@ index 0000000..3233e0f
 +}
 +
 +// ---- the KERNAL image (docs/DESIGN.md 40) ---------------------------------------------------------------------------------
-+// The VDrive Special IOs serve their own image, not the <Shift-K> file (that one stays the plain Kernal Replace's, so another ROM
-+// there does not take the drives away): /VDrive/kernal.bin on the SD card when it is there (8192 bytes, served as it is: a
++// The TDrive Special IOs serve their own image, not the <Shift-K> file (that one stays the plain Kernal Replace's, so another ROM
++// there does not take the drives away): /TDrive/kernal.bin on the SD card when it is there (8192 bytes, served as it is: a
 +// kernal-tr.bin built on a PC from any base ROM), else the C64's own KERNAL, read by DMA while the menu waits in PreStart and
 +// patched here with VD_KernalPatch. Only ROMs the patch was tested on are patched (VD_KnownKernals, by CRC-32): our code calls into
 +// the stock routines, so a ROM that differs there (JiffyDOS, ...) would crash. Anything else, or a failed read, serves nothing:
 +// the C64 runs its own KERNAL and the drives stay silent (the serial console says why).
-+#define VD_KernalFile "/VDrive/kernal.bin"
++#define VD_KernalFile "/TDrive/kernal.bin"
 +struct stcVDKnownKernal { uint32_t crc; const char *name; };
-+static const stcVDKnownKernal VD_KnownKernals[] = {   // each checked in VICE with tools/vdrive_mock.py ... variants
++static const stcVDKnownKernal VD_KnownKernals[] = {   // each checked in VICE with tools/tdrive_mock.py ... variants
 +   { 0xdbe3e7c7, "901227-03" },                       // C64 (also the C128's C64 mode on some boards)
 +   { 0xa5c687b3, "901227-02" },                       // early C64
 +   { 0x2c5965d4, "251104-04 (SX-64)" },
@@ -1276,7 +1276,7 @@ index 0000000..3233e0f
 +   return ~c;
 +}
 +
-+// true: every run of VD_KernalPatch is in img already, byte for byte: the C64 holds this build's VDrive KERNAL itself (burnt into a
++// true: every run of VD_KernalPatch is in img already, byte for byte: the C64 holds this build's TDrive KERNAL itself (burnt into a
 +// ROM in the socket, a MEGA65 C64 core's KERNAL file). A table run outside $E000-$FFFF: false.
 +FLASHMEM bool VD_KernalPatchPresent(const uint8_t *img)
 +{
@@ -1312,9 +1312,9 @@ index 0000000..3233e0f
 +   return true;
 +}
 +
-+// Nothing served (false) leaves the mailbox live all the same: a VDrive KERNAL the C64 holds itself still has its drives. Only this
++// Nothing served (false) leaves the mailbox live all the same: a TDrive KERNAL the C64 holds itself still has its drives. Only this
 +// build's one gets the menu's bus probe (vdNoMenuProbe): the probe runs through the C64's own KERNAL under the menu's IO1 handler,
-+// and a VDrive KERNAL older than the mailbox gate (vd_here in patches/vdrive.s) would write the menu's EEPROM-backed registers
++// and a TDrive KERNAL older than the mailbox gate (vd_here in patches/tdrive.s) would write the menu's EEPROM-backed registers
 +// at $DE11 / $DE15 there (MIDI settings, timezone). Without the probe the KERNAL's own scan settles the numbers.
 +FLASHMEM bool VD_KernalImage(uint8_t *img)
 +{
@@ -1326,33 +1326,33 @@ index 0000000..3233e0f
 +      {
 +         bool ok = !f.isDirectory() && f.size() == 8192 && f.read(img, 8192) == 8192;
 +         f.close();
-+         Serial.printf("VDrive: KERNAL %s%s\n", VD_KernalFile, ok ? "" : ": not 8192 bytes, not used");
++         Serial.printf("TDrive: KERNAL %s%s\n", VD_KernalFile, ok ? "" : ": not 8192 bytes, not used");
 +         if (ok) { vdNoMenuProbe = false; return true; }
 +      }
 +   }
-+   if (!VD_KernalRead(img)) { Serial.println("VDrive: could not read the C64's KERNAL (DMA), drives off"); return false; }
++   if (!VD_KernalRead(img)) { Serial.println("TDrive: could not read the C64's KERNAL (DMA), drives off"); return false; }
 +   uint32_t crc = VD_Crc32(img, 8192);
 +   for (const stcVDKnownKernal &k : VD_KnownKernals)
 +      if (k.crc == crc)
 +      {
-+         if (!VD_KernalPatchApply(img)) { Serial.println("VDrive: bad KERNAL patch table, drives off"); return false; }
-+         Serial.printf("VDrive: the C64's KERNAL %s, patched (%d bytes)\n", k.name, VD_KernalPatchBytes);
++         if (!VD_KernalPatchApply(img)) { Serial.println("TDrive: bad KERNAL patch table, drives off"); return false; }
++         Serial.printf("TDrive: the C64's KERNAL %s, patched (%d bytes)\n", k.name, VD_KernalPatchBytes);
 +         vdNoMenuProbe = false;
 +         return true;
 +      }
 +   if (VD_KernalPatchPresent(img))
 +   {
-+      Serial.println("VDrive: the C64's own KERNAL is this build's VDrive KERNAL (a ROM, a MEGA65 core): nothing served, the drives answer it");
++      Serial.println("TDrive: the C64's own KERNAL is this build's TDrive KERNAL (a ROM, a MEGA65 core): nothing served, the drives answer it");
 +      vdNoMenuProbe = false;
 +      return false;
 +   }
 +   if (VD_HasBannerTag(img))
 +   {
-+      Serial.printf("VDrive: the C64's own KERNAL is another build's VDrive KERNAL (CRC-32 %08lx): nothing served, the drives answer it, "
++      Serial.printf("TDrive: the C64's own KERNAL is another build's TDrive KERNAL (CRC-32 %08lx): nothing served, the drives answer it, "
 +                    "no bus probe in the menu; rebuild it from this revision\n", (unsigned long)crc);
 +      return false;
 +   }
-+   Serial.printf("VDrive: the C64's KERNAL (CRC-32 %08lx) is not one the patch knows, drives off: put a patched image in " VD_KernalFile "\n",
++   Serial.printf("TDrive: the C64's KERNAL (CRC-32 %08lx) is not one the patch knows, drives off: put a patched image in " VD_KernalFile "\n",
 +                 (unsigned long)crc);
 +   return false;
 +}
@@ -1361,7 +1361,7 @@ index 0000000..3233e0f
 +void VD_AltButtonInit();          // alt-button disk switching, below
 +void VD_AltPoll();
 +
-+FLASHMEM void InitHndlr_VDrive()
++FLASHMEM void InitHndlr_TDrive()
 +{
 +   if (vdProbing)                   // the menu did not finish the probe (not with this menu): numbers back, the KERNAL's own scan
 +   {                                // settles them; InitHndlr_KernalReplace() below hooks the replacement KERNAL in
@@ -1373,13 +1373,13 @@ index 0000000..3233e0f
 +   InitHndlr_KernalReplace();
 +   vdBorderOut = NULL;              // the KERNAL's IRQ routine flashes the border
 +   VD_AltButtonInit();
-+   vdDrivePoll = &PollingHndlr_VDrive;
++   vdDrivePoll = &PollingHndlr_TDrive;
 +}
 +#else
 +void VD_AltPoll();
-+#endif // Fab04_VDrive
++#endif // Fab04_TDrive
 +
-+// ---- drive LED: the TR's LED blinks while the drives are busy (by ziggystar12, from his Mean Hamster Engine VDrive build) ----
++// ---- drive LED: the TR's LED blinks while the drives are busy (by ziggystar12, from his Mean Hamster Engine TDrive build) ----
 +// Each serviced mailbox command for our units restarts a short hold; while it runs the LED blinks against the state it had
 +// before (the TR keeps it on while a program runs, a pause or some cartridges turn it off), and gets that state back after.
 +#define VD_LedPin      34    // SetLEDOn / SetLEDOff (Common_Defs.h)
@@ -1416,7 +1416,7 @@ index 0000000..3233e0f
 +   VD_LedPoll();
 +}
 +
-+// what every VDrive handler polls; did = a mailbox command was answered just now (vio_poll, or the agent's vvec_poll)
++// what every TDrive handler polls; did = a mailbox command was answered just now (vio_poll, or the agent's vvec_poll)
 +FLASHMEM static void VD_PollCommon(bool did)
 +{
 +   VD_AltPoll();
@@ -1430,7 +1430,7 @@ index 0000000..3233e0f
 +                    vioHot.cmd, vioHot.arg, vioHot.len, vioHot.stat, vioHot.data, vioHot.st);
 +#endif
 +   }
-+   if (vio_take_menu(vio))          // VIO_MENU (VDrive Config's Q): write back what is unsaved, then the main loop resets into the menu
++   if (vio_take_menu(vio))          // VIO_MENU (TDrive Config's Q): write back what is unsaved, then the main loop resets into the menu
 +   {
 +      for (int i = 0; i < 2; i++) VD_Flush(&vdUnit[i]);
 +      BtnPressed = true;
@@ -1443,8 +1443,8 @@ index 0000000..3233e0f
 +         VD_Flush(&vdUnit[i]);
 +}
 +
-+#ifdef Fab04_VDrive
-+FLASHMEM void PollingHndlr_VDrive()
++#ifdef Fab04_TDrive
++FLASHMEM void PollingHndlr_TDrive()
 +{
 +   if (vio == NULL) return;
 +   VD_PollCommon(vio_poll(vio) != 0);
@@ -1462,7 +1462,7 @@ index 0000000..3233e0f
 +{
 +   uint32_t idle = millis() - lastActivityMs;
 +   if (idle >= VD_StaleMs) return true;
-+   return idle >= VD_QuietMs && !vioHot.pending && vdrive_active(&vio->vd) < 0 && !vio->fl_active && !vio->fs_active;
++   return idle >= VD_QuietMs && !vioHot.pending && tdrive_active(&vio->vd) < 0 && !vio->fl_active && !vio->fs_active;
 +}
 +
 +static bool VD_RemoteReady(int unit)
@@ -1470,8 +1470,8 @@ index 0000000..3233e0f
 +   return vio != NULL && vioReady && unit >= 0 && unit <= 1 && vio->vd.unit[unit].present;
 +}
 +
-+// One-line JSON for a unit; returns its length (0 = no such unit or VDrive not running).
-+FLASHMEM size_t VDrive_RemoteStatus(int unit, char *out, size_t cap)
++// One-line JSON for a unit; returns its length (0 = no such unit or TDrive not running).
++FLASHMEM size_t TDrive_RemoteStatus(int unit, char *out, size_t cap)
 +{
 +   if (!VD_RemoteReady(unit)) return 0;
 +   stcVDUnit *u = &vdUnit[unit];
@@ -1491,9 +1491,9 @@ index 0000000..3233e0f
 +
 +// Wait (up to VD_SwapWaitMs) for a quiet moment, polling the mailbox meanwhile, so the caller may touch the card: 0 = quiet now,
 +// 2 = the C64 kept the drive busy (reason in msg). Used by the swap below and by the remote directory listing.
-+FLASHMEM int VDrive_RemoteQuiet(char *msg, size_t cap)
++FLASHMEM int TDrive_RemoteQuiet(char *msg, size_t cap)
 +{
-+   if (vio == NULL || !vioReady) { snprintf(msg, cap, "VDrive is not running"); return 1; }
++   if (vio == NULL || !vioReady) { snprintf(msg, cap, "TDrive is not running"); return 1; }
 +   uint32_t began = millis();
 +   while (!VD_Quiet())
 +   {
@@ -1518,7 +1518,7 @@ index 0000000..3233e0f
 +// Select the disk image for a unit: path = "/dir/IMAGE.D64" (ASCII, on that unit's own card), "" = unmount (the folder stays).
 +// Waits for a quiet moment (up to VD_SwapWaitMs, polling the mailbox meanwhile), then closes every channel on the unit and
 +// mounts, exactly as CD: would. Returns 0, or a DOS error code with a short reason in msg; 1 = no such unit, 2 = not quiet in time.
-+FLASHMEM int VDrive_RemoteSet(int unit, const char *path, char *msg, size_t cap)
++FLASHMEM int TDrive_RemoteSet(int unit, const char *path, char *msg, size_t cap)
 +{
 +   if (!VD_RemoteReady(unit)) { snprintf(msg, cap, "no such drive"); return 1; }
 +   stcVDUnit *u = &vdUnit[unit];
@@ -1528,11 +1528,11 @@ index 0000000..3233e0f
 +      int r = VD_CheckImage(u->fs, path, msg, cap);
 +      if (r) return r;
 +   }
-+   if (VDrive_RemoteQuiet(msg, cap)) return 2;
++   if (TDrive_RemoteQuiet(msg, cap)) return 2;
 +   if (!path[0])
 +   {
 +      VD_Unmount(NULL, unit);
-+      vdrive_attach(&vio->vd, unit, NULL, 1);
++      tdrive_attach(&vio->vd, unit, NULL, 1);
 +      vio_publish_devices(vio);
 +      msg[0] = 0;
 +      return 0;
@@ -1547,8 +1547,8 @@ index 0000000..3233e0f
 +      d64_t *d = NULL;
 +      char old[VD_PathLen];
 +      VD_HostPath(u, oldImg, old, sizeof old);
-+      if (oldImg[0] && VD_MountHost(unit, old, &d) == 0) vdrive_attach(&vio->vd, unit, d, 1);
-+      else vdrive_attach(&vio->vd, unit, NULL, 1);
++      if (oldImg[0] && VD_MountHost(unit, old, &d) == 0) tdrive_attach(&vio->vd, unit, d, 1);
++      else tdrive_attach(&vio->vd, unit, NULL, 1);
 +      snprintf(msg, cap, "cannot mount (DOS error %d)", r);
 +      return r;
 +   }
@@ -1556,8 +1556,8 @@ index 0000000..3233e0f
 +   return 0;
 +}
 +
-+// ---- remote control while VDrive is NOT running (the TR menu is showing) ------------------------------------------------------
-+// Nothing is mounted then; what a unit will mount at the next start is its /.vdrive sidecar (unless the launch comes from a disk image
++// ---- remote control while TDrive is NOT running (the TR menu is showing) ------------------------------------------------------
++// Nothing is mounted then; what a unit will mount at the next start is its /.tdrive sidecar (unless the launch comes from a disk image
 +// opened in the menu). So "get" reports that remembered image and "set" rewrites the sidecar: no handler, no mailbox, only the card.
 +FLASHMEM static FS *VD_IdleFS(int unit)
 +{
@@ -1566,7 +1566,7 @@ index 0000000..3233e0f
 +   return NULL;
 +}
 +
-+FLASHMEM size_t VDrive_RemoteIdleStatus(int unit, char *out, size_t cap)
++FLASHMEM size_t TDrive_RemoteIdleStatus(int unit, char *out, size_t cap)
 +{
 +   if (unit < 0 || unit > 1) return 0;
 +   FS *fs = VD_IdleFS(unit);
@@ -1590,7 +1590,7 @@ index 0000000..3233e0f
 +   const char *slash = strrchr(path, '/');
 +   size_t cl = slash ? (size_t)(slash - path) : 0;
 +   memcpy(cwd, path, cl); cwd[cl] = 0;
-+   uint8_t pin = EEPROM.read(eepAdVDriveDevs + unit);                 // 0 = automatic
++   uint8_t pin = EEPROM.read(eepAdTDriveDevs + unit);                 // 0 = automatic
 +   if (pin < 8 || pin > 30) pin = 0;
 +   int n = snprintf(out, cap,
 +      "{\"unit\":%d,\"storage\":\"%s\",\"running\":false,\"device\":%u,\"fixed\":%u,\"mounted\":%s,\"writable\":true,\"path\":\"%s\",\"cwd\":\"%s\"}",
@@ -1598,8 +1598,8 @@ index 0000000..3233e0f
 +   return (n > 0 && (size_t)n < cap) ? (size_t)n : 0;
 +}
 +
-+// Same arguments and return codes as VDrive_RemoteSet (1 = no such unit / card, 33, 62, 74), but only the sidecar changes.
-+FLASHMEM int VDrive_RemoteIdleSet(int unit, const char *path, char *msg, size_t cap)
++// Same arguments and return codes as TDrive_RemoteSet (1 = no such unit / card, 33, 62, 74), but only the sidecar changes.
++FLASHMEM int TDrive_RemoteIdleSet(int unit, const char *path, char *msg, size_t cap)
 +{
 +   FS *fs = (unit >= 0 && unit <= 1) ? VD_IdleFS(unit) : NULL;
 +   if (!fs) { snprintf(msg, cap, "no such drive"); return 1; }
@@ -1617,7 +1617,7 @@ index 0000000..3233e0f
 +   if (sq[0])
 +   {
 +      File f = fs->open(VD_Sidecar, FILE_WRITE);
-+      if (!f) { snprintf(msg, cap, "cannot write /.vdrive"); return 74; }
++      if (!f) { snprintf(msg, cap, "cannot write /.tdrive"); return 74; }
 +      f.write(sq, strlen(sq));
 +      f.close();
 +   }
@@ -1625,15 +1625,15 @@ index 0000000..3233e0f
 +   return 0;
 +}
 +
-+// ---- alt button: cycle through the disk images listed in /vdrive-config.txt ----------------------------------------------------
++// ---- alt button: cycle through the disk images listed in /tdrive-config.txt ----------------------------------------------------
 +// One tap picks the next image of the SD card's list, two taps within VD_TapWindowMs the USB drive's list; each list is the file
-+// /vdrive-config.txt in the root of its own drive. One image per line:   /path/IMAGE.D64, colour, flashes
++// /tdrive-config.txt in the root of its own drive. One image per line:   /path/IMAGE.D64, colour, flashes
 +// (colour = C64 colour 0..15 for the border, default 1; flashes = how many times, default 1; '#' starts a comment line). After the
 +// change the border flashes that way (250 ms on, 750 ms off) so the switch can be seen without a screen full of text; a card or
 +// stick that is missing, an unreadable list or no usable image in it flashes red quickly for 2 s. An image that has disappeared is
 +// skipped. With nothing mounted (or an image that is not in the list) the first usable image is picked.
 +// Wired to the TR's Alt button only when its setting (TR menu, settings) is "None": a chosen action is never taken over.
-+// The border change itself is done by the KERNAL's IRQ routine (patches/vdrive.s, irq_border), driven by the BORDER register; the
++// The border change itself is done by the KERNAL's IRQ routine (patches/tdrive.s, irq_border), driven by the BORDER register; the
 +// agent, which has no IRQ hook, switches disks without a flash (0.9.0.63-0.9.0.65 flashed by DMA, which crashed programs: DESIGN 60).
 +#define VD_CfgBufSize    2048
 +#define VD_CfgMaxEntries 32
@@ -1694,7 +1694,7 @@ index 0000000..3233e0f
 +   return n;
 +}
 +
-+// ---- border flash sequencer (main loop, driven from PollingHndlr_VDrive) ----
++// ---- border flash sequencer (main loop, driven from PollingHndlr_TDrive) ----
 +enum { VDF_Idle, VDF_Save, VDF_On, VDF_Off, VDF_Restore };
 +struct stcVDFlash
 +{
@@ -1775,9 +1775,9 @@ index 0000000..3233e0f
 +FLASHMEM static bool VD_SwitchNext(int unit)
 +{
 +   char msg[64];
-+   if (!VD_RemoteReady(unit)) { VD_FlashError(); return false; }           // no card / stick (or VDrive not running)
++   if (!VD_RemoteReady(unit)) { VD_FlashError(); return false; }           // no card / stick (or TDrive not running)
 +   stcVDUnit *u = &vdUnit[unit];
-+   if (VDrive_RemoteQuiet(msg, sizeof msg)) { VD_FlashError(); return false; }   // card access only at a quiet moment
++   if (TDrive_RemoteQuiet(msg, sizeof msg)) { VD_FlashError(); return false; }   // card access only at a quiet moment
 +   File f = u->fs->open(VD_ConfigName, FILE_READ);
 +   if (!f || f.isDirectory()) { if (f) f.close(); VD_FlashError(); return false; }
 +   int len = f.read(vdCfgBuf, VD_CfgBufSize - 1);
@@ -1799,7 +1799,7 @@ index 0000000..3233e0f
 +      stcVDCfgEntry *e = &vdCfg[(start + k) % n];
 +      if (VD_CheckImage(u->fs, e->path, msg, sizeof msg)) continue;       // gone (or not an image): next one
 +      uint8_t color = e->color, count = e->flashes;
-+      if (VDrive_RemoteSet(unit, e->path, msg, sizeof msg) == 0) { VD_Flash(color, count, VD_FlashOnMs, VD_FlashOffMs); return true; }
++      if (TDrive_RemoteSet(unit, e->path, msg, sizeof msg) == 0) { VD_Flash(color, count, VD_FlashOnMs, VD_FlashOffMs); return true; }
 +      if (strstr(msg, "busy")) break;                                      // the C64 never let go of the drive
 +   }
 +   VD_FlashError();
@@ -1811,7 +1811,7 @@ index 0000000..3233e0f
 +static uint32_t vdTapFirstMs = 0;
 +static bool     vdSwitching = false;
 +
-+FLASHMEM void SpecialBtn_VDrive(bool Up_nDn)
++FLASHMEM void SpecialBtn_TDrive(bool Up_nDn)
 +{
 +   if (Up_nDn) return;                                // act on the press
 +   if (vdTaps == 0) vdTapFirstMs = millis();
@@ -1826,7 +1826,7 @@ index 0000000..3233e0f
 +   if (vdTaps < 2 && millis() - vdTapFirstMs < VD_TapWindowMs) return;     // a second tap may still come
 +   int unit = vdTaps >= 2 ? 1 : 0;
 +   vdTaps = 0;
-+   vdSwitching = true;                                // VDrive_RemoteQuiet() polls: do not re-enter from there
++   vdSwitching = true;                                // TDrive_RemoteQuiet() polls: do not re-enter from there
 +   VD_SwitchNext(unit);
 +   vdSwitching = false;
 +}
@@ -1836,7 +1836,7 @@ index 0000000..3233e0f
 +{
 +   vdTaps = 0; vdFlash.phase = VDF_Idle; vdFlash.queued = false; vdBorderRetry = false;
 +#ifdef Fab04_SpecialButton
-+   if ((IO1[rwRegPwrUpDefaults2] & rpud2AltBtnActionMask) == rpud2AltBtnNone) fSpecialBtnChange = &SpecialBtn_VDrive;
++   if ((IO1[rwRegPwrUpDefaults2] & rpud2AltBtnActionMask) == rpud2AltBtnNone) fSpecialBtnChange = &SpecialBtn_TDrive;
 +#endif
 +}
 +
@@ -1845,8 +1845,8 @@ index 0000000..3233e0f
 +              offsetof(vio_hot_t, dev0) == VIO_DEV0 && offsetof(vio_hot_t, dev1) == VIO_DEV1 && offsetof(vio_hot_t, border) == VIO_BORDER &&
 +              offsetof(vio_hot_t, id0) == VIO_ID0 && offsetof(vio_hot_t, id1) == VIO_ID1, "register bytes must stay in register order");
 +
-+#ifdef Fab04_VDrive
-+FASTRUN void IO1Hndlr_VDrive(uint8_t Address, bool R_Wn)
++#ifdef Fab04_TDrive
++FASTRUN void IO1Hndlr_TDrive(uint8_t Address, bool R_Wn)
 +{
 +   Address -= VD_MboxBase;                                 // wraps for offsets below the base
 +   if (!vioReady || Address >= VIO_NREGS) return;         // not mapped: open bus
@@ -1863,11 +1863,11 @@ index 0000000..3233e0f
 +}
 +#endif
 +
-+FASTRUN void IO2Hndlr_VDrive(uint8_t Address, bool R_Wn)
++FASTRUN void IO2Hndlr_TDrive(uint8_t Address, bool R_Wn)
 +{
 +   Address -= VIO_WIN_OFS;                                 // window at $DF80-$DFFF; $DF00-$DF7F wraps past it: open bus
-+   if (!vioReady || Address >= VIO_WIN) return;           // (the REU's registers in IOH_VDriveREU.c)
-+   if (R_Wn) DataPortWriteWaitLog(vioHot.window[Address]);   // straight from the struct, as in IO1Hndlr_VDrive
++   if (!vioReady || Address >= VIO_WIN) return;           // (the REU's registers in IOH_TDriveREU.c)
++   if (R_Wn) DataPortWriteWaitLog(vioHot.window[Address]);   // straight from the struct, as in IO1Hndlr_TDrive
 +   else
 +   {
 +      uint8_t Data = DataPortWaitRead();
@@ -1875,79 +1875,79 @@ index 0000000..3233e0f
 +      vio_io2_write(&vioHot, Address, Data);
 +   }
 +}
-diff --git a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDriveAgent.c b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDriveAgent.c
+diff --git a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_TDriveAgent.c b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_TDriveAgent.c
 new file mode 100644
-index 0000000..f50a034
+index 0000000..cc46efe
 --- /dev/null
-+++ b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDriveAgent.c
++++ b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_TDriveAgent.c
 @@ -0,0 +1,125 @@
-+// "VDrive" Special IO for the plain TeensyROM (and "VDrive Agent" on the TR+): the virtual drive without Kernal Replace
++// "TDrive" Special IO for the plain TeensyROM (and "TDrive Agent" on the TR+): the virtual drive without Kernal Replace
 +// (docs/DESIGN.md 52-53). The C64 keeps its own KERNAL; its RAM vectors point into a 246-byte 6502 agent (vector/vdagent.s,
-+// vd_agent.h) that this handler serves from IO1, and the agent reports every call to the vector engine (d64/vdrive_vec.c),
++// vd_agent.h) that this handler serves from IO1, and the agent reports every call to the vector engine (d64/tdrive_vec.c),
 +// which does OPEN..SAVE and the file table on top of the drive the KERNAL build uses. The drive itself, the SD / USB glue,
-+// PreStart, the remote control and the LED are IOH_VDrive.c's.
++// PreStart, the remote control and the LED are IOH_TDrive.c's.
 +//   IO1 $DE08-$DEFF -> the agent (it patches its own operands, so writes are kept: the page lives in RAM1)
 +//   IO1 $DE00-$DE07 -> nothing (left for a SwiftLink ACIA)
 +//   IO2 $DF00-$DF0A -> the mailbox registers (as IO1 $DE10 in the KERNAL build), $DF80-$DFFF -> the 128-byte window
 +// The menu's PRG loader calls the agent's INSTALL entry once the program is in memory (PRGLoadStartReloc.s); after a reset
 +// SYS 56852 hooks the vectors again.
-+// A C128 in 128 mode (docs/DESIGN.md 56): a launch through upstream's C128Prg.ino runs any VDrive Special IO as this one (the MMU
++// A C128 in 128 mode (docs/DESIGN.md 56): a launch through upstream's C128Prg.ino runs any TDrive Special IO as this one (the MMU
 +// never maps a cartridge's KERNAL in there); the boot ROM's loader (C128PrgBoot.asm) calls INSTALL, and the engine tells the
 +// C128's KERNAL from a C64's there by itself.
-+// Included from IOHandlers.h after IOH_VDrive.c (unity build, compiled as C++).
++// Included from IOHandlers.h after IOH_TDrive.c (unity build, compiled as C++).
 +
-+#include "../vdrive/vdrive_vec.c"
-+#include "../vdrive/vd_agent.h"     // VD_Agent[], VD_AgentBase: vector/vdagent.s for this layout (tools/build_agent.py)
++#include "../tdrive/tdrive_vec.c"
++#include "../tdrive/vd_agent.h"     // VD_Agent[], VD_AgentBase: vector/vdagent.s for this layout (tools/build_agent.py)
 +
-+void InitHndlr_VDriveAgent();
-+void PollingHndlr_VDriveAgent();
-+void IO1Hndlr_VDriveAgent(uint8_t Address, bool R_Wn);
-+void IO2Hndlr_VDriveAgent(uint8_t Address, bool R_Wn);
++void InitHndlr_TDriveAgent();
++void PollingHndlr_TDriveAgent();
++void IO1Hndlr_TDriveAgent(uint8_t Address, bool R_Wn);
++void IO2Hndlr_TDriveAgent(uint8_t Address, bool R_Wn);
 +
-+stcIOHandlers IOHndlr_VDriveAgent =
++stcIOHandlers IOHndlr_TDriveAgent =
 +{
-+#ifdef Fab04_VDrive
-+  "VDrive Agent",           //Name of handler (IOHNameLength max): the TR+ has the KERNAL one as "VDrive KERNAL"
++#ifdef Fab04_TDrive
++  "TDrive Agent",           //Name of handler (IOHNameLength max): the TR+ has the KERNAL one as "TDrive KERNAL"
 +#else
-+  "VDrive",                 //Name of handler (IOHNameLength max)
++  "TDrive",                 //Name of handler (IOHNameLength max)
 +#endif
-+  &InitHndlr_VDriveAgent,   //Called once at handler startup
-+  &IO1Hndlr_VDriveAgent,    //IO1 R/W handler: the agent
-+  &IO2Hndlr_VDriveAgent,    //IO2 R/W handler: mailbox registers and the 128-byte window
++  &InitHndlr_TDriveAgent,   //Called once at handler startup
++  &IO1Hndlr_TDriveAgent,    //IO1 R/W handler: the agent
++  &IO2Hndlr_TDriveAgent,    //IO2 R/W handler: mailbox registers and the 128-byte window
 +  NULL,                     //ROML Read handler, in addition to any ROM data sent
 +  NULL,                     //ROMH Read handler, in addition to any ROM data sent
-+  &PollingHndlr_VDriveAgent,//Polled in main routine: the vector engine and all file system work
++  &PollingHndlr_TDriveAgent,//Polled in main routine: the vector engine and all file system work
 +  NULL,                     //called at the end of EVERY c64 cycle
 +};
 +
-+#ifndef Fab04_VDrive
-+// The plain TR's only VDrive handler is this one: a program the menu pairs with it (VDrive Config, IOH_VDriveMenu) needs no remap,
-+// and SwiftLink programs keep plain SwiftLink. (The TR+'s version, with the KERNAL's combined handlers, is in IOH_VDriveSwift.c.)
-+FLASHMEM uint8_t VDriveSwift_Remap(uint8_t ioh) { return ioh; }
++#ifndef Fab04_TDrive
++// The plain TR's only TDrive handler is this one: a program the menu pairs with it (TDrive Config, IOH_TDriveMenu) needs no remap,
++// and SwiftLink programs keep plain SwiftLink. (The TR+'s version, with the KERNAL's combined handlers, is in IOH_TDriveSwift.c.)
++FLASHMEM uint8_t TDriveSwift_Remap(uint8_t ioh) { return ioh; }
 +#endif
 +
 +// Called first in KERNALPreStart() (StatusFunctions.c), while the C64 waits: true when the next handler is this one, after the
 +// drive's PreStart (SD / USB probing, auto-mount, the remembered mounts). The KERNAL build's PreStart is then skipped.
-+FLASHMEM bool VDrive_AgentPreStart(uint8_t NextIOHndlr)
++FLASHMEM bool TDrive_AgentPreStart(uint8_t NextIOHndlr)
 +{
-+   if (VDriveSwift_Remap(NextIOHndlr) != IOH_VDriveAgent) return false;
-+   VDrive_PreStart(true);
++   if (TDriveSwift_Remap(NextIOHndlr) != IOH_TDriveAgent) return false;
++   TDrive_PreStart(true);
 +   return true;
 +}
 +
 +// Called from LaunchC128BasicPrg() (C128Prg.ino) once the launch into C128 mode is certain, while the menu still runs: with a
-+// VDrive Special IO as the default, this launch runs the agent (the KERNAL handlers serve a C64 KERNAL, which the MMU never maps
++// TDrive Special IO as the default, this launch runs the agent (the KERNAL handlers serve a C64 KERNAL, which the MMU never maps
 +// in 128 mode; that also keeps their bus hook off the C128's own ROM), after the drive's PreStart, as KERNALPreStart() does for a
 +// C64 launch. Overrides the Special IO for this launch only, as upstream's own line above the call does for Kernal Replace:
 +// InitHndlr_TeensyROM() reads the default back from EEPROM on the next return to the menu.
 +// true: the agent runs this launch. Then an empty program (Exit to C128 BASIC) goes through the boot ROM too, not a plain reset,
 +// so its loader installs the agent; the loader leaves out the RUN for an empty program (C128Prg.ino, C128PrgBoot.asm).
-+FLASHMEM bool VDrive_C128Launch()
++FLASHMEM bool TDrive_C128Launch()
 +{
-+   if (!VD_IsHandler(VDriveSwift_Remap(IO1[rwRegNextIOHndlr]))) return false;
-+   IO1[rwRegNextIOHndlr] = IOH_VDriveAgent;
-+   VDrive_PreStart(true);
-+   Serial.println("VDrive: C128 mode, the agent");
++   if (!VD_IsHandler(TDriveSwift_Remap(IO1[rwRegNextIOHndlr]))) return false;
++   IO1[rwRegNextIOHndlr] = IOH_TDriveAgent;
++   TDrive_PreStart(true);
++   Serial.println("TDrive: C128 mode, the agent");
 +   return true;
 +}
 +
@@ -1961,27 +1961,27 @@ index 0000000..f50a034
 +// The Alt button's border flash: none under the agent (it has no IRQ hook). 0.9.0.63-0.9.0.65 wrote $D020 by DMA here; those
 +// holds of a running program crashed it on hardware (docs/DESIGN.md 60), so the disk switches without a flash.
 +
-+FLASHMEM void InitHndlr_VDriveAgent()
++FLASHMEM void InitHndlr_TDriveAgent()
 +{
 +   memset(vdAgentPage, 0, sizeof vdAgentPage);
 +   memcpy(vdAgentPage + VD_AgentOfs, VD_Agent, sizeof VD_Agent);   // a fresh copy: the last run patched its operands
 +   if (vio == NULL) return;         // PreStart did not run (out of memory): nothing answers, the agent's vectors are never set
 +   vvec = &vvecStore;
 +   vvec_init(vvec, vio, VD_AgentBase);
-+#ifdef Fab04_VDrive
++#ifdef Fab04_TDrive
 +   VD_AltButtonInit();              // the Alt button switches disks under the agent too (TR+), without the border flash
 +#endif
-+   vdDrivePoll = &PollingHndlr_VDriveAgent;
++   vdDrivePoll = &PollingHndlr_TDriveAgent;
 +}
 +
-+FLASHMEM void PollingHndlr_VDriveAgent()
++FLASHMEM void PollingHndlr_TDriveAgent()
 +{
 +   if (vvec == NULL) return;
 +   VD_PollCommon(vvec_poll(vvec) != 0);
 +}
 +
 +// The agent's bytes: every opcode the 6502 runs in here is one of these reads, so nothing may come before the answer.
-+FASTRUN void IO1Hndlr_VDriveAgent(uint8_t Address, bool R_Wn)
++FASTRUN void IO1Hndlr_TDriveAgent(uint8_t Address, bool R_Wn)
 +{
 +   if (Address < VD_AgentOfs) return;                      // $DE00-$DE07: open bus
 +   if (R_Wn) DataPortWriteWaitLog(vdAgentPage[Address]);
@@ -1993,9 +1993,9 @@ index 0000000..f50a034
 +   }
 +}
 +
-+FASTRUN void IO2Hndlr_VDriveAgent(uint8_t Address, bool R_Wn)
++FASTRUN void IO2Hndlr_TDriveAgent(uint8_t Address, bool R_Wn)
 +{
-+   if (Address >= VIO_WIN_OFS) { IO2Hndlr_VDrive(Address, R_Wn); return; }   // the window, as in the KERNAL build
++   if (Address >= VIO_WIN_OFS) { IO2Hndlr_TDrive(Address, R_Wn); return; }   // the window, as in the KERNAL build
 +   Address -= VD_AgentRegs;
 +   if (!vioReady || Address >= VIO_NREGS) return;          // not mapped: open bus
 +   if (R_Wn) DataPortWriteWaitLog(reinterpret_cast<volatile uint8_t *>(&vioHot)[Address]);
@@ -2006,37 +2006,37 @@ index 0000000..f50a034
 +      vio_io1_write(&vioHot, Address, Data);
 +   }
 +}
-diff --git a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDriveREU.c b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDriveREU.c
+diff --git a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_TDriveREU.c b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_TDriveREU.c
 new file mode 100644
-index 0000000..5aa72e3
+index 0000000..c7d63ce
 --- /dev/null
-+++ b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDriveREU.c
++++ b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_TDriveREU.c
 @@ -0,0 +1,76 @@
-+// "VDrive+REU" Special IO for TeensyROM+: the virtual-drive KERNAL (IOH_VDrive.c) and the REU (IOH_REU.c) at the same time.
-+//   IO1 $DE10-$DE18 -> VDrive mailbox ($DE00-$DE0F unanswered)
++// "TDrive+REU" Special IO for TeensyROM+: the virtual-drive KERNAL (IOH_TDrive.c) and the REU (IOH_REU.c) at the same time.
++//   IO1 $DE10-$DE18 -> TDrive mailbox ($DE00-$DE0F unanswered)
 +//   IO2 $DF00-$DF7F -> REU registers (11 registers, repeated every 32 bytes as on a real 1764/1750, but only 4 times)
-+//   IO2 $DF80-$DFFF -> VDrive 128-byte window
++//   IO2 $DF80-$DFFF -> TDrive 128-byte window
 +//   no per-cycle callback; init and polling run both.
 +// Memory: without SwiftLink's receive queues the REU gets the 128 KB RAM1 image plus 384 KB of RAM2: the full 512 KB of the
-+// plain REU handler (MAX_REU_BANKS). The VDrive state is plain static (DTCM), never DMAMEM: RAM2 statics shrink the heap the REU
++// plain REU handler (MAX_REU_BANKS). The TDrive state is plain static (DTCM), never DMAMEM: RAM2 statics shrink the heap the REU
 +// takes its banks from (before 0.9.0.53 ~9.4 KB of them left every REU, the plain one too, at 256 KB).
-+// Also holds the IO2 split and the bus-snoop hand-back that IOH_VDriveSwiftREU.c uses.
-+// Included from IOHandlers.h after IOH_VDrive.c and IOH_REU.c (unity build, compiled as C++).
++// Also holds the IO2 split and the bus-snoop hand-back that IOH_TDriveSwiftREU.c uses.
++// Included from IOHandlers.h after IOH_TDrive.c and IOH_REU.c (unity build, compiled as C++).
 +
-+void InitHndlr_VDriveREU();
++void InitHndlr_TDriveREU();
 +uint32_t RAM2BytesFree();   // SerUSBIO.ino
-+void IO2Hndlr_VDriveREU(uint8_t Address, bool R_Wn);
-+void PollingHndlr_VDriveREU();
++void IO2Hndlr_TDriveREU(uint8_t Address, bool R_Wn);
++void PollingHndlr_TDriveREU();
 +
-+stcIOHandlers IOHndlr_VDriveREU =
++stcIOHandlers IOHndlr_TDriveREU =
 +{
-+  "VDrive+REU",             //Name of handler (IOHNameLength max)
-+  &InitHndlr_VDriveREU,     //Called once at handler startup
-+  &IO1Hndlr_VDrive,         //IO1 R/W handler: mailbox registers at $DE10
-+  &IO2Hndlr_VDriveREU,      //IO2 R/W handler: REU registers below $80, VDrive window above
++  "TDrive+REU",             //Name of handler (IOHNameLength max)
++  &InitHndlr_TDriveREU,     //Called once at handler startup
++  &IO1Hndlr_TDrive,         //IO1 R/W handler: mailbox registers at $DE10
++  &IO2Hndlr_TDriveREU,      //IO2 R/W handler: REU registers below $80, TDrive window above
 +  NULL,                     //ROML Read handler, in addition to any ROM data sent
 +  NULL,                     //ROMH Read handler, in addition to any ROM data sent
-+  &PollingHndlr_VDriveREU,  //Polled in main routine
++  &PollingHndlr_TDriveREU,  //Polled in main routine
 +  NULL,                     //called at the end of EVERY c64 cycle
 +};
 +
@@ -2058,11 +2058,11 @@ index 0000000..5aa72e3
 +   return vdReuBase != NULL && vdReuBase(Address, R_Wn);
 +}
 +
-+FASTRUN void IO2Hndlr_VDriveREU(uint8_t Address, bool R_Wn)
++FASTRUN void IO2Hndlr_TDriveREU(uint8_t Address, bool R_Wn)
 +{
 +   if (Address & VIO_WIN_OFS)
 +   {
-+      IO2Hndlr_VDrive(Address, R_Wn);
++      IO2Hndlr_TDrive(Address, R_Wn);
 +      return;
 +   }
 +   bool (*Prev)(uint16_t, bool) = fBusSnoop;
@@ -2073,151 +2073,151 @@ index 0000000..5aa72e3
 +                                                 : vdReuBase;    // cleared (immediate start / re-armed without $FF00)
 +}
 +
-+FLASHMEM void InitHndlr_VDriveREU()
++FLASHMEM void InitHndlr_TDriveREU()
 +{
-+   // REU before VDrive: InitHndlr_REU clears PendingfBusSnoop and sets the alt button to "save REU"; InitHndlr_VDrive then
++   // REU before TDrive: InitHndlr_REU clears PendingfBusSnoop and sets the alt button to "save REU"; InitHndlr_TDrive then
 +   // re-stages KernalCheck and, when the alt-button setting is "None", takes the button for disk switching.
-+   Serial.printf("VDrive: RAM2 free before the REU: %lu\n", RAM2BytesFree());   // the REU needs 48 x 8 KB of it for 512 KB (docs/DESIGN.md 50)
++   Serial.printf("TDrive: RAM2 free before the REU: %lu\n", RAM2BytesFree());   // the REU needs 48 x 8 KB of it for 512 KB (docs/DESIGN.md 50)
 +   InitHndlr_REU();
 +   vdReuBase = NULL;
-+   InitHndlr_VDrive();
++   InitHndlr_TDrive();
 +}
 +
-+FLASHMEM void PollingHndlr_VDriveREU()
++FLASHMEM void PollingHndlr_TDriveREU()
 +{
 +   PollingHndlr_REU();
-+   PollingHndlr_VDrive();
++   PollingHndlr_TDrive();
 +}
-diff --git a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDriveSwift.c b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDriveSwift.c
+diff --git a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_TDriveSwift.c b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_TDriveSwift.c
 new file mode 100644
-index 0000000..57eb1a4
+index 0000000..e2a00de
 --- /dev/null
-+++ b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDriveSwift.c
++++ b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_TDriveSwift.c
 @@ -0,0 +1,58 @@
-+// "VDrive+SwiftLink" Special IO for TeensyROM+: the virtual-drive KERNAL (IOH_VDrive.c) together with the SwiftLink / Turbo232
++// "TDrive+SwiftLink" Special IO for TeensyROM+: the virtual-drive KERNAL (IOH_TDrive.c) together with the SwiftLink / Turbo232
 +// modem emulation (IOH_Swiftlink.c), so a terminal such as CCGMS can download to device 8/9 through the normal KERNAL.
 +//   IO1 $DE00-$DE0F -> SwiftLink ACIA ($DE00-$DE03, Turbo232 speed register $DE07)
-+//   IO1 $DE10-$DE18 -> VDrive mailbox, IO2 $DF80-$DFFF -> VDrive 128-byte window
++//   IO1 $DE10-$DE18 -> TDrive mailbox, IO2 $DF80-$DFFF -> TDrive 128-byte window
 +//   per-cycle callback -> SwiftLink (NMI timing); init and polling run both.
-+// Included from IOHandlers.h after IOH_VDrive.c and IOH_Swiftlink.c (unity build, compiled as C++).
++// Included from IOHandlers.h after IOH_TDrive.c and IOH_Swiftlink.c (unity build, compiled as C++).
 +
-+void InitHndlr_VDriveSwift();
-+void IO1Hndlr_VDriveSwift(uint8_t Address, bool R_Wn);
-+void PollingHndlr_VDriveSwift();
++void InitHndlr_TDriveSwift();
++void IO1Hndlr_TDriveSwift(uint8_t Address, bool R_Wn);
++void PollingHndlr_TDriveSwift();
 +
-+stcIOHandlers IOHndlr_VDriveSwift =
++stcIOHandlers IOHndlr_TDriveSwift =
 +{
-+  "VDrive+SwiftLink",       //Name of handler (IOHNameLength max)
-+  &InitHndlr_VDriveSwift,   //Called once at handler startup
-+  &IO1Hndlr_VDriveSwift,    //IO1 R/W handler: ACIA below $10, mailbox registers above
-+  &IO2Hndlr_VDrive,         //IO2 R/W handler: 128-byte data window at $DF80
++  "TDrive+SwiftLink",       //Name of handler (IOHNameLength max)
++  &InitHndlr_TDriveSwift,   //Called once at handler startup
++  &IO1Hndlr_TDriveSwift,    //IO1 R/W handler: ACIA below $10, mailbox registers above
++  &IO2Hndlr_TDrive,         //IO2 R/W handler: 128-byte data window at $DF80
 +  NULL,                     //ROML Read handler, in addition to any ROM data sent
 +  NULL,                     //ROMH Read handler, in addition to any ROM data sent
-+  &PollingHndlr_VDriveSwift,//Polled in main routine
++  &PollingHndlr_TDriveSwift,//Polled in main routine
 +  &CycleHndlr_SwiftLink,    //called at the end of EVERY c64 cycle
 +};
 +
-+// When the user's default Special IO is a VDrive one, programs that the menu pairs with plain SwiftLink (CCGMS, ...) or the REU
-+// get a combined handler instead, so launching them does not drop the virtual drive: SwiftLink programs VDrive+SwiftLink, REU
-+// programs VDrive+REU (the full 512 KB REU, IOH_VDriveREU.c). With "VDrive+Swift+REU" as the default, SwiftLink programs get
-+// that one (its REU is only 128 KB, but they may want both). A program the menu pairs with plain VDrive (VDrive Config, in the
-+// Utilities) runs with the default VDrive Special IO itself.
-+FLASHMEM uint8_t VDriveSwift_Remap(uint8_t ioh)
++// When the user's default Special IO is a TDrive one, programs that the menu pairs with plain SwiftLink (CCGMS, ...) or the REU
++// get a combined handler instead, so launching them does not drop the virtual drive: SwiftLink programs TDrive+SwiftLink, REU
++// programs TDrive+REU (the full 512 KB REU, IOH_TDriveREU.c). With "TDrive+Swift+REU" as the default, SwiftLink programs get
++// that one (its REU is only 128 KB, but they may want both). A program the menu pairs with plain TDrive (TDrive Config, in the
++// Utilities) runs with the default TDrive Special IO itself.
++FLASHMEM uint8_t TDriveSwift_Remap(uint8_t ioh)
 +{
 +   uint8_t pref = EEPROM.read(eepAdNextIOHndlr);
 +   if (!VD_IsHandler(pref)) return ioh;
-+   if (ioh == IOH_VDrive) return pref;                       // a VDrive program (VDrive Config) keeps the default's REU / SwiftLink
-+   if (pref == IOH_VDriveAgent) return ioh;                  // the agent has no combined handlers (yet): REU / SwiftLink programs get theirs
++   if (ioh == IOH_TDrive) return pref;                       // a TDrive program (TDrive Config) keeps the default's REU / SwiftLink
++   if (pref == IOH_TDriveAgent) return ioh;                  // the agent has no combined handlers (yet): REU / SwiftLink programs get theirs
 +#ifdef Fab04_REU
-+   if (ioh == IOH_REU) return IOH_VDriveREU;
-+   if (pref == IOH_VDriveSwiftREU) return (ioh == IOH_Swiftlink) ? IOH_VDriveSwiftREU : ioh;
++   if (ioh == IOH_REU) return IOH_TDriveREU;
++   if (pref == IOH_TDriveSwiftREU) return (ioh == IOH_Swiftlink) ? IOH_TDriveSwiftREU : ioh;
 +#endif
-+   return (ioh == IOH_Swiftlink) ? IOH_VDriveSwift : ioh;
++   return (ioh == IOH_Swiftlink) ? IOH_TDriveSwift : ioh;
 +}
 +
-+FLASHMEM void InitHndlr_VDriveSwift()
++FLASHMEM void InitHndlr_TDriveSwift()
 +{
 +   InitHndlr_SwiftLink();     // allocates the receive queues and frees the drive menu, as for plain SwiftLink
-+   InitHndlr_VDrive();        // re-stages the KERNAL bus hook
++   InitHndlr_TDrive();        // re-stages the KERNAL bus hook
 +}
 +
-+FASTRUN void IO1Hndlr_VDriveSwift(uint8_t Address, bool R_Wn)
++FASTRUN void IO1Hndlr_TDriveSwift(uint8_t Address, bool R_Wn)
 +{
 +   if (Address < VD_MboxBase) IO1Hndlr_SwiftLink(Address, R_Wn);
-+   else IO1Hndlr_VDrive(Address, R_Wn);
++   else IO1Hndlr_TDrive(Address, R_Wn);
 +}
 +
-+FLASHMEM void PollingHndlr_VDriveSwift()
++FLASHMEM void PollingHndlr_TDriveSwift()
 +{
 +   PollingHndlr_SwiftLink();
-+   PollingHndlr_VDrive();
++   PollingHndlr_TDrive();
 +}
-diff --git a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDriveSwiftREU.c b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDriveSwiftREU.c
+diff --git a/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_TDriveSwiftREU.c b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_TDriveSwiftREU.c
 new file mode 100644
-index 0000000..6fbe48a
+index 0000000..6f56c4d
 --- /dev/null
-+++ b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_VDriveSwiftREU.c
++++ b/Source/Teensy/MinimalBoot/Common/IO_Handlers/IOH_TDriveSwiftREU.c
 @@ -0,0 +1,46 @@
-+// "VDrive+Swift+REU" Special IO for TeensyROM+: the virtual-drive KERNAL (IOH_VDrive.c), the SwiftLink / Turbo232 modem
++// "TDrive+Swift+REU" Special IO for TeensyROM+: the virtual-drive KERNAL (IOH_TDrive.c), the SwiftLink / Turbo232 modem
 +// emulation (IOH_Swiftlink.c) and the REU (IOH_REU.c) at the same time.
-+//   IO1 $DE00-$DE0F -> SwiftLink ACIA, IO1 $DE10-$DE18 -> VDrive mailbox (as in IOH_VDriveSwift.c)
++//   IO1 $DE00-$DE0F -> SwiftLink ACIA, IO1 $DE10-$DE18 -> TDrive mailbox (as in IOH_TDriveSwift.c)
 +//   IO2 $DF00-$DF7F -> REU registers (11 registers, repeated every 32 bytes as on a real 1764/1750, but only 4 times)
-+//   IO2 $DF80-$DFFF -> VDrive 128-byte window
++//   IO2 $DF80-$DFFF -> TDrive 128-byte window
 +//   per-cycle callback -> SwiftLink (NMI timing); init and polling run all three.
 +// Memory: SwiftLink's receive queues take most of RAM2, so the REU gets the 128 KB RAM1 image (free: a PRG launch loads no
 +// cartridge) plus whatever RAM2 is left, rounded down to a power of two by InitHndlr_REU: 128 KB (a 1700) on hardware
-+// with 0.9.0.51 (REUTEST). Below 128 KB InitHndlr_REU disables it and the REU registers read as open bus; VDrive and SwiftLink still work.
-+// The IO2 split and the bus-snoop hand-back (VDREU_Snoop) are shared with "VDrive+REU" in IOH_VDriveREU.c.
-+// Included from IOHandlers.h after IOH_VDrive.c, IOH_REU.c, IOH_Swiftlink.c, IOH_VDriveSwift.c and IOH_VDriveREU.c (unity build,
++// with 0.9.0.51 (REUTEST). Below 128 KB InitHndlr_REU disables it and the REU registers read as open bus; TDrive and SwiftLink still work.
++// The IO2 split and the bus-snoop hand-back (VDREU_Snoop) are shared with "TDrive+REU" in IOH_TDriveREU.c.
++// Included from IOHandlers.h after IOH_TDrive.c, IOH_REU.c, IOH_Swiftlink.c, IOH_TDriveSwift.c and IOH_TDriveREU.c (unity build,
 +// compiled as C++).
 +
-+void InitHndlr_VDriveSwiftREU();
-+void PollingHndlr_VDriveSwiftREU();
++void InitHndlr_TDriveSwiftREU();
++void PollingHndlr_TDriveSwiftREU();
 +
-+stcIOHandlers IOHndlr_VDriveSwiftREU =
++stcIOHandlers IOHndlr_TDriveSwiftREU =
 +{
-+  "VDrive+Swift+REU",       //Name of handler (IOHNameLength max)
-+  &InitHndlr_VDriveSwiftREU,//Called once at handler startup
-+  &IO1Hndlr_VDriveSwift,    //IO1 R/W handler: ACIA below $10, mailbox registers above
-+  &IO2Hndlr_VDriveREU,      //IO2 R/W handler: REU registers below $80, VDrive window above (IOH_VDriveREU.c)
++  "TDrive+Swift+REU",       //Name of handler (IOHNameLength max)
++  &InitHndlr_TDriveSwiftREU,//Called once at handler startup
++  &IO1Hndlr_TDriveSwift,    //IO1 R/W handler: ACIA below $10, mailbox registers above
++  &IO2Hndlr_TDriveREU,      //IO2 R/W handler: REU registers below $80, TDrive window above (IOH_TDriveREU.c)
 +  NULL,                     //ROML Read handler, in addition to any ROM data sent
 +  NULL,                     //ROMH Read handler, in addition to any ROM data sent
-+  &PollingHndlr_VDriveSwiftREU,//Polled in main routine
++  &PollingHndlr_TDriveSwiftREU,//Polled in main routine
 +  &CycleHndlr_SwiftLink,    //called at the end of EVERY c64 cycle
 +};
 +
-+FLASHMEM void InitHndlr_VDriveSwiftREU()
++FLASHMEM void InitHndlr_TDriveSwiftREU()
 +{
-+   // Order matters. SwiftLink first: its fixed-size queues must fit, and the REU takes what RAM2 is left. REU before VDrive:
-+   // InitHndlr_REU clears PendingfBusSnoop and sets the alt button to "save REU"; InitHndlr_VDrive then re-stages KernalCheck
++   // Order matters. SwiftLink first: its fixed-size queues must fit, and the REU takes what RAM2 is left. REU before TDrive:
++   // InitHndlr_REU clears PendingfBusSnoop and sets the alt button to "save REU"; InitHndlr_TDrive then re-stages KernalCheck
 +   // and, when the alt-button setting is "None", takes the button for disk switching.
 +   InitHndlr_SwiftLink();
-+   Serial.printf("VDrive: RAM2 free before the REU: %lu\n", RAM2BytesFree());
++   Serial.printf("TDrive: RAM2 free before the REU: %lu\n", RAM2BytesFree());
 +   InitHndlr_REU();
 +   vdReuBase = NULL;
-+   InitHndlr_VDrive();
++   InitHndlr_TDrive();
 +}
 +
-+FLASHMEM void PollingHndlr_VDriveSwiftREU()
++FLASHMEM void PollingHndlr_TDriveSwiftREU()
 +{
 +   PollingHndlr_SwiftLink();
 +   PollingHndlr_REU();
-+   PollingHndlr_VDrive();
++   PollingHndlr_TDrive();
 +}
 diff --git a/Source/Teensy/MinimalBoot/Common/IO_Handlers/StatusFunctions.c b/Source/Teensy/MinimalBoot/Common/IO_Handlers/StatusFunctions.c
-index 59ce0b0..b06f7cd 100644
+index 59ce0b0..0ea9c6e 100644
 --- a/Source/Teensy/MinimalBoot/Common/IO_Handlers/StatusFunctions.c
 +++ b/Source/Teensy/MinimalBoot/Common/IO_Handlers/StatusFunctions.c
 @@ -551,6 +551,14 @@ FLASHMEM void HotKeySetLaunch()
  FLASHMEM void KERNALPreStart()
  {
     //called before BASIC init and program load/launch
-+#ifdef Fab04_VDrive
-+   if (VDrive_ProbeStep()) return; //a step of the menu's bus probe after a VDrive PreStart (MainMenu.asm, VDriveProbe)
++#ifdef Fab04_TDrive
++   if (TDrive_ProbeStep()) return; //a step of the menu's bus probe after a TDrive PreStart (MainMenu.asm, TDriveProbe)
 +#endif
-+#ifdef VDrive_Agent
-+   //the agent's drive (IOH_VDriveAgent.c): SD/USB probing now, while the C64 still waits; it serves no KERNAL
-+   if (VDrive_AgentPreStart((IO1[rWRegCurrMenuWAIT] == rmtTeensy && MenuSource[SelItemFullIdx].IOHndlrAssoc != IOH_None) ?
++#ifdef TDrive_Agent
++   //the agent's drive (IOH_TDriveAgent.c): SD/USB probing now, while the C64 still waits; it serves no KERNAL
++   if (TDrive_AgentPreStart((IO1[rWRegCurrMenuWAIT] == rmtTeensy && MenuSource[SelItemFullIdx].IOHndlrAssoc != IOH_None) ?
 +                            MenuSource[SelItemFullIdx].IOHndlrAssoc : IO1[rwRegNextIOHndlr])) return;
 +#endif
  #ifdef Fab04_KernalReplace
@@ -2227,208 +2227,61 @@ index 59ce0b0..b06f7cd 100644
     {
        //Serial.println("IO Handler set by Teensy Menu\n");
        NextIOHndlr = MenuSource[SelItemFullIdx].IOHndlrAssoc;
-+#ifdef Fab04_VDrive
-+      NextIOHndlr = VDriveSwift_Remap(NextIOHndlr);   //SwiftLink programs keep the virtual drive
++#ifdef Fab04_TDrive
++      NextIOHndlr = TDriveSwift_Remap(NextIOHndlr);   //SwiftLink programs keep the virtual drive
 +#endif
     }
  
 -   if (NextIOHndlr == IOH_KernalReplace)
 +   if (NextIOHndlr == IOH_KernalReplace
-+#ifdef Fab04_VDrive
++#ifdef Fab04_TDrive
 +       || VD_IsKernalHandler(NextIOHndlr)
 +#endif
 +      )
     {
-+#ifdef Fab04_VDrive
-+      KernalImageSource = VD_IsKernalHandler(NextIOHndlr) ? &VD_KernalImage : NULL; //VDrive: its own image (IOH_VDrive.c), not the <Shift-K> file
-+      if (VD_IsKernalHandler(NextIOHndlr)) VDrive_NoteLaunch(); //the menu source and image path for the auto-mount, before FreeDriveDirMenu() resets them
++#ifdef Fab04_TDrive
++      KernalImageSource = VD_IsKernalHandler(NextIOHndlr) ? &VD_KernalImage : NULL; //TDrive: its own image (IOH_TDrive.c), not the <Shift-K> file
++      if (VD_IsKernalHandler(NextIOHndlr)) TDrive_NoteLaunch(); //the menu source and image path for the auto-mount, before FreeDriveDirMenu() resets them
 +#ifdef Fab04_REU
-+      if (NextIOHndlr == IOH_VDriveREU || NextIOHndlr == IOH_VDriveSwiftREU) FreeDriveDirMenu(); //the REU's AllocRAMBanks frees it anyway; first, so the drive's open Files fill its hole instead of pinning it under the heap top (docs/DESIGN.md 50)
++      if (NextIOHndlr == IOH_TDriveREU || NextIOHndlr == IOH_TDriveSwiftREU) FreeDriveDirMenu(); //the REU's AllocRAMBanks frees it anyway; first, so the drive's open Files fill its hole instead of pinning it under the heap top (docs/DESIGN.md 50)
 +#endif
 +#endif
        InitHndlr_KERNALReplace_PreStart(); //separate function so it doesn't get called twice
-+#ifdef Fab04_VDrive
-+      if (VD_IsKernalHandler(NextIOHndlr)) VDrive_PreStart(); //SD/USB probing now, while the C64 still waits
++#ifdef Fab04_TDrive
++      if (VD_IsKernalHandler(NextIOHndlr)) TDrive_PreStart(); //SD/USB probing now, while the C64 still waits
 +#endif
        //Serial.println("Bye from KERNALPreStart");
     }
     //else
 diff --git a/Source/Teensy/MinimalBoot/Common/Menu_Regs.h b/Source/Teensy/MinimalBoot/Common/Menu_Regs.h
-index 463190d..d0c0f74 100644
+index 463190d..436362c 100644
 --- a/Source/Teensy/MinimalBoot/Common/Menu_Regs.h
 +++ b/Source/Teensy/MinimalBoot/Common/Menu_Regs.h
 @@ -443,6 +443,17 @@ enum enumIOHandlers //Synch order/qty with IOHandler[] (IOHandlers.h)
     #ifdef Fab04_REU
        IOH_REU,
     #endif 
-+   #ifdef Fab04_VDrive
-+      IOH_VDrive,
-+      IOH_VDriveSwift,
++   #ifdef Fab04_TDrive
++      IOH_TDrive,
++      IOH_TDriveSwift,
 +   #ifdef Fab04_REU
-+      IOH_VDriveSwiftREU,
-+      IOH_VDriveREU,
++      IOH_TDriveSwiftREU,
++      IOH_TDriveREU,
 +   #endif
 +   #endif  
-+   #ifdef VDrive_Agent
-+      IOH_VDriveAgent,
++   #ifdef TDrive_Agent
++      IOH_TDriveAgent,
 +   #endif  
     #ifdef Fab04_KernalReplace
        IOH_KernalReplace,
     #endif  
-diff --git a/Source/Teensy/MinimalBoot/Common/vdrive/vd_agent.h b/Source/Teensy/MinimalBoot/Common/vdrive/vd_agent.h
+diff --git a/Source/Teensy/MinimalBoot/Common/tdrive/tdrive.c b/Source/Teensy/MinimalBoot/Common/tdrive/tdrive.c
 new file mode 100644
-index 0000000..751a650
+index 0000000..7a0e124
 --- /dev/null
-+++ b/Source/Teensy/MinimalBoot/Common/vdrive/vd_agent.h
-@@ -0,0 +1,23 @@
-+// The plain TeensyROM's agent (teensyrom-vdrive vector/vdagent.s), generated by tools/build_agent.py: served from IO1
-+// at VD_AgentBase, mailbox registers at IO2 $DF00, window at $DF80 (docs/DESIGN.md 53).
-+#pragma once
-+#define VD_AgentBase 0xDE08
-+#define VD_AgentRegs 0x00   // IO2 offset of the registers
-+static const uint8_t VD_Agent[246] PROGMEM = {
-+   0x20, 0xff, 0xff, 0x20, 0x59, 0xde, 0xca, 0xf1, 0x57, 0xf1, 0x3e, 0xf1, 0x20, 0x59, 0xde, 0x20,
-+   0x59, 0xde, 0x20, 0x59, 0xde, 0x20, 0x59, 0xde, 0x20, 0x59, 0xde, 0x20, 0x59, 0xde, 0x20, 0x59,
-+   0xde, 0x20, 0x59, 0xde, 0x20, 0x59, 0xde, 0x20, 0x59, 0xde, 0x20, 0x59, 0xde, 0x20, 0x59, 0xde,
-+   0x48, 0xa5, 0x9a, 0xc9, 0x04, 0x68, 0xb0, 0xe9, 0x6c, 0x0e, 0xde, 0x48, 0xa5, 0x99, 0xc9, 0x04,
-+   0x68, 0xb0, 0xdb, 0x6c, 0x10, 0xde, 0x48, 0xa5, 0x99, 0xc9, 0x04, 0x68, 0xb0, 0xd0, 0x6c, 0x12,
-+   0xde, 0x08, 0x48, 0x8a, 0x48, 0x98, 0x48, 0xa0, 0x05, 0xa2, 0x00, 0x68, 0x20, 0xf1, 0xde, 0xe8,
-+   0x88, 0xd0, 0xf8, 0x68, 0xbc, 0xf5, 0xde, 0xb9, 0x00, 0x00, 0x20, 0xf1, 0xde, 0xe8, 0xe0, 0x09,
-+   0xd0, 0xf2, 0xa9, 0x14, 0x8d, 0x00, 0xdf, 0xad, 0x03, 0xdf, 0xc9, 0x5a, 0xd0, 0xf9, 0xa2, 0x00,
-+   0x20, 0xe7, 0xde, 0x4a, 0xb0, 0x1a, 0x4a, 0xb0, 0x33, 0xd0, 0x50, 0x20, 0xe7, 0xde, 0xa8, 0x20,
-+   0xe7, 0xde, 0x48, 0x20, 0xe7, 0xde, 0x48, 0x20, 0xe7, 0xde, 0xaa, 0x68, 0x28, 0x6c, 0xfe, 0xdf,
-+   0x20, 0xe7, 0xde, 0x8d, 0xbd, 0xde, 0x20, 0xe7, 0xde, 0x8d, 0xbe, 0xde, 0x20, 0xe7, 0xde, 0xa8,
-+   0x88, 0x20, 0xe7, 0xde, 0x99, 0xff, 0xff, 0x98, 0xd0, 0xf6, 0xf0, 0xc4, 0x20, 0xe7, 0xde, 0x8d,
-+   0xd6, 0xde, 0x20, 0xe7, 0xde, 0x8d, 0xd7, 0xde, 0x20, 0xe7, 0xde, 0xa8, 0x88, 0xb9, 0xff, 0xff,
-+   0x99, 0x80, 0xdf, 0xd9, 0x80, 0xdf, 0xd0, 0xf8, 0x98, 0xd0, 0xf1, 0xa9, 0x15, 0xd0, 0x95, 0xbd,
-+   0x80, 0xdf, 0xdd, 0x80, 0xdf, 0xd0, 0xf8, 0xe8, 0x60, 0x9d, 0x80, 0xdf, 0xdd, 0x80, 0xdf, 0xd0,
-+   0xf8, 0x60, 0x90, 0x98, 0x99, 0x9a
-+};
-diff --git a/Source/Teensy/MinimalBoot/Common/vdrive/vd_cfg.h b/Source/Teensy/MinimalBoot/Common/vdrive/vd_cfg.h
-new file mode 100644
-index 0000000..20f3ecc
---- /dev/null
-+++ b/Source/Teensy/MinimalBoot/Common/vdrive/vd_cfg.h
-@@ -0,0 +1,25 @@
-+/* Build-time knobs shared by d64.c / vdrive.c / vdrive_io.c. */
-+#ifndef VD_CFG_H
-+#define VD_CFG_H
-+/* Placement for code that is NOT reachable from the bus interrupt. The firmware
-+ * glue defines this as FLASHMEM so only the O(1) register accessors stay in RAM1. */
-+#ifndef VD_COLD
-+#define VD_COLD
-+#endif
-+
-+/* IEC device numbers of the two virtual drives (unit 0 = SD, unit 1 = USB). Any other device number
-+ * keeps using the real serial bus, so e.g. -DVD_DEV0=10 -DVD_DEV1=11 leaves physical drives 8 and 9
-+ * alone. The KERNAL image contains no device numbers: change them here and rebuild the firmware only. */
-+#ifndef VD_DEV0
-+#define VD_DEV0 8
-+#endif
-+#ifndef VD_DEV1
-+#define VD_DEV1 9
-+#endif
-+
-+/* Simultaneously open data channels per unit. Real 1541s have 5; the pool is shared by
-+ * LOAD (channel 0), SAVE (1), and OPENs 2-14. Each slot costs ~290 bytes. */
-+#ifndef VD_NSLOT
-+#define VD_NSLOT 6
-+#endif
-+#endif
-diff --git a/Source/Teensy/MinimalBoot/Common/vdrive/vd_kpatch.h b/Source/Teensy/MinimalBoot/Common/vdrive/vd_kpatch.h
-new file mode 100644
-index 0000000..6f43ceb
---- /dev/null
-+++ b/Source/Teensy/MinimalBoot/Common/vdrive/vd_kpatch.h
-@@ -0,0 +1,81 @@
-+// The VDrive KERNAL patches (teensyrom-vdrive patches/*.s), generated by tools/build.py --table: runs of address hi, lo,
-+// length hi, lo and the bytes, a zero length at the end. Our code only: the firmware lays it over the C64's own KERNAL.
-+#pragma once
-+#define VD_KernalPatchBytes 1115   // bytes laid over the KERNAL
-+static const uint8_t VD_KernalPatch[] PROGMEM = {
-+   0xe1, 0xda, 0x00, 0x01, 0x08, 0xe4, 0x2d, 0x00, 0x03, 0x20, 0x97, 0xfb, 0xe4, 0x3d, 0x00, 0x03,
-+   0x4c, 0xd9, 0xfb, 0xe4, 0x9a, 0x00, 0x01, 0x00, 0xe5, 0xee, 0x00, 0x03, 0x4c, 0x96, 0xf8, 0xea,
-+   0x32, 0x00, 0x02, 0x55, 0xfb, 0xed, 0x09, 0x00, 0x03, 0x4c, 0x8c, 0xf9, 0xed, 0x0c, 0x00, 0x03,
-+   0x4c, 0x9a, 0xf9, 0xed, 0xb9, 0x00, 0x03, 0x4c, 0xac, 0xf9, 0xed, 0xc7, 0x00, 0x03, 0x4c, 0xbe,
-+   0xf9, 0xed, 0xdd, 0x00, 0x03, 0x4c, 0xd0, 0xf9, 0xed, 0xef, 0x00, 0x03, 0x4c, 0xe7, 0xf9, 0xed,
-+   0xfe, 0x00, 0x03, 0x4c, 0x03, 0xfa, 0xee, 0x13, 0x00, 0x03, 0x4c, 0x13, 0xfa, 0xf4, 0xc8, 0x00,
-+   0x03, 0x4c, 0x55, 0xfa, 0xf6, 0x05, 0x00, 0x03, 0x4c, 0xd2, 0xfa, 0xf8, 0x75, 0x00, 0x4f, 0xa2,
-+   0xff, 0x78, 0x9a, 0xad, 0x19, 0xde, 0xc9, 0xd6, 0xd0, 0x13, 0xcd, 0x19, 0xde, 0xd0, 0x0e, 0xad,
-+   0x1a, 0xde, 0xc9, 0x64, 0xd0, 0x07, 0xa9, 0x10, 0x20, 0xe2, 0xf8, 0x90, 0xfe, 0x4c, 0xe5, 0xfc,
-+   0xa2, 0x00, 0xbd, 0xb4, 0xf8, 0x20, 0x16, 0xe7, 0xe8, 0xe0, 0x06, 0xd0, 0xf5, 0xa2, 0x0a, 0x78,
-+   0x86, 0xc6, 0xbd, 0xb9, 0xf8, 0x9d, 0x76, 0x02, 0xca, 0xd0, 0xf7, 0x4c, 0xcd, 0xe5, 0x4c, 0x4f,
-+   0x41, 0x44, 0x22, 0x2a, 0x22, 0x2c, 0x38, 0x2c, 0x31, 0x0d, 0x52, 0x55, 0x4e, 0x0d, 0xf8, 0xe2,
-+   0x02, 0xa6, 0x48, 0x20, 0x78, 0xfb, 0xd0, 0x42, 0xa5, 0xa7, 0x8d, 0x11, 0xde, 0x68, 0x48, 0x8d,
-+   0x10, 0xde, 0xa9, 0x00, 0x85, 0xa5, 0x85, 0xa6, 0xad, 0x13, 0xde, 0xc9, 0x5a, 0xf0, 0x12, 0xc9,
-+   0xa5, 0xf0, 0x27, 0xc9, 0x3c, 0xf0, 0x28, 0xe6, 0xa5, 0xd0, 0xed, 0xe6, 0xa6, 0xd0, 0xe9, 0xf0,
-+   0x19, 0xad, 0x14, 0xde, 0xcd, 0x14, 0xde, 0xd0, 0xf8, 0x05, 0x90, 0x85, 0x90, 0x68, 0xad, 0x12,
-+   0xde, 0xcd, 0x12, 0xde, 0xd0, 0xf8, 0xc9, 0x00, 0x18, 0x60, 0x68, 0xa5, 0xa7, 0x38, 0x60, 0x8a,
-+   0x48, 0x98, 0x48, 0xa5, 0xa7, 0x48, 0xa5, 0x90, 0x48, 0x20, 0x49, 0xf9, 0x68, 0x85, 0x90, 0x68,
-+   0x85, 0xa7, 0x68, 0xa8, 0x68, 0xaa, 0x4c, 0xe8, 0xf8, 0xa9, 0x00, 0x85, 0x90, 0x85, 0xa7, 0xa9,
-+   0x0e, 0x20, 0xe2, 0xf8, 0xb0, 0x20, 0xf0, 0x1e, 0xa9, 0x08, 0x48, 0x20, 0xb1, 0xff, 0xa5, 0x90,
-+   0x30, 0x15, 0xa9, 0x6f, 0x20, 0x93, 0xff, 0xa5, 0x90, 0x30, 0x0c, 0x20, 0xae, 0xff, 0x68, 0x18,
-+   0x69, 0x01, 0xc9, 0x1f, 0x90, 0xe4, 0x60, 0xa9, 0x00, 0x85, 0x90, 0xba, 0xbd, 0x01, 0x01, 0x85,
-+   0xa7, 0xa9, 0x0f, 0x20, 0xe2, 0xf8, 0xb0, 0x02, 0xd0, 0xe4, 0x68, 0x60, 0x85, 0xa7, 0xa9, 0x02,
-+   0x20, 0xe2, 0xf8, 0xb0, 0x01, 0x60, 0x09, 0x40, 0xd0, 0x0c, 0x85, 0xa7, 0xa9, 0x01, 0x20, 0xe2,
-+   0xf8, 0xb0, 0x01, 0x60, 0x09, 0x20, 0x20, 0xa4, 0xf0, 0x4c, 0x11, 0xed, 0x85, 0xa7, 0xa9, 0x03,
-+   0x20, 0xe2, 0xf8, 0xb0, 0x01, 0x60, 0x85, 0x95, 0x20, 0x36, 0xed, 0x4c, 0xbe, 0xed, 0x85, 0xa7,
-+   0xa9, 0x04, 0x20, 0xe2, 0xf8, 0xb0, 0x01, 0x60, 0x85, 0x95, 0x20, 0x36, 0xed, 0x4c, 0xcc, 0xed,
-+   0x85, 0xa7, 0xa9, 0x05, 0x20, 0xe2, 0xf8, 0xb0, 0x04, 0xa5, 0xa7, 0x18, 0x60, 0x24, 0x94, 0x30,
-+   0x03, 0x4c, 0xe1, 0xed, 0x4c, 0xe6, 0xed, 0xa9, 0x08, 0x20, 0xe2, 0xf8, 0xb0, 0x01, 0x60, 0x78,
-+   0x20, 0x8e, 0xee, 0xad, 0x00, 0xdd, 0x09, 0x08, 0x8d, 0x00, 0xdd, 0xa9, 0x5f, 0x20, 0x11, 0xed,
-+   0x4c, 0x03, 0xee, 0xa9, 0x07, 0x20, 0xe2, 0xf8, 0xb0, 0x01, 0x60, 0xa9, 0x3f, 0x20, 0x11, 0xed,
-+   0x4c, 0x03, 0xee, 0xa9, 0x06, 0x20, 0xe2, 0xf8, 0xb0, 0x01, 0x60, 0x78, 0xa9, 0x00, 0x4c, 0x16,
-+   0xee, 0x48, 0x20, 0x78, 0xfb, 0xd0, 0x20, 0xa4, 0xb7, 0x30, 0x1c, 0xa0, 0x00, 0xb1, 0xbb, 0x99,
-+   0x80, 0xdf, 0xd9, 0x80, 0xdf, 0xd0, 0xf6, 0xc8, 0xc4, 0xb7, 0xd0, 0xf1, 0x8c, 0x15, 0xde, 0xa5,
-+   0xba, 0x85, 0xa7, 0x68, 0x4c, 0xe2, 0xf8, 0x68, 0x38, 0x60, 0x4c, 0x07, 0xf7, 0xa6, 0xa4, 0x20,
-+   0xd5, 0xf3, 0x4c, 0xcb, 0xf4, 0x86, 0xa4, 0xa9, 0x09, 0xa4, 0x93, 0xf0, 0x02, 0xa9, 0x13, 0x20,
-+   0x21, 0xfa, 0xb0, 0xe9, 0xa8, 0xa6, 0xa4, 0x98, 0xf0, 0x07, 0xc9, 0x05, 0xf0, 0xdc, 0x4c, 0x04,
-+   0xf7, 0xad, 0x80, 0xdf, 0xcd, 0x80, 0xdf, 0xd0, 0xf8, 0x85, 0xae, 0xad, 0x81, 0xdf, 0xcd, 0x81,
-+   0xdf, 0xd0, 0xf8, 0x85, 0xaf, 0x8a, 0xd0, 0x08, 0xa5, 0xc3, 0x85, 0xae, 0xa5, 0xc4, 0x85, 0xaf,
-+   0x20, 0xd2, 0xf5, 0xa5, 0xae, 0x85, 0xa7, 0xa5, 0xaf, 0x8d, 0x15, 0xde, 0xa9, 0x11, 0x20, 0xe2,
-+   0xf8, 0xb0, 0xa7, 0x85, 0xa3, 0xf0, 0x1c, 0xa0, 0x00, 0xb9, 0x80, 0xdf, 0xd9, 0x80, 0xdf, 0xd0,
-+   0xf8, 0x91, 0xae, 0xc8, 0xc4, 0xa3, 0xd0, 0xf1, 0xa5, 0xae, 0x18, 0x65, 0xa3, 0x85, 0xae, 0x90,
-+   0x02, 0xe6, 0xaf, 0xa5, 0x90, 0x29, 0x40, 0xf0, 0xca, 0x4c, 0xa9, 0xf5, 0x20, 0xd5, 0xf3, 0x4c,
-+   0x08, 0xf6, 0xa9, 0x0b, 0x20, 0x21, 0xfa, 0xb0, 0xf3, 0x85, 0xa4, 0x20, 0x8f, 0xf6, 0xa5, 0xa4,
-+   0xc9, 0x05, 0xf0, 0x6e, 0xaa, 0xd0, 0x69, 0xa5, 0xc1, 0x8d, 0x80, 0xdf, 0x85, 0xac, 0xa5, 0xc2,
-+   0x8d, 0x81, 0xdf, 0x85, 0xad, 0xa9, 0x02, 0x8d, 0x15, 0xde, 0xa9, 0x0c, 0x20, 0xe2, 0xf8, 0xa9,
-+   0x12, 0x20, 0xe2, 0xf8, 0xf0, 0xf9, 0xa5, 0xae, 0x38, 0xe5, 0xac, 0x85, 0xa3, 0xa5, 0xaf, 0xe5,
-+   0xad, 0x90, 0x38, 0xd0, 0x08, 0xa5, 0xa3, 0xf0, 0x32, 0xc9, 0x81, 0x90, 0x04, 0xa9, 0x80, 0x85,
-+   0xa3, 0xa0, 0x00, 0xb1, 0xac, 0x99, 0x80, 0xdf, 0xd9, 0x80, 0xdf, 0xd0, 0xf6, 0xc8, 0xc4, 0xa3,
-+   0xd0, 0xf1, 0xa5, 0xa3, 0x8d, 0x15, 0xde, 0xa9, 0x0c, 0x20, 0xe2, 0xf8, 0xb0, 0x14, 0xa5, 0xac,
-+   0x18, 0x65, 0xa3, 0x85, 0xac, 0x90, 0xb8, 0xe6, 0xad, 0xb0, 0xb4, 0xa9, 0x0d, 0x20, 0xe2, 0xf8,
-+   0x18, 0x60, 0x4c, 0x07, 0xf7, 0xad, 0x18, 0xde, 0xcd, 0x18, 0xde, 0xd0, 0x18, 0x49, 0xc0, 0xc9,
-+   0x10, 0x90, 0x0f, 0xf0, 0x0b, 0xc9, 0x70, 0xd0, 0x0c, 0xad, 0x20, 0xd0, 0x85, 0x9c, 0xd0, 0x05,
-+   0xa5, 0x9c, 0x8d, 0x20, 0xd0, 0x4c, 0x9b, 0xf6, 0xa9, 0x7c, 0x85, 0xa5, 0xad, 0x19, 0xde, 0xc9,
-+   0xd6, 0xf0, 0x04, 0xe6, 0xa5, 0x10, 0xf5, 0x60, 0xfb, 0x97, 0x01, 0x38, 0x20, 0x1e, 0xab, 0xa2,
-+   0x01, 0xbd, 0xcd, 0xfc, 0x95, 0xfc, 0xca, 0x10, 0xf8, 0x20, 0xd4, 0xfb, 0xd0, 0x18, 0xad, 0x3c,
-+   0xde, 0xc9, 0xd6, 0xd0, 0x18, 0xad, 0x3d, 0xde, 0xc9, 0x64, 0xd0, 0x11, 0xa2, 0x01, 0xbd, 0x3e,
-+   0xde, 0x95, 0xfc, 0xca, 0x10, 0xf8, 0xa9, 0xa2, 0xa0, 0xfc, 0x4c, 0x1e, 0xab, 0xa9, 0x20, 0x20,
-+   0xd2, 0xff, 0xa9, 0x9b, 0xa0, 0xe4, 0x4c, 0x1e, 0xab, 0xa5, 0xfc, 0x05, 0xfd, 0x60, 0x20, 0xd4,
-+   0xfb, 0xd0, 0x0a, 0xa9, 0x60, 0xa0, 0xe4, 0x20, 0x1e, 0xab, 0x4c, 0x44, 0xa6, 0xa9, 0x07, 0x85,
-+   0xfb, 0xa2, 0x00, 0x86, 0xfe, 0xb5, 0xfc, 0xc9, 0xff, 0xd0, 0x1b, 0xe6, 0xfb, 0xa5, 0xfb, 0xc9,
-+   0x1f, 0xb0, 0x11, 0xc5, 0xfc, 0xf0, 0xf4, 0xc5, 0xfd, 0xf0, 0xf0, 0x20, 0x66, 0xfc, 0xb0, 0xeb,
-+   0xa5, 0xfb, 0xd0, 0x02, 0xa9, 0x00, 0xa6, 0xfe, 0x95, 0xfc, 0xe8, 0xe0, 0x02, 0x90, 0xd4, 0xa9,
-+   0xad, 0xa0, 0xfc, 0x20, 0x1e, 0xab, 0xa2, 0x00, 0x86, 0xfe, 0xb5, 0xfc, 0xc9, 0x08, 0x90, 0x0f,
-+   0xc9, 0x1f, 0xb0, 0x0b, 0x48, 0x20, 0x5c, 0xfc, 0x68, 0x20, 0x87, 0xfc, 0x4c, 0x47, 0xfc, 0xa9,
-+   0x4e, 0x20, 0xd2, 0xff, 0xa9, 0x4f, 0x20, 0xd2, 0xff, 0x20, 0x5c, 0xfc, 0xa6, 0xfe, 0xd0, 0x09,
-+   0xa9, 0x20, 0x20, 0xd2, 0xff, 0xa2, 0x01, 0xd0, 0xcf, 0xa9, 0x0d, 0x20, 0xd2, 0xff, 0x4c, 0x44,
-+   0xa6, 0xa6, 0xfe, 0xbd, 0xc3, 0xfc, 0xa0, 0xfc, 0x4c, 0x1e, 0xab, 0xa9, 0x00, 0x85, 0x90, 0xa5,
-+   0xfb, 0x20, 0xa4, 0xf9, 0xa5, 0x90, 0x30, 0x0e, 0xa9, 0x6f, 0x20, 0xb6, 0xf9, 0xa5, 0x90, 0x30,
-+   0x05, 0x20, 0x0b, 0xfa, 0x38, 0x60, 0xa9, 0x00, 0x85, 0x90, 0x18, 0x60, 0xa2, 0x30, 0x38, 0xe9,
-+   0x0a, 0x90, 0x03, 0xe8, 0xb0, 0xf9, 0x69, 0x3a, 0x48, 0x8a, 0xc9, 0x30, 0xd0, 0x02, 0xa9, 0x20,
-+   0x20, 0xd2, 0xff, 0x68, 0x4c, 0xd2, 0xff, 0x20, 0x36, 0x34, 0x4b, 0x20, 0x52, 0x41, 0x4d, 0x20,
-+   0x20, 0x00, 0x20, 0x46, 0x52, 0x45, 0x45, 0x20, 0x20, 0x56, 0x44, 0x52, 0x49, 0x56, 0x45, 0x20,
-+   0x00, 0x53, 0x44, 0x00, 0x55, 0x53, 0x42, 0x00, 0xbc, 0xbf, 0x56, 0x44, 0x55, 0x4e, 0x49, 0x54,
-+   0x53, 0x3a, 0x00, 0x00, 0xfc, 0xe2, 0x00, 0x03, 0x4c, 0x75, 0xf8, 0x00, 0x00, 0x00, 0x00
-+};
-diff --git a/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.c b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.c
-new file mode 100644
-index 0000000..189c6aa
---- /dev/null
-+++ b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.c
++++ b/Source/Teensy/MinimalBoot/Common/tdrive/tdrive.c
 @@ -0,0 +1,1206 @@
-+#include "vdrive.h"
++#include "tdrive.h"
 +#include "vd_cfg.h"
 +#include <string.h>
 +
@@ -2441,7 +2294,7 @@ index 0000000..189c6aa
 +    {0, " OK"}, {1, "FILES SCRATCHED"}, {26, "WRITE PROTECT ON"}, {30, "SYNTAX ERROR"},
 +    {31, "SYNTAX ERROR"}, {33, "SYNTAX ERROR"}, {34, "SYNTAX ERROR"}, {62, "FILE NOT FOUND"}, {63, "FILE EXISTS"}, {64, "FILE TYPE MISMATCH"},
 +    {20, "READ ERROR"}, {21, "READ ERROR"}, {22, "READ ERROR"}, {23, "READ ERROR"}, {24, "READ ERROR"}, {27, "READ ERROR"},
-+    {29, "DISK ID MISMATCH"}, {25, "WRITE ERROR"}, {50, "RECORD NOT PRESENT"}, {51, "OVERFLOW IN RECORD"}, {52, "FILE TOO LARGE"}, {65, "NO BLOCK"}, {66, "ILLEGAL TRACK OR SECTOR"}, {70, "NO CHANNEL"}, {72, "DISK FULL"}, {73, "TRVDRIVE V1.0"}, {74, "DRIVE NOT READY"},
++    {29, "DISK ID MISMATCH"}, {25, "WRITE ERROR"}, {50, "RECORD NOT PRESENT"}, {51, "OVERFLOW IN RECORD"}, {52, "FILE TOO LARGE"}, {65, "NO BLOCK"}, {66, "ILLEGAL TRACK OR SECTOR"}, {70, "NO CHANNEL"}, {72, "DISK FULL"}, {73, "TRTDRIVE V1.0"}, {74, "DRIVE NOT READY"},
 +};
 +
 +VD_COLD static void set_err(vd_unit_t *u, uint8_t code, uint8_t t, uint8_t s)
@@ -2501,7 +2354,7 @@ index 0000000..189c6aa
 +{
 +    u->restore_ch = 0;
 +    close_all(u);                                                 /* anything opened on the temporary image meanwhile goes with it */
-+    vdrive_t *v = u->owner;
++    tdrive_t *v = u->owner;
 +    d64_t *d = NULL;
 +    u->disk = NULL;
 +    if (v && v->host.pop) v->host.pop(v->host.ctx, u->index, &d);
@@ -2627,7 +2480,7 @@ index 0000000..189c6aa
 +
 +VD_COLD static const char *image_tag(const char *s) { int k = image_kind(s); return k == 71 ? "D71" : k == 81 ? "D81" : "D64"; }
 +
-+/* ---- aliases for host names the C64 cannot use (see vdrive.h) ---- */
++/* ---- aliases for host names the C64 cannot use (see tdrive.h) ---- */
 +VD_COLD static int alias_ok(char c)
 +{
 +    return c >= 0x20 && c <= 0x7a && c != '`' && !strchr("*?,=:\"", c);
@@ -2665,7 +2518,7 @@ index 0000000..189c6aa
 +    return 1;
 +}
 +
-+VD_COLD static void leave_image(vdrive_t *v, int unit, vd_unit_t *u)
++VD_COLD static void leave_image(tdrive_t *v, int unit, vd_unit_t *u)
 +{
 +    if (!u->disk) return;
 +    close_all(u); u->disk = NULL;
@@ -2694,7 +2547,7 @@ index 0000000..189c6aa
 + * up, a component with an image suffix is mounted, any other component is a folder. A component with a wildcard is not
 + * entered: it ends the walk as the pattern. *rest points at what is left (the file name after an image, a pattern, or ""
 + * when the path ended on the folder / image). Returns 0 or a DOS error code. Modifies p. */
-+VD_COLD static int path_walk(vdrive_t *v, int unit, vd_unit_t *u, char *p, char **rest)
++VD_COLD static int path_walk(tdrive_t *v, int unit, vd_unit_t *u, char *p, char **rest)
 +{
 +    const vd_host_t *h = &v->host;
 +    int r;
@@ -2725,7 +2578,7 @@ index 0000000..189c6aa
 +}
 +
 +/* One line of the directory per call into d->line; sets d->phase = 3 and llen = 0 when finished. */
-+VD_COLD static void dir_gen(vdrive_t *v, int unit, vd_unit_t *u, vd_dirstream_t *d)
++VD_COLD static void dir_gen(tdrive_t *v, int unit, vd_unit_t *u, vd_dirstream_t *d)
 +{
 +    d64_bas_t b;
 +    char name[17], id[3], dos[3];
@@ -2778,7 +2631,7 @@ index 0000000..189c6aa
 +    }
 +}
 +
-+VD_COLD static void open_dir_pat(vdrive_t *v, int unit, vd_unit_t *u, int ch, const char *pat)
++VD_COLD static void open_dir_pat(tdrive_t *v, int unit, vd_unit_t *u, int ch, const char *pat)
 +{
 +    vd_chan_t *c = chan_alloc(u, ch);
 +    if (!c) return;
@@ -2795,7 +2648,7 @@ index 0000000..189c6aa
 +
 +/* A listing by path only shows what is there: the folder / image selected before is restored when its channel closes.
 + * begin_temp remembers it (first closing an earlier listing that is still open), end_temp arms the restore for channel ch. */
-+VD_COLD static void begin_temp(vdrive_t *v, int unit, vd_unit_t *u)
++VD_COLD static void begin_temp(tdrive_t *v, int unit, vd_unit_t *u)
 +{
 +    if (u->restore_ch) chan_close(u, u->restore_ch - 1);
 +    v->host.push(v->host.ctx, unit);
@@ -2812,7 +2665,7 @@ index 0000000..189c6aa
 + * "$==path" (also "$:==" / "$0:==") is always a path, even without a "/" or an image suffix: $==GAMES enters the folder GAMES,
 + * $==T a folder called T (a single "=" is a CBM listing modifier, $=T / $=P, and is left alone).
 + * The CMD form puts the path before a colon: "$//GAMES/:*" (from the root), "$/SUB/:A*" (relative); see cmd_path. */
-+VD_COLD static void open_dir(vdrive_t *v, int unit, vd_unit_t *u, int ch, const uint8_t *raw, uint8_t len)
++VD_COLD static void open_dir(tdrive_t *v, int unit, vd_unit_t *u, int ch, const uint8_t *raw, uint8_t len)
 +{
 +    char spec[VD_CMDBUF];
 +    size_t n = 0;
@@ -2842,7 +2695,7 @@ index 0000000..189c6aa
 +    open_dir_pat(v, unit, u, ch, pat);
 +}
 +/* "!CONFIG" / "!STATE": text files kept by the host (see vd_host_t); the name is PETSCII, upper or shifted. */
-+VD_COLD static void open_hostfile(vdrive_t *v, int unit, vd_unit_t *u, int ch, const char *name, char mode)
++VD_COLD static void open_hostfile(tdrive_t *v, int unit, vd_unit_t *u, int ch, const char *name, char mode)
 +{
 +    const vd_host_t *h = &v->host;
 +    int kind = -1;
@@ -2944,7 +2797,7 @@ index 0000000..189c6aa
 +
 +/* Nothing mounted: a plain file on the card. The exact name, else NAME.PRG; a pattern matches the first file in the folder
 + * listing that is not a folder or an image. */
-+VD_COLD static void host_open(vdrive_t *v, int unit, vd_unit_t *u, int ch, const char *name)
++VD_COLD static void host_open(tdrive_t *v, int unit, vd_unit_t *u, int ch, const char *name)
 +{
 +    const vd_host_t *h = &v->host;
 +    char nm[22];
@@ -2969,7 +2822,7 @@ index 0000000..189c6aa
 +    c->mode = 9; c->u.p.left = size; c->u.p.pos = c->u.p.len = 0;
 +}
 +
-+VD_COLD static void chan_open(vdrive_t *v, int unit, vd_unit_t *u, int ch, const uint8_t *raw, uint8_t len)
++VD_COLD static void chan_open(tdrive_t *v, int unit, vd_unit_t *u, int ch, const uint8_t *raw, uint8_t len)
 +{
 +    chan_close(u, ch);
 +    if (len && raw[0] == '$' && (u->disk || (v->host.dir_open && v->host.dir_next))) { open_dir(v, unit, u, ch, raw, len); return; }
@@ -3047,7 +2900,7 @@ index 0000000..189c6aa
 +/* CD[n]:path -- same path syntax as a LOAD name (see path_walk): CD:/GAMES/DEMO.D64, CD:.., CD:_ (left arrow), CD:/ (root).
 + * The CMD forms (as on a CMD HD and sd2iec): CD/FOO and CD/FOO/BAR (relative), CD//FOO (from the root), CD/FOO/:BAR,
 + * CD//FOO/:BAR, CD0//FOO; a single "/" right after CD (or the drive number) is the current folder, "//" the root. */
-+VD_COLD static void cmd_cd(vdrive_t *v, int unit, vd_unit_t *u, const char *p, const char *end)
++VD_COLD static void cmd_cd(tdrive_t *v, int unit, vd_unit_t *u, const char *p, const char *end)
 +{
 +    char path[VD_CMDBUF];
 +    const char *q = p;
@@ -3071,7 +2924,7 @@ index 0000000..189c6aa
 +/* "N:[path/]NAME.D64[,ID]" (.D71, .D81) with nothing mounted: a new blank image in the current folder (or the folder the path
 + * names), mounted at once and formatted with the disk name NAME and the ID ("00" when none is given). An existing file is never
 + * replaced (63). */
-+VD_COLD static void cmd_new_image(vdrive_t *v, int unit, vd_unit_t *u, const char *p, const char *end)
++VD_COLD static void cmd_new_image(tdrive_t *v, int unit, vd_unit_t *u, const char *p, const char *end)
 +{
 +    char path[VD_CMDBUF], id[3] = { '0', '0', 0 };
 +    if (p < end && *p == ':') p++;
@@ -3110,7 +2963,7 @@ index 0000000..189c6aa
 + * sub-directory commands, which are not supported (31). A CMD path picks the folder it goes in: "MD/GAMES/:NEW" (relative),
 + * "MD//GAMES/:NEW" (from the root), also without the colon ("MD/GAMES/NEW": the name after the last "/"); the selected folder
 + * stays as it was (host push / pop; without them the path stays selected). */
-+VD_COLD static void cmd_folder(vdrive_t *v, int unit, vd_unit_t *u, int make, const char *p, const char *end)
++VD_COLD static void cmd_folder(tdrive_t *v, int unit, vd_unit_t *u, int make, const char *p, const char *end)
 +{
 +    const vd_host_t *h = &v->host;
 +    char name[17], path[VD_CMDBUF];
@@ -3147,7 +3000,7 @@ index 0000000..189c6aa
 + * wildcard is 33, anything but an image name 64), a file with the card's read-only attribute set stays (26). A path picks the
 + * folder ("S:GAMES/OLD.D64", "S:/OLD.D64", CMD "S//GAMES/:OLD.D64"); the selected folder stays as it was (host push / pop).
 + * Answers 01,FILES SCRATCHED,nn like a scratch on a disk: a name that is not there counts 0. */
-+VD_COLD static void cmd_scratch_images(vdrive_t *v, int unit, vd_unit_t *u, const char *p, const char *end)
++VD_COLD static void cmd_scratch_images(tdrive_t *v, int unit, vd_unit_t *u, const char *p, const char *end)
 +{
 +    const vd_host_t *h = &v->host;
 +    if (p < end && *p == ':') p++;
@@ -3187,7 +3040,7 @@ index 0000000..189c6aa
 +}
 +
 +/* Device numbers: a unit uses its pinned number, or else the default / next free one until the start-up scan moves it. */
-+VD_COLD static void settle(vdrive_t *v)
++VD_COLD static void settle(tdrive_t *v)
 +{
 +    for (int i = 0; i < 2; i++) {
 +        uint8_t n = v->pin[i];
@@ -3201,7 +3054,7 @@ index 0000000..189c6aa
 +}
 +
 +/* "U0>"+CHR$(n): this drive answers as device n from now on (n = 0: automatic again). Persisted via the host. */
-+VD_COLD static void cmd_renumber(vdrive_t *v, int unit, vd_unit_t *u, uint8_t n)
++VD_COLD static void cmd_renumber(tdrive_t *v, int unit, vd_unit_t *u, uint8_t n)
 +{
 +    if (n && (n < 8 || n > 30 || n == v->dev[1 - unit])) { set_err(u, 33, 0, 0); return; }
 +    v->pin[unit] = n;
@@ -3320,7 +3173,7 @@ index 0000000..189c6aa
 +    if (r) err_from(u, r);
 +}
 +
-+VD_COLD static void exec_command(vdrive_t *v, int unit, vd_unit_t *u, uint8_t *cmd, uint8_t len)
++VD_COLD static void exec_command(tdrive_t *v, int unit, vd_unit_t *u, uint8_t *cmd, uint8_t len)
 +{
 +    /* OPEN 15,d,15,"U0>"+CHR$(n) sends 4 bytes; PRINT#15 adds a CR, making 5 */
 +    if ((len == 4 || (len == 5 && cmd[4] == '\r')) && cmd[0] == 'U' && cmd[1] == '0' && cmd[2] == '>') { cmd_renumber(v, unit, u, cmd[3]); return; }
@@ -3442,7 +3295,7 @@ index 0000000..189c6aa
 +}
 +
 +/* ---- public ------------------------------------------------------------- */
-+VD_COLD void vdrive_init(vdrive_t *v)
++VD_COLD void tdrive_init(tdrive_t *v)
 +{
 +    memset(v, 0, sizeof *v);
 +    v->act = -1;
@@ -3450,7 +3303,7 @@ index 0000000..189c6aa
 +    settle(v);
 +}
 +
-+VD_COLD void vdrive_attach(vdrive_t *v, int unit, d64_t *disk, int present)
++VD_COLD void tdrive_attach(tdrive_t *v, int unit, d64_t *disk, int present)
 +{
 +    vd_unit_t *u = &v->unit[unit];
 +    close_all(u);
@@ -3458,7 +3311,7 @@ index 0000000..189c6aa
 +    set_err(u, 0, 0, 0);
 +}
 +
-+VD_COLD void vdrive_set_devices(vdrive_t *v, uint8_t pin0, uint8_t pin1)
++VD_COLD void tdrive_set_devices(tdrive_t *v, uint8_t pin0, uint8_t pin1)
 +{
 +    if (pin0 < 8 || pin0 > 30) pin0 = 0;                /* 0 (unset) or garbage: automatic */
 +    if (pin1 < 8 || pin1 > 30 || pin1 == pin0) pin1 = 0;
@@ -3466,7 +3319,7 @@ index 0000000..189c6aa
 +    settle(v);
 +}
 +
-+VD_COLD int vdrive_scan_begin(vdrive_t *v)
++VD_COLD int tdrive_scan_begin(tdrive_t *v)
 +{
 +    int need = 0;
 +    for (int i = 0; i < 2; i++)
@@ -3474,7 +3327,7 @@ index 0000000..189c6aa
 +    return need;
 +}
 +
-+VD_COLD int vdrive_scan_free(vdrive_t *v, uint8_t dev)
++VD_COLD int tdrive_scan_free(tdrive_t *v, uint8_t dev)
 +{
 +    int left = 0;
 +    if (dev >= 8 && dev <= 30 && dev != v->pin[0] && dev != v->pin[1] && dev != v->dev[0] && dev != v->dev[1])
@@ -3484,18 +3337,18 @@ index 0000000..189c6aa
 +    return left;
 +}
 +
-+VD_COLD int vdrive_unit_for(const vdrive_t *v, uint8_t dev) { return dev && dev == v->dev[0] ? 0 : dev && dev == v->dev[1] ? 1 : -1; }
-+VD_COLD void vdrive_set_host(vdrive_t *v, const vd_host_t *host) { v->host = *host; }
-+VD_COLD int vdrive_chan_mode(const vdrive_t *v, int unit, int ch)
++VD_COLD int tdrive_unit_for(const tdrive_t *v, uint8_t dev) { return dev && dev == v->dev[0] ? 0 : dev && dev == v->dev[1] ? 1 : -1; }
++VD_COLD void tdrive_set_host(tdrive_t *v, const vd_host_t *host) { v->host = *host; }
++VD_COLD int tdrive_chan_mode(const tdrive_t *v, int unit, int ch)
 +{
 +    uint8_t i = v->unit[unit].slot_of[ch];
 +    return i ? v->unit[unit].slot[i - 1].mode : 0;
 +}
-+VD_COLD int vdrive_pending_err(const vdrive_t *v, int unit) { return v->unit[unit].err; }
-+VD_COLD int vdrive_active(const vdrive_t *v) { return v->act; }
-+VD_COLD size_t vdrive_sizeof(void) { return sizeof(vdrive_t); }
++VD_COLD int tdrive_pending_err(const tdrive_t *v, int unit) { return v->unit[unit].err; }
++VD_COLD int tdrive_active(const tdrive_t *v) { return v->act; }
++VD_COLD size_t tdrive_sizeof(void) { return sizeof(tdrive_t); }
 +
-+VD_COLD static int read_byte(vdrive_t *v, int unit, vd_unit_t *u, vd_chan_t *c, uint8_t *b, int *eoi)
++VD_COLD static int read_byte(tdrive_t *v, int unit, vd_unit_t *u, vd_chan_t *c, uint8_t *b, int *eoi)
 +{
 +    if (c->mode == 1) {
 +        int n = d64_file_read(u->disk, &c->u.r, b, 1);
@@ -3549,13 +3402,13 @@ index 0000000..189c6aa
 +    return 0;
 +}
 +
-+VD_COLD int vdrive_mailbox(vdrive_t *v, uint8_t cmd, uint8_t arg, uint8_t *data, uint8_t *st)
++VD_COLD int tdrive_mailbox(tdrive_t *v, uint8_t cmd, uint8_t arg, uint8_t *data, uint8_t *st)
 +{
 +    *data = 0; *st = 0;
 +    if (cmd == VD_LISTEN || cmd == VD_TALK) {
 +        v->talking = (cmd == VD_TALK);
 +        v->wlen = 0;
-+        int unit = vdrive_unit_for(v, arg);
++        int unit = tdrive_unit_for(v, arg);
 +        if (unit >= 0) {
 +            v->act = (int8_t)unit;
 +            if (v->unit[unit].disk) v->unit[unit].disk->bad = 0;   /* a bad sector some earlier step read and did not report */
@@ -3634,17 +3487,17 @@ index 0000000..189c6aa
 +    }
 +    return 1;
 +}
-diff --git a/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.h b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.h
+diff --git a/Source/Teensy/MinimalBoot/Common/tdrive/tdrive.h b/Source/Teensy/MinimalBoot/Common/tdrive/tdrive.h
 new file mode 100644
-index 0000000..ebb2f54
+index 0000000..7fd6510
 --- /dev/null
-+++ b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive.h
++++ b/Source/Teensy/MinimalBoot/Common/tdrive/tdrive.h
 @@ -0,0 +1,161 @@
 +/* Virtual IEC drive: the Teensy-side state machine behind the KERNAL mailbox.
 + * Units 0/1 = devices 8/9, each backed by an optional mounted d64_t.
 + * One mailbox command in, one result out; no I/O other than the d64 and host callbacks. */
-+#ifndef VDRIVE_H
-+#define VDRIVE_H
++#ifndef TDRIVE_H
++#define TDRIVE_H
 +#include "../../../DiskImage/d64.h"
 +#include "vd_cfg.h"
 +
@@ -3711,7 +3564,7 @@ index 0000000..ebb2f54
 +    void (*push)(void *ctx, int unit);
 +    int  (*pop)(void *ctx, int unit, d64_t **out);
 +    /* Host text files for the configuration utility (OPEN n,d,n,"!CONFIG" read, "!CONFIG,W" write, "!STATE" read only): the unit's disk
-+     * switching list (/vdrive-config.txt) and a two-line description of what the unit has mounted ("path", "folder"). The host
++     * switching list (/tdrive-config.txt) and a two-line description of what the unit has mounted ("path", "folder"). The host
 +     * converts the text to / from PETSCII (a line ends with CR on the C64 side). Only one such file is open at a time on the host side.
 +     * hf_open: kind VD_HF_CONFIG / VD_HF_STATE; 0 ok, else a DOS error code (62 when there is no such file to read). hf_read: up to n bytes,
 +     * 0 = end of file. hf_write: 0 ok. hf_close: after the last write the host should flush. All optional (a missing hf_open = 62). */
@@ -3720,7 +3573,7 @@ index 0000000..ebb2f54
 +    int  (*hf_write)(void *ctx, int unit, const uint8_t *buf, int n);
 +    void (*hf_close)(void *ctx, int unit, int write);
 +    /* "N:NAME.D64,ID" with nothing mounted: make a new all-zero image file of `size` bytes in the current folder (never over an
-+     * existing file: 63) and mount it like mount(); vdrive.c then writes the header and BAM. 0 ok, else a DOS error code. */
++     * existing file: 63) and mount it like mount(); tdrive.c then writes the header and BAM. 0 ok, else a DOS error code. */
 +    int  (*create)(void *ctx, int unit, const char *name, uint32_t size, d64_t **out);
 +    /* A plain file in the current folder, read with nothing mounted (LOAD"GAME.PRG"): one open at a time per unit.
 +     * plain_open: 0 ok (*size = its length) or a DOS error (62); plain_read: bytes read (<0 error); plain_close: done with it. */
@@ -3731,15 +3584,15 @@ index 0000000..ebb2f54
 +     * mkdir 63 if the name is taken; rmdir 62 if there is no such folder, 63 if it is not empty. */
 +    int  (*mkdir)(void *ctx, int unit, const char *name);
 +    int  (*rmdir)(void *ctx, int unit, const char *name);
-+    /* S:NAME.D64 with nothing mounted: delete an image file in the current folder. 0 ok, else a DOS error: 62 no such file (vdrive.c
++    /* S:NAME.D64 with nothing mounted: delete an image file in the current folder. 0 ok, else a DOS error: 62 no such file (tdrive.c
 +     * counts it as 0 scratched), 26 the file is read-only on the card (FAT attribute) or the card is not writable. */
 +    int  (*scratch)(void *ctx, int unit, const char *name);
 +} vd_host_t;
 +enum { VD_HF_CONFIG = 0, VD_HF_STATE = 1 };
 +
-+struct vdrive_s;
++struct tdrive_s;
 +typedef struct {
-+    struct vdrive_s *owner;     /* back pointer: closing a channel may have to restore the host state */
++    struct tdrive_s *owner;     /* back pointer: closing a channel may have to restore the host state */
 +    uint8_t  index;             /* this unit's number (0/1) */
 +    uint8_t  restore_ch;        /* channel + 1 whose close restores the folder / image selected before a path listing; 0 = none */
 +    d64_t   *disk;              /* NULL: no image mounted */
@@ -3751,7 +3604,7 @@ index 0000000..ebb2f54
 +    uint8_t  err, err_t, err_s; /* DOS status */
 +} vd_unit_t;
 +
-+typedef struct vdrive_s {
++typedef struct tdrive_s {
 +    vd_host_t host;
 +    vd_unit_t unit[2];
 +    uint8_t  dev[2];            /* IEC device number each unit answers to now; 0 = none (not claimed on the bus) */
@@ -3761,31 +3614,31 @@ index 0000000..ebb2f54
 +    uint8_t  sa;
 +    uint8_t  wlen;
 +    uint8_t  wbuf[VD_CMDBUF];
-+} vdrive_t;
++} tdrive_t;
 +
-+void vdrive_init(vdrive_t *v);
-+void vdrive_attach(vdrive_t *v, int unit, d64_t *disk, int present);
++void tdrive_init(tdrive_t *v);
++void tdrive_attach(tdrive_t *v, int unit, d64_t *disk, int present);
 +/* pin0/pin1: device numbers the user fixed (8..30), 0 = automatic. Automatic units start on VD_DEV0/VD_DEV1 (or the next
 + * free number) and are moved by the start-up scan below. */
-+void vdrive_set_devices(vdrive_t *v, uint8_t pin0, uint8_t pin1);
++void tdrive_set_devices(tdrive_t *v, uint8_t pin0, uint8_t pin1);
 +/* Start-up scan (the KERNAL probes the real serial bus for 8,9,... after reset):
 + *   scan_begin  releases the numbers of all automatic units, so the probes reach the real bus; returns how many present
 + *               units still need a number (0 = nothing to scan for).
 + *   scan_free   the probe found nothing at `dev`: give it to the next automatic present unit (SD first, then USB).
 + *               Returns how many units are still waiting. */
-+int  vdrive_scan_begin(vdrive_t *v);
-+int  vdrive_scan_free(vdrive_t *v, uint8_t dev);
-+int  vdrive_unit_for(const vdrive_t *v, uint8_t dev);                /* unit 0/1 serving this device number, or -1 */
-+void vdrive_set_host(vdrive_t *v, const vd_host_t *host);
-+int  vdrive_chan_mode(const vdrive_t *v, int unit, int ch);   /* 0 closed, 1 file-read, 3 file-write, 4 directory, 5 buffer, 6/7 host text, 8 REL, 9 plain file */
-+int  vdrive_active(const vdrive_t *v);                        /* unit of the open bus transaction: 0/1, 2 absent device, -1 none */
-+int  vdrive_pending_err(const vdrive_t *v, int unit);         /* DOS error code waiting on the status channel (0 = none) */
++int  tdrive_scan_begin(tdrive_t *v);
++int  tdrive_scan_free(tdrive_t *v, uint8_t dev);
++int  tdrive_unit_for(const tdrive_t *v, uint8_t dev);                /* unit 0/1 serving this device number, or -1 */
++void tdrive_set_host(tdrive_t *v, const vd_host_t *host);
++int  tdrive_chan_mode(const tdrive_t *v, int unit, int ch);   /* 0 closed, 1 file-read, 3 file-write, 4 directory, 5 buffer, 6/7 host text, 8 REL, 9 plain file */
++int  tdrive_active(const tdrive_t *v);                        /* unit of the open bus transaction: 0/1, 2 absent device, -1 none */
++int  tdrive_pending_err(const tdrive_t *v, int unit);         /* DOS error code waiting on the status channel (0 = none) */
 +
 +/* Returns 1 if the transaction is not ours (fall back to the real IEC bus);
 + * 0 if handled, with data and st filled in (st = bits to OR into KERNAL ST). */
-+int vdrive_mailbox(vdrive_t *v, uint8_t cmd, uint8_t arg, uint8_t *data, uint8_t *st);
++int tdrive_mailbox(tdrive_t *v, uint8_t cmd, uint8_t arg, uint8_t *data, uint8_t *st);
 +
-+size_t vdrive_sizeof(void);
++size_t tdrive_sizeof(void);
 +
 +/* Host file names the C64 cannot use as they are get an alias of at most 16 characters (docs/DESIGN.md 44). `name` is the
 + * host's ASCII name; `out` gets the C64 spelling, upper case. A name is usable as it is when it has at most 16 characters
@@ -3801,13 +3654,13 @@ index 0000000..ebb2f54
 +}
 +#endif
 +#endif
-diff --git a/Source/Teensy/MinimalBoot/Common/vdrive/vdrive_io.c b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive_io.c
+diff --git a/Source/Teensy/MinimalBoot/Common/tdrive/tdrive_io.c b/Source/Teensy/MinimalBoot/Common/tdrive/tdrive_io.c
 new file mode 100644
-index 0000000..33bf8a9
+index 0000000..7e8d396
 --- /dev/null
-+++ b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive_io.c
++++ b/Source/Teensy/MinimalBoot/Common/tdrive/tdrive_io.c
 @@ -0,0 +1,349 @@
-+#include "vdrive_io.h"
++#include "tdrive_io.h"
 +#include "vd_cfg.h"
 +#include <string.h>
 +
@@ -3820,7 +3673,7 @@ index 0000000..33bf8a9
 +    hot->border = VIO_BRD_IDLE;
 +    hot->id0 = VIO_ID0_VAL;
 +    hot->id1 = VIO_ID1_VAL;
-+    vdrive_init(&v->vd);
++    tdrive_init(&v->vd);
 +    vio_publish_devices(v);
 +}
 +
@@ -3862,7 +3715,7 @@ index 0000000..33bf8a9
 +VD_COLD static int bus(vio_t *v, uint8_t c, uint8_t a, uint8_t *data)
 +{
 +    uint8_t st = 0, d = 0;
-+    vdrive_mailbox(&v->vd, c, a, &d, &st);
++    tdrive_mailbox(&v->vd, c, a, &d, &st);
 +    if (data) *data = d;
 +    return st;
 +}
@@ -4026,9 +3879,9 @@ index 0000000..33bf8a9
 +    if (bus(v, VD_LISTEN, dev, 0) & 0x80) { v->h->data = 5; return; }
 +    bus(v, VD_UNLSN, 0, 0);
 +    send_name_open(v, dev, 0xF1);
-+    int unit = vdrive_unit_for(&v->vd, dev);
-+    if (vdrive_chan_mode(&v->vd, unit, 1) == 3) { v->fs_active = 1; v->fs_dev = dev; v->h->data = 0; }
-+    else { int e = vdrive_pending_err(&v->vd, unit); v->h->data = (uint8_t)(e ? e : 74); }
++    int unit = tdrive_unit_for(&v->vd, dev);
++    if (tdrive_chan_mode(&v->vd, unit, 1) == 3) { v->fs_active = 1; v->fs_dev = dev; v->h->data = 0; }
++    else { int e = tdrive_pending_err(&v->vd, unit); v->h->data = (uint8_t)(e ? e : 74); }
 +}
 +
 +VD_COLD static void fsave_bytes(vio_t *v, const uint8_t *buf, unsigned n)
@@ -4079,10 +3932,10 @@ index 0000000..33bf8a9
 +    v->h->data = 0;
 +    if (v->fs_fail) { v->fs_fail = 0; return 1; }
 +    if (!v->fs_active) return 0;
-+    int unit = vdrive_unit_for(&v->vd, v->fs_dev);
-+    int ok = vdrive_chan_mode(&v->vd, unit, 1) == 3;
++    int unit = tdrive_unit_for(&v->vd, v->fs_dev);
++    int ok = tdrive_chan_mode(&v->vd, unit, 1) == 3;
 +    close_chan(v, v->fs_dev, 0xE1);
-+    if (!ok) { int e = vdrive_pending_err(&v->vd, unit); v->h->data = (uint8_t)(e ? e : 74); }
++    if (!ok) { int e = tdrive_pending_err(&v->vd, unit); v->h->data = (uint8_t)(e ? e : 74); }
 +    v->fs_active = 0;
 +    return 0;
 +}
@@ -4100,14 +3953,14 @@ index 0000000..33bf8a9
 +VD_COLD int vio_probe_begin(vio_t *v)
 +{
 +    v->scan_state = 3;
-+    int need = vdrive_scan_begin(&v->vd);
++    int need = tdrive_scan_begin(&v->vd);
 +    vio_publish_devices(v);
 +    return need;
 +}
 +
 +VD_COLD int vio_probe_free(vio_t *v, uint8_t dev)
 +{
-+    int left = vdrive_scan_free(&v->vd, dev);
++    int left = tdrive_scan_free(&v->vd, dev);
 +    vio_publish_devices(v);
 +    return left;
 +}
@@ -4132,19 +3985,19 @@ index 0000000..33bf8a9
 +        /* answer SCANREQ below, execute nothing */
 +    } else if (c >= VD_LISTEN && c <= VD_UNTLK) {
 +        uint8_t d, st;
-+        notmine = (uint8_t)vdrive_mailbox(&v->vd, c, v->h->arg, &d, &st);
++        notmine = (uint8_t)tdrive_mailbox(&v->vd, c, v->h->arg, &d, &st);
 +        v->h->data = d; v->h->st = st;
 +    } else switch (c) {
-+        case VIO_FLOAD_OPEN:  if (vdrive_unit_for(&v->vd, v->h->arg) >= 0) fload_open(v);  else notmine = 1; break;
++        case VIO_FLOAD_OPEN:  if (tdrive_unit_for(&v->vd, v->h->arg) >= 0) fload_open(v);  else notmine = 1; break;
 +        case VIO_FLOAD_BLK:   fload_blk(v); break;
 +        case VIO_FLOAD_DMA:   notmine = (uint8_t)fload_dma(v); break;
-+        case VIO_FSAVE_OPEN:  if (vdrive_unit_for(&v->vd, v->h->arg) >= 0) fsave_open(v);  else notmine = 1; break;
++        case VIO_FSAVE_OPEN:  if (tdrive_unit_for(&v->vd, v->h->arg) >= 0) fsave_open(v);  else notmine = 1; break;
 +        case VIO_FSAVE_BLK:   notmine = (uint8_t)fsave_blk(v); break;
 +        case VIO_FSAVE_CLOSE: notmine = (uint8_t)fsave_close(v); break;
 +        case VIO_FSAVE_DMA:   notmine = (uint8_t)fsave_dma(v); break;
-+        case VIO_FVERIFY_OPEN: if (vdrive_unit_for(&v->vd, v->h->arg) >= 0) notmine = (uint8_t)fverify_open(v); else notmine = 1; break;
-+        case VIO_SCAN:        v->scan_state = 3; v->h->data = (uint8_t)vdrive_scan_begin(&v->vd); break;
-+        case VIO_FREE:        v->h->data = (uint8_t)vdrive_scan_free(&v->vd, v->h->arg); break;
++        case VIO_FVERIFY_OPEN: if (tdrive_unit_for(&v->vd, v->h->arg) >= 0) notmine = (uint8_t)fverify_open(v); else notmine = 1; break;
++        case VIO_SCAN:        v->scan_state = 3; v->h->data = (uint8_t)tdrive_scan_begin(&v->vd); break;
++        case VIO_FREE:        v->h->data = (uint8_t)tdrive_scan_free(&v->vd, v->h->arg); break;
 +        case VIO_MENU:        v->menu_req = 1; break;
 +        default: notmine = 1;
 +    }
@@ -4156,11 +4009,11 @@ index 0000000..33bf8a9
 +
 +VD_COLD size_t vio_sizeof(void) { return sizeof(vio_t); }
 +VD_COLD size_t vio_hot_sizeof(void) { return sizeof(vio_hot_t); }
-diff --git a/Source/Teensy/MinimalBoot/Common/vdrive/vdrive_io.h b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive_io.h
+diff --git a/Source/Teensy/MinimalBoot/Common/tdrive/tdrive_io.h b/Source/Teensy/MinimalBoot/Common/tdrive/tdrive_io.h
 new file mode 100644
-index 0000000..3face06
+index 0000000..18e93da
 --- /dev/null
-+++ b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive_io.h
++++ b/Source/Teensy/MinimalBoot/Common/tdrive/tdrive_io.h
 @@ -0,0 +1,136 @@
 +/* Mailbox register engine for the TR+ virtual drive.
 + *
@@ -4169,11 +4022,11 @@ index 0000000..3face06
 + *                                                  +8 BORDER (R): request for the KERNAL's IRQ routine, see VIO_BRD_* (disk-switch feedback)
 + *                                                  +9 ID0, +10 ID1 (R): VIO_ID0_VAL / VIO_ID1_VAL while the handler answers (the KERNAL's reset hook, see VIO_MENU)
 + *   IO2 ($DF80): 128-byte window (RW): file name in, data blocks in/out. $DF00-$DF7F is not ours: the REU's registers live
-+ *                there in the "VDrive+REU" and "VDrive+Swift+REU" handlers (IOH_VDriveREU.c); the others leave it unanswered.
++ *                there in the "TDrive+REU" and "TDrive+Swift+REU" handlers (IOH_TDriveREU.c); the others leave it unanswered.
 + *
 + * ISR side (vio_io*_read/write) is O(1) and never touches storage. Everything
 + * else runs from vio_poll() in the main loop. Portable C: host tests and the
-+ * Teensy glue (IOH_VDrive.c) use the same code.
++ * Teensy glue (IOH_TDrive.c) use the same code.
 + *
 + * Everything the bus ISR touches lives in the small vio_hot_t, which the firmware keeps in fast RAM1
 + * (DTCM); the large drive state (vio_t) can sit in slower RAM2 because only the main loop uses it.
@@ -4183,15 +4036,15 @@ index 0000000..3face06
 + * floating-bus misread (which returns the previous bus byte, $DE here) can never look like "done".
 + *
 + * Bus scan: the Teensy cannot see the serial bus, so when a unit has no fixed device number it asks the 6502 to probe it. It does
-+ * so lazily, on the first transaction of a run (the VDrive handler only becomes active once the program has been loaded): that
++ * so lazily, on the first transaction of a run (the TDrive handler only becomes active once the program has been loaded): that
 + * command is answered with SCANREQ instead of being executed; the KERNAL sends SCAN, then FREE for each number where its
 + * LISTEN found nobody, until the answer says nobody is waiting, and then repeats the original command. Asked once only: a
 + * KERNAL that does not understand SCANREQ just times out on that one call and the defaults stay.
 + * The TR menu probes the bus itself before it starts a program (vio_probe_begin / vio_probe_free, the same steps driven from the
 + * menu's registers), so DEV0/DEV1 are right from the program's first instruction; after that probe nothing more is asked. */
-+#ifndef VDRIVE_IO_H
-+#define VDRIVE_IO_H
-+#include "vdrive.h"
++#ifndef TDRIVE_IO_H
++#define TDRIVE_IO_H
++#include "tdrive.h"
 +
 +#ifdef __cplusplus
 +extern "C" {
@@ -4225,7 +4078,7 @@ index 0000000..3face06
 +    VIO_SCAN       = 14,   /* start of the reset-time bus scan: releases the automatic units' numbers. DATA = units that need a number */
 +    VIO_FREE       = 15,   /* ARG = a device number nobody answered at; it goes to the next unit that needs one. DATA = units still waiting */
 +    VIO_MENU       = 16,   /* back to the TR menu: answered OK, then the Teensy writes back what is unsaved and resets the C64 into its menu
-+                              (VDrive Config's Q; the KERNAL's cold start, SYS64738, once it has read VIO_ID0_VAL / VIO_ID1_VAL) */
++                              (TDrive Config's Q; the KERNAL's cold start, SYS64738, once it has read VIO_ID0_VAL / VIO_ID1_VAL) */
 +    VIO_FLOAD_DMA  = 17,   /* the next part of a fast LOAD, ARG/LEN = the address its first byte goes to (the KERNAL's $AE/$AF). Answered as
 +                              VIO_FLOAD_BLK (DATA = bytes in the window), or, when the host can DMA and the address allows it (vio_dma_ok), with
 +                              DATA = 0: up to dma_max bytes were written into C64 RAM by DMA and the end pointer into $AE/$AF (VIO_DMA_PTR).
@@ -4250,18 +4103,18 @@ index 0000000..3face06
 + * there, a DMA read the machine's own ROM chip */
 +#define vio_dma_rd_ok(a) ((a) >= 0x0200 && (a) < 0xD000)
 +#define VIO_DMA_SAVE 0xAC  /* the KERNAL's SAVE pointer and end ($AC/$AD, $AE/$AF), read by VIO_FSAVE_DMA */
-+#define VIO_DMA_SA   0xA4  /* the original secondary address of a LOAD / VERIFY (fl_hook in patches/vdrive.s keeps it there) */
++#define VIO_DMA_SA   0xA4  /* the original secondary address of a LOAD / VERIFY (fl_hook in patches/tdrive.s keeps it there) */
 +#define VIO_DMA_ADDR 0xC3  /* the caller's load address ($C3/$C4), used with secondary address 0 */
 +
 +/* Registers + window: the only memory the bus ISR reads or writes (~140 bytes). Keep in DTCM. */
 +typedef struct {
-+    volatile uint8_t cmd, arg, data, stat, st, len, dev0, dev1, border, id0, id1, pending;   /* cmd..id1 are in register order (see the static_assert in IOH_VDrive.c) */
++    volatile uint8_t cmd, arg, data, stat, st, len, dev0, dev1, border, id0, id1, pending;   /* cmd..id1 are in register order (see the static_assert in IOH_TDrive.c) */
 +    uint8_t window[VIO_WIN];
 +} vio_hot_t;
 +
 +/* Drive state and fast-path bookkeeping: main loop only. */
 +typedef struct {
-+    vdrive_t vd;                       /* must stay first: callers pass a vio_t* where a vdrive_t* is wanted */
++    tdrive_t vd;                       /* must stay first: callers pass a vio_t* where a tdrive_t* is wanted */
 +    vio_hot_t *h;
 +    uint8_t fl_active, fl_eof, fl_dev, fs_active, fs_dev;
 +    uint8_t fl_verify;                 /* the channel was opened by VIO_FVERIFY_OPEN: VIO_FLOAD_DMA compares instead of writing */
@@ -4289,7 +4142,7 @@ index 0000000..3face06
 +int     vio_take_menu(vio_t *v);             /* 1 once after VIO_MENU: the host should return to its menu */
 +void    vio_set_dma(vio_t *v, int (*write)(void *ctx, uint16_t addr, const uint8_t *buf, uint16_t len),
 +                    int (*read)(void *ctx, uint16_t addr, uint8_t *buf, uint16_t len), void *ctx, uint8_t *buf, uint16_t max);
-+void    vio_publish_devices(vio_t *v);       /* copy the current device numbers to the DEV0/DEV1 registers (call after vdrive_set_devices) */
++void    vio_publish_devices(vio_t *v);       /* copy the current device numbers to the DEV0/DEV1 registers (call after tdrive_set_devices) */
 +
 +size_t  vio_sizeof(void);
 +size_t  vio_hot_sizeof(void);
@@ -4298,13 +4151,13 @@ index 0000000..3face06
 +}
 +#endif
 +#endif
-diff --git a/Source/Teensy/MinimalBoot/Common/vdrive/vdrive_vec.c b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive_vec.c
+diff --git a/Source/Teensy/MinimalBoot/Common/tdrive/tdrive_vec.c b/Source/Teensy/MinimalBoot/Common/tdrive/tdrive_vec.c
 new file mode 100644
-index 0000000..2cc5fec
+index 0000000..6726982
 --- /dev/null
-+++ b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive_vec.c
++++ b/Source/Teensy/MinimalBoot/Common/tdrive/tdrive_vec.c
 @@ -0,0 +1,539 @@
-+#include "vdrive_vec.h"
++#include "tdrive_vec.h"
 +#include "vd_cfg.h"
 +#include <string.h>
 +
@@ -4348,7 +4201,7 @@ index 0000000..2cc5fec
 +#define K_ERROR(n)  (uint16_t)(KN->error1 + 3 * ((n) - 1))
 +
 +/* C128 in 128 mode: the drives in BASIC 7's start-up message (docs/DESIGN.md 59). Its fourth line, "ALL RIGHTS RESERVED" (row 4, 40
-+ * or 80 columns), becomes " ALL RIGHTS RESERVED  VDRIVE SD 8 USB 9", centered (column 1 / 21), like the C64 banner's second line. */
++ * or 80 columns), becomes " ALL RIGHTS RESERVED  TDRIVE SD 8 USB 9", centered (column 1 / 21), like the C64 banner's second line. */
 +#define K_PLOT      0xFFF0      /* C clear: the cursor to row X, column Y */
 +#define ED_PRINT    0xC00C      /* the C128 editor's jump table: print A on the screen (what CHROUT does for device 3) */
 +#define B_MODE      0xD7        /* bit 7: the 80-column screen is the active one */
@@ -4424,13 +4277,13 @@ index 0000000..2cc5fec
 +VD_COLD static int bus(vvec_t *e, uint8_t cmd, uint8_t arg, uint8_t *d, uint8_t *st)
 +{
 +    uint8_t dd = 0, s = 0;
-+    int nm = vdrive_mailbox(&e->v->vd, cmd, arg, &dd, &s);
++    int nm = tdrive_mailbox(&e->v->vd, cmd, arg, &dd, &s);
 +    if (d) *d = dd;
 +    if (st) *st |= s;
 +    return nm;
 +}
 +
-+static int ours(vvec_t *e, uint8_t dev) { return dev >= 4 && vdrive_unit_for(&e->v->vd, dev) >= 0; }
++static int ours(vvec_t *e, uint8_t dev) { return dev >= 4 && tdrive_unit_for(&e->v->vd, dev) >= 0; }
 +
 +/* ---- protothread ---- */
 +#define PT_BEGIN(c)   switch ((c)->pc) { case 0:
@@ -4454,14 +4307,14 @@ index 0000000..2cc5fec
 +/* the zero page as PEEKed from $AE ($AE-$C4 on a C64; to $C7 on a C128: BA, FNBANK) */
 +#define ZP(a) c->buf[(a) - 0xAE]
 +
-+/* " ALL RIGHTS RESERVED  VDRIVE SD 8 USB 9" without the leading space: each unit "SD 8" / "SD10" / "NOSD", "USB 9" / "USB11" /
++/* " ALL RIGHTS RESERVED  TDRIVE SD 8 USB 9" without the leading space: each unit "SD 8" / "SD10" / "NOSD", "USB 9" / "USB11" /
 + * "NOUSB" (patches/vdbanner.s); returns its length (38) */
-+VD_COLD static uint8_t banner_text(const vdrive_t *vd, uint8_t *t)
++VD_COLD static uint8_t banner_text(const tdrive_t *vd, uint8_t *t)
 +{
 +    static const char *const name[2] = { "SD", "USB" };
 +    uint8_t n = 0;
 +    for (const char *s = vv_banner_head; *s; s++) t[n++] = (uint8_t)*s;
-+    for (const char *s = "  VDRIVE "; *s; s++) t[n++] = (uint8_t)*s;
++    for (const char *s = "  TDRIVE "; *s; s++) t[n++] = (uint8_t)*s;
 +    for (int u = 0; u < 2; u++) {
 +        uint8_t d = vd->unit[u].present ? vd->dev[u] : 0;
 +        if (u) t[n++] = ' ';
@@ -4572,7 +4425,7 @@ index 0000000..2cc5fec
 +     * LOAD or SAVE of a run, or at the C128's launch INSTALL (the banner above) */
 +    if (c->scan && v->scan_state == 1) {
 +        v->scan_state = 3;
-+        c->n = (uint8_t)vdrive_scan_begin(&v->vd);
++        c->n = (uint8_t)tdrive_scan_begin(&v->vd);
 +        for (c->dev = 8; c->n && c->dev < 31; c->dev++) {
 +            sc_poke1(e, 0x90, 0);
 +            CALL(K_LISTEN, c->dev, 0, 0);
@@ -4580,7 +4433,7 @@ index 0000000..2cc5fec
 +                CALL(K_SECOND, 0x6F, 0, 0);
 +                if (!(c->rst & 0x80)) { CALL(K_UNLSN, 0, 0, 0); continue; }
 +            }
-+            c->n = (uint8_t)vdrive_scan_free(&v->vd, c->dev);
++            c->n = (uint8_t)tdrive_scan_free(&v->vd, c->dev);
 +        }
 +        vio_publish_devices(v);
 +        sc_poke1(e, 0x90, c->st);
@@ -4843,11 +4696,11 @@ index 0000000..2cc5fec
 +    h->stat = VIO_OK;
 +    return 1;
 +}
-diff --git a/Source/Teensy/MinimalBoot/Common/vdrive/vdrive_vec.h b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive_vec.h
+diff --git a/Source/Teensy/MinimalBoot/Common/tdrive/tdrive_vec.h b/Source/Teensy/MinimalBoot/Common/tdrive/tdrive_vec.h
 new file mode 100644
-index 0000000..db7cc9a
+index 0000000..442ff6a
 --- /dev/null
-+++ b/Source/Teensy/MinimalBoot/Common/vdrive/vdrive_vec.h
++++ b/Source/Teensy/MinimalBoot/Common/tdrive/tdrive_vec.h
 @@ -0,0 +1,78 @@
 +/* Vector engine for the plain TeensyROM (docs/DESIGN.md 53): the Teensy side of the 6502 agent in vector/vdagent.s.
 + *
@@ -4855,14 +4708,14 @@ index 0000000..db7cc9a
 + * (the registers and a few zero-page bytes, in the mailbox window, command VV_C_VEC); the answer is a short script for the agent:
 + * POKE / PEEK C64 memory, CONT (more to come) and GO (load the registers and jump: return, chain to the vector we replaced,
 + * a KERNAL error exit, or a call of a ROM routine whose result comes back as a frame). OPEN..SAVE, the file table and the
-+ * serial-bus scan are done here, on top of the byte-level drive (vdrive_mailbox); "not ours" chains to the old vector.
++ * serial-bus scan are done here, on top of the byte-level drive (tdrive_mailbox); "not ours" chains to the old vector.
 + *
 + * Handlers are protothreads: one that needs memory or a ROM call yields and goes on when the agent's next frame arrives.
 + * A call that comes in while another waits for a ROM routine (that routine printed through CHROUT, or failed into CLRCHN) runs
 + * on a context of its own above it. */
-+#ifndef VDRIVE_VEC_H
-+#define VDRIVE_VEC_H
-+#include "vdrive_io.h"
++#ifndef TDRIVE_VEC_H
++#define TDRIVE_VEC_H
++#include "tdrive_io.h"
 +
 +#ifdef __cplusplus
 +extern "C" {
@@ -4927,18 +4780,165 @@ index 0000000..db7cc9a
 +}
 +#endif
 +#endif
+diff --git a/Source/Teensy/MinimalBoot/Common/tdrive/vd_agent.h b/Source/Teensy/MinimalBoot/Common/tdrive/vd_agent.h
+new file mode 100644
+index 0000000..751a650
+--- /dev/null
++++ b/Source/Teensy/MinimalBoot/Common/tdrive/vd_agent.h
+@@ -0,0 +1,23 @@
++// The plain TeensyROM's agent (teensyrom-vdrive vector/vdagent.s), generated by tools/build_agent.py: served from IO1
++// at VD_AgentBase, mailbox registers at IO2 $DF00, window at $DF80 (docs/DESIGN.md 53).
++#pragma once
++#define VD_AgentBase 0xDE08
++#define VD_AgentRegs 0x00   // IO2 offset of the registers
++static const uint8_t VD_Agent[246] PROGMEM = {
++   0x20, 0xff, 0xff, 0x20, 0x59, 0xde, 0xca, 0xf1, 0x57, 0xf1, 0x3e, 0xf1, 0x20, 0x59, 0xde, 0x20,
++   0x59, 0xde, 0x20, 0x59, 0xde, 0x20, 0x59, 0xde, 0x20, 0x59, 0xde, 0x20, 0x59, 0xde, 0x20, 0x59,
++   0xde, 0x20, 0x59, 0xde, 0x20, 0x59, 0xde, 0x20, 0x59, 0xde, 0x20, 0x59, 0xde, 0x20, 0x59, 0xde,
++   0x48, 0xa5, 0x9a, 0xc9, 0x04, 0x68, 0xb0, 0xe9, 0x6c, 0x0e, 0xde, 0x48, 0xa5, 0x99, 0xc9, 0x04,
++   0x68, 0xb0, 0xdb, 0x6c, 0x10, 0xde, 0x48, 0xa5, 0x99, 0xc9, 0x04, 0x68, 0xb0, 0xd0, 0x6c, 0x12,
++   0xde, 0x08, 0x48, 0x8a, 0x48, 0x98, 0x48, 0xa0, 0x05, 0xa2, 0x00, 0x68, 0x20, 0xf1, 0xde, 0xe8,
++   0x88, 0xd0, 0xf8, 0x68, 0xbc, 0xf5, 0xde, 0xb9, 0x00, 0x00, 0x20, 0xf1, 0xde, 0xe8, 0xe0, 0x09,
++   0xd0, 0xf2, 0xa9, 0x14, 0x8d, 0x00, 0xdf, 0xad, 0x03, 0xdf, 0xc9, 0x5a, 0xd0, 0xf9, 0xa2, 0x00,
++   0x20, 0xe7, 0xde, 0x4a, 0xb0, 0x1a, 0x4a, 0xb0, 0x33, 0xd0, 0x50, 0x20, 0xe7, 0xde, 0xa8, 0x20,
++   0xe7, 0xde, 0x48, 0x20, 0xe7, 0xde, 0x48, 0x20, 0xe7, 0xde, 0xaa, 0x68, 0x28, 0x6c, 0xfe, 0xdf,
++   0x20, 0xe7, 0xde, 0x8d, 0xbd, 0xde, 0x20, 0xe7, 0xde, 0x8d, 0xbe, 0xde, 0x20, 0xe7, 0xde, 0xa8,
++   0x88, 0x20, 0xe7, 0xde, 0x99, 0xff, 0xff, 0x98, 0xd0, 0xf6, 0xf0, 0xc4, 0x20, 0xe7, 0xde, 0x8d,
++   0xd6, 0xde, 0x20, 0xe7, 0xde, 0x8d, 0xd7, 0xde, 0x20, 0xe7, 0xde, 0xa8, 0x88, 0xb9, 0xff, 0xff,
++   0x99, 0x80, 0xdf, 0xd9, 0x80, 0xdf, 0xd0, 0xf8, 0x98, 0xd0, 0xf1, 0xa9, 0x15, 0xd0, 0x95, 0xbd,
++   0x80, 0xdf, 0xdd, 0x80, 0xdf, 0xd0, 0xf8, 0xe8, 0x60, 0x9d, 0x80, 0xdf, 0xdd, 0x80, 0xdf, 0xd0,
++   0xf8, 0x60, 0x90, 0x98, 0x99, 0x9a
++};
+diff --git a/Source/Teensy/MinimalBoot/Common/tdrive/vd_cfg.h b/Source/Teensy/MinimalBoot/Common/tdrive/vd_cfg.h
+new file mode 100644
+index 0000000..71c8659
+--- /dev/null
++++ b/Source/Teensy/MinimalBoot/Common/tdrive/vd_cfg.h
+@@ -0,0 +1,25 @@
++/* Build-time knobs shared by d64.c / tdrive.c / tdrive_io.c. */
++#ifndef VD_CFG_H
++#define VD_CFG_H
++/* Placement for code that is NOT reachable from the bus interrupt. The firmware
++ * glue defines this as FLASHMEM so only the O(1) register accessors stay in RAM1. */
++#ifndef VD_COLD
++#define VD_COLD
++#endif
++
++/* IEC device numbers of the two virtual drives (unit 0 = SD, unit 1 = USB). Any other device number
++ * keeps using the real serial bus, so e.g. -DVD_DEV0=10 -DVD_DEV1=11 leaves physical drives 8 and 9
++ * alone. The KERNAL image contains no device numbers: change them here and rebuild the firmware only. */
++#ifndef VD_DEV0
++#define VD_DEV0 8
++#endif
++#ifndef VD_DEV1
++#define VD_DEV1 9
++#endif
++
++/* Simultaneously open data channels per unit. Real 1541s have 5; the pool is shared by
++ * LOAD (channel 0), SAVE (1), and OPENs 2-14. Each slot costs ~290 bytes. */
++#ifndef VD_NSLOT
++#define VD_NSLOT 6
++#endif
++#endif
+diff --git a/Source/Teensy/MinimalBoot/Common/tdrive/vd_kpatch.h b/Source/Teensy/MinimalBoot/Common/tdrive/vd_kpatch.h
+new file mode 100644
+index 0000000..073d13a
+--- /dev/null
++++ b/Source/Teensy/MinimalBoot/Common/tdrive/vd_kpatch.h
+@@ -0,0 +1,81 @@
++// The TDrive KERNAL patches (teensyrom-vdrive patches/*.s), generated by tools/build.py --table: runs of address hi, lo,
++// length hi, lo and the bytes, a zero length at the end. Our code only: the firmware lays it over the C64's own KERNAL.
++#pragma once
++#define VD_KernalPatchBytes 1115   // bytes laid over the KERNAL
++static const uint8_t VD_KernalPatch[] PROGMEM = {
++   0xe1, 0xda, 0x00, 0x01, 0x08, 0xe4, 0x2d, 0x00, 0x03, 0x20, 0x97, 0xfb, 0xe4, 0x3d, 0x00, 0x03,
++   0x4c, 0xd9, 0xfb, 0xe4, 0x9a, 0x00, 0x01, 0x00, 0xe5, 0xee, 0x00, 0x03, 0x4c, 0x96, 0xf8, 0xea,
++   0x32, 0x00, 0x02, 0x55, 0xfb, 0xed, 0x09, 0x00, 0x03, 0x4c, 0x8c, 0xf9, 0xed, 0x0c, 0x00, 0x03,
++   0x4c, 0x9a, 0xf9, 0xed, 0xb9, 0x00, 0x03, 0x4c, 0xac, 0xf9, 0xed, 0xc7, 0x00, 0x03, 0x4c, 0xbe,
++   0xf9, 0xed, 0xdd, 0x00, 0x03, 0x4c, 0xd0, 0xf9, 0xed, 0xef, 0x00, 0x03, 0x4c, 0xe7, 0xf9, 0xed,
++   0xfe, 0x00, 0x03, 0x4c, 0x03, 0xfa, 0xee, 0x13, 0x00, 0x03, 0x4c, 0x13, 0xfa, 0xf4, 0xc8, 0x00,
++   0x03, 0x4c, 0x55, 0xfa, 0xf6, 0x05, 0x00, 0x03, 0x4c, 0xd2, 0xfa, 0xf8, 0x75, 0x00, 0x4f, 0xa2,
++   0xff, 0x78, 0x9a, 0xad, 0x19, 0xde, 0xc9, 0xd6, 0xd0, 0x13, 0xcd, 0x19, 0xde, 0xd0, 0x0e, 0xad,
++   0x1a, 0xde, 0xc9, 0x64, 0xd0, 0x07, 0xa9, 0x10, 0x20, 0xe2, 0xf8, 0x90, 0xfe, 0x4c, 0xe5, 0xfc,
++   0xa2, 0x00, 0xbd, 0xb4, 0xf8, 0x20, 0x16, 0xe7, 0xe8, 0xe0, 0x06, 0xd0, 0xf5, 0xa2, 0x0a, 0x78,
++   0x86, 0xc6, 0xbd, 0xb9, 0xf8, 0x9d, 0x76, 0x02, 0xca, 0xd0, 0xf7, 0x4c, 0xcd, 0xe5, 0x4c, 0x4f,
++   0x41, 0x44, 0x22, 0x2a, 0x22, 0x2c, 0x38, 0x2c, 0x31, 0x0d, 0x52, 0x55, 0x4e, 0x0d, 0xf8, 0xe2,
++   0x02, 0xa6, 0x48, 0x20, 0x78, 0xfb, 0xd0, 0x42, 0xa5, 0xa7, 0x8d, 0x11, 0xde, 0x68, 0x48, 0x8d,
++   0x10, 0xde, 0xa9, 0x00, 0x85, 0xa5, 0x85, 0xa6, 0xad, 0x13, 0xde, 0xc9, 0x5a, 0xf0, 0x12, 0xc9,
++   0xa5, 0xf0, 0x27, 0xc9, 0x3c, 0xf0, 0x28, 0xe6, 0xa5, 0xd0, 0xed, 0xe6, 0xa6, 0xd0, 0xe9, 0xf0,
++   0x19, 0xad, 0x14, 0xde, 0xcd, 0x14, 0xde, 0xd0, 0xf8, 0x05, 0x90, 0x85, 0x90, 0x68, 0xad, 0x12,
++   0xde, 0xcd, 0x12, 0xde, 0xd0, 0xf8, 0xc9, 0x00, 0x18, 0x60, 0x68, 0xa5, 0xa7, 0x38, 0x60, 0x8a,
++   0x48, 0x98, 0x48, 0xa5, 0xa7, 0x48, 0xa5, 0x90, 0x48, 0x20, 0x49, 0xf9, 0x68, 0x85, 0x90, 0x68,
++   0x85, 0xa7, 0x68, 0xa8, 0x68, 0xaa, 0x4c, 0xe8, 0xf8, 0xa9, 0x00, 0x85, 0x90, 0x85, 0xa7, 0xa9,
++   0x0e, 0x20, 0xe2, 0xf8, 0xb0, 0x20, 0xf0, 0x1e, 0xa9, 0x08, 0x48, 0x20, 0xb1, 0xff, 0xa5, 0x90,
++   0x30, 0x15, 0xa9, 0x6f, 0x20, 0x93, 0xff, 0xa5, 0x90, 0x30, 0x0c, 0x20, 0xae, 0xff, 0x68, 0x18,
++   0x69, 0x01, 0xc9, 0x1f, 0x90, 0xe4, 0x60, 0xa9, 0x00, 0x85, 0x90, 0xba, 0xbd, 0x01, 0x01, 0x85,
++   0xa7, 0xa9, 0x0f, 0x20, 0xe2, 0xf8, 0xb0, 0x02, 0xd0, 0xe4, 0x68, 0x60, 0x85, 0xa7, 0xa9, 0x02,
++   0x20, 0xe2, 0xf8, 0xb0, 0x01, 0x60, 0x09, 0x40, 0xd0, 0x0c, 0x85, 0xa7, 0xa9, 0x01, 0x20, 0xe2,
++   0xf8, 0xb0, 0x01, 0x60, 0x09, 0x20, 0x20, 0xa4, 0xf0, 0x4c, 0x11, 0xed, 0x85, 0xa7, 0xa9, 0x03,
++   0x20, 0xe2, 0xf8, 0xb0, 0x01, 0x60, 0x85, 0x95, 0x20, 0x36, 0xed, 0x4c, 0xbe, 0xed, 0x85, 0xa7,
++   0xa9, 0x04, 0x20, 0xe2, 0xf8, 0xb0, 0x01, 0x60, 0x85, 0x95, 0x20, 0x36, 0xed, 0x4c, 0xcc, 0xed,
++   0x85, 0xa7, 0xa9, 0x05, 0x20, 0xe2, 0xf8, 0xb0, 0x04, 0xa5, 0xa7, 0x18, 0x60, 0x24, 0x94, 0x30,
++   0x03, 0x4c, 0xe1, 0xed, 0x4c, 0xe6, 0xed, 0xa9, 0x08, 0x20, 0xe2, 0xf8, 0xb0, 0x01, 0x60, 0x78,
++   0x20, 0x8e, 0xee, 0xad, 0x00, 0xdd, 0x09, 0x08, 0x8d, 0x00, 0xdd, 0xa9, 0x5f, 0x20, 0x11, 0xed,
++   0x4c, 0x03, 0xee, 0xa9, 0x07, 0x20, 0xe2, 0xf8, 0xb0, 0x01, 0x60, 0xa9, 0x3f, 0x20, 0x11, 0xed,
++   0x4c, 0x03, 0xee, 0xa9, 0x06, 0x20, 0xe2, 0xf8, 0xb0, 0x01, 0x60, 0x78, 0xa9, 0x00, 0x4c, 0x16,
++   0xee, 0x48, 0x20, 0x78, 0xfb, 0xd0, 0x20, 0xa4, 0xb7, 0x30, 0x1c, 0xa0, 0x00, 0xb1, 0xbb, 0x99,
++   0x80, 0xdf, 0xd9, 0x80, 0xdf, 0xd0, 0xf6, 0xc8, 0xc4, 0xb7, 0xd0, 0xf1, 0x8c, 0x15, 0xde, 0xa5,
++   0xba, 0x85, 0xa7, 0x68, 0x4c, 0xe2, 0xf8, 0x68, 0x38, 0x60, 0x4c, 0x07, 0xf7, 0xa6, 0xa4, 0x20,
++   0xd5, 0xf3, 0x4c, 0xcb, 0xf4, 0x86, 0xa4, 0xa9, 0x09, 0xa4, 0x93, 0xf0, 0x02, 0xa9, 0x13, 0x20,
++   0x21, 0xfa, 0xb0, 0xe9, 0xa8, 0xa6, 0xa4, 0x98, 0xf0, 0x07, 0xc9, 0x05, 0xf0, 0xdc, 0x4c, 0x04,
++   0xf7, 0xad, 0x80, 0xdf, 0xcd, 0x80, 0xdf, 0xd0, 0xf8, 0x85, 0xae, 0xad, 0x81, 0xdf, 0xcd, 0x81,
++   0xdf, 0xd0, 0xf8, 0x85, 0xaf, 0x8a, 0xd0, 0x08, 0xa5, 0xc3, 0x85, 0xae, 0xa5, 0xc4, 0x85, 0xaf,
++   0x20, 0xd2, 0xf5, 0xa5, 0xae, 0x85, 0xa7, 0xa5, 0xaf, 0x8d, 0x15, 0xde, 0xa9, 0x11, 0x20, 0xe2,
++   0xf8, 0xb0, 0xa7, 0x85, 0xa3, 0xf0, 0x1c, 0xa0, 0x00, 0xb9, 0x80, 0xdf, 0xd9, 0x80, 0xdf, 0xd0,
++   0xf8, 0x91, 0xae, 0xc8, 0xc4, 0xa3, 0xd0, 0xf1, 0xa5, 0xae, 0x18, 0x65, 0xa3, 0x85, 0xae, 0x90,
++   0x02, 0xe6, 0xaf, 0xa5, 0x90, 0x29, 0x40, 0xf0, 0xca, 0x4c, 0xa9, 0xf5, 0x20, 0xd5, 0xf3, 0x4c,
++   0x08, 0xf6, 0xa9, 0x0b, 0x20, 0x21, 0xfa, 0xb0, 0xf3, 0x85, 0xa4, 0x20, 0x8f, 0xf6, 0xa5, 0xa4,
++   0xc9, 0x05, 0xf0, 0x6e, 0xaa, 0xd0, 0x69, 0xa5, 0xc1, 0x8d, 0x80, 0xdf, 0x85, 0xac, 0xa5, 0xc2,
++   0x8d, 0x81, 0xdf, 0x85, 0xad, 0xa9, 0x02, 0x8d, 0x15, 0xde, 0xa9, 0x0c, 0x20, 0xe2, 0xf8, 0xa9,
++   0x12, 0x20, 0xe2, 0xf8, 0xf0, 0xf9, 0xa5, 0xae, 0x38, 0xe5, 0xac, 0x85, 0xa3, 0xa5, 0xaf, 0xe5,
++   0xad, 0x90, 0x38, 0xd0, 0x08, 0xa5, 0xa3, 0xf0, 0x32, 0xc9, 0x81, 0x90, 0x04, 0xa9, 0x80, 0x85,
++   0xa3, 0xa0, 0x00, 0xb1, 0xac, 0x99, 0x80, 0xdf, 0xd9, 0x80, 0xdf, 0xd0, 0xf6, 0xc8, 0xc4, 0xa3,
++   0xd0, 0xf1, 0xa5, 0xa3, 0x8d, 0x15, 0xde, 0xa9, 0x0c, 0x20, 0xe2, 0xf8, 0xb0, 0x14, 0xa5, 0xac,
++   0x18, 0x65, 0xa3, 0x85, 0xac, 0x90, 0xb8, 0xe6, 0xad, 0xb0, 0xb4, 0xa9, 0x0d, 0x20, 0xe2, 0xf8,
++   0x18, 0x60, 0x4c, 0x07, 0xf7, 0xad, 0x18, 0xde, 0xcd, 0x18, 0xde, 0xd0, 0x18, 0x49, 0xc0, 0xc9,
++   0x10, 0x90, 0x0f, 0xf0, 0x0b, 0xc9, 0x70, 0xd0, 0x0c, 0xad, 0x20, 0xd0, 0x85, 0x9c, 0xd0, 0x05,
++   0xa5, 0x9c, 0x8d, 0x20, 0xd0, 0x4c, 0x9b, 0xf6, 0xa9, 0x7c, 0x85, 0xa5, 0xad, 0x19, 0xde, 0xc9,
++   0xd6, 0xf0, 0x04, 0xe6, 0xa5, 0x10, 0xf5, 0x60, 0xfb, 0x97, 0x01, 0x38, 0x20, 0x1e, 0xab, 0xa2,
++   0x01, 0xbd, 0xcd, 0xfc, 0x95, 0xfc, 0xca, 0x10, 0xf8, 0x20, 0xd4, 0xfb, 0xd0, 0x18, 0xad, 0x3c,
++   0xde, 0xc9, 0xd6, 0xd0, 0x18, 0xad, 0x3d, 0xde, 0xc9, 0x64, 0xd0, 0x11, 0xa2, 0x01, 0xbd, 0x3e,
++   0xde, 0x95, 0xfc, 0xca, 0x10, 0xf8, 0xa9, 0xa2, 0xa0, 0xfc, 0x4c, 0x1e, 0xab, 0xa9, 0x20, 0x20,
++   0xd2, 0xff, 0xa9, 0x9b, 0xa0, 0xe4, 0x4c, 0x1e, 0xab, 0xa5, 0xfc, 0x05, 0xfd, 0x60, 0x20, 0xd4,
++   0xfb, 0xd0, 0x0a, 0xa9, 0x60, 0xa0, 0xe4, 0x20, 0x1e, 0xab, 0x4c, 0x44, 0xa6, 0xa9, 0x07, 0x85,
++   0xfb, 0xa2, 0x00, 0x86, 0xfe, 0xb5, 0xfc, 0xc9, 0xff, 0xd0, 0x1b, 0xe6, 0xfb, 0xa5, 0xfb, 0xc9,
++   0x1f, 0xb0, 0x11, 0xc5, 0xfc, 0xf0, 0xf4, 0xc5, 0xfd, 0xf0, 0xf0, 0x20, 0x66, 0xfc, 0xb0, 0xeb,
++   0xa5, 0xfb, 0xd0, 0x02, 0xa9, 0x00, 0xa6, 0xfe, 0x95, 0xfc, 0xe8, 0xe0, 0x02, 0x90, 0xd4, 0xa9,
++   0xad, 0xa0, 0xfc, 0x20, 0x1e, 0xab, 0xa2, 0x00, 0x86, 0xfe, 0xb5, 0xfc, 0xc9, 0x08, 0x90, 0x0f,
++   0xc9, 0x1f, 0xb0, 0x0b, 0x48, 0x20, 0x5c, 0xfc, 0x68, 0x20, 0x87, 0xfc, 0x4c, 0x47, 0xfc, 0xa9,
++   0x4e, 0x20, 0xd2, 0xff, 0xa9, 0x4f, 0x20, 0xd2, 0xff, 0x20, 0x5c, 0xfc, 0xa6, 0xfe, 0xd0, 0x09,
++   0xa9, 0x20, 0x20, 0xd2, 0xff, 0xa2, 0x01, 0xd0, 0xcf, 0xa9, 0x0d, 0x20, 0xd2, 0xff, 0x4c, 0x44,
++   0xa6, 0xa6, 0xfe, 0xbd, 0xc3, 0xfc, 0xa0, 0xfc, 0x4c, 0x1e, 0xab, 0xa9, 0x00, 0x85, 0x90, 0xa5,
++   0xfb, 0x20, 0xa4, 0xf9, 0xa5, 0x90, 0x30, 0x0e, 0xa9, 0x6f, 0x20, 0xb6, 0xf9, 0xa5, 0x90, 0x30,
++   0x05, 0x20, 0x0b, 0xfa, 0x38, 0x60, 0xa9, 0x00, 0x85, 0x90, 0x18, 0x60, 0xa2, 0x30, 0x38, 0xe9,
++   0x0a, 0x90, 0x03, 0xe8, 0xb0, 0xf9, 0x69, 0x3a, 0x48, 0x8a, 0xc9, 0x30, 0xd0, 0x02, 0xa9, 0x20,
++   0x20, 0xd2, 0xff, 0x68, 0x4c, 0xd2, 0xff, 0x20, 0x36, 0x34, 0x4b, 0x20, 0x52, 0x41, 0x4d, 0x20,
++   0x20, 0x00, 0x20, 0x46, 0x52, 0x45, 0x45, 0x20, 0x20, 0x54, 0x44, 0x52, 0x49, 0x56, 0x45, 0x20,
++   0x00, 0x53, 0x44, 0x00, 0x55, 0x53, 0x42, 0x00, 0xbc, 0xbf, 0x56, 0x44, 0x55, 0x4e, 0x49, 0x54,
++   0x53, 0x3a, 0x00, 0x00, 0xfc, 0xe2, 0x00, 0x03, 0x4c, 0x75, 0xf8, 0x00, 0x00, 0x00, 0x00
++};
 diff --git a/Source/Teensy/SerUSBIO.ino b/Source/Teensy/SerUSBIO.ino
-index e6c5128..7beba22 100644
+index e6c5128..dc2782e 100644
 --- a/Source/Teensy/SerUSBIO.ino
 +++ b/Source/Teensy/SerUSBIO.ino
 @@ -622,6 +622,12 @@ FLASHMEM void ProcessCommand()
        case FWCheckToken: //Check firmware type
           SendU16(FWFullToken);
           return;   
-+#ifdef VDrive_Any
-+      case VDriveGetToken:  //VDrive disk image of a unit (works while a C64 program runs)
-+      case VDriveSetToken:  //VDrive change the disk image of a unit
-+         VDriveRemoteCommand(TokenVal == VDriveSetToken);
++#ifdef TDrive_Any
++      case TDriveGetToken:  //TDrive disk image of a unit (works while a C64 program runs)
++      case TDriveSetToken:  //TDrive change the disk image of a unit
++         TDriveRemoteCommand(TokenVal == TDriveSetToken);
 +         return;
 +#endif
     }
@@ -4948,13 +4948,13 @@ index e6c5128..7beba22 100644
         TokenVal == GetDirectoryToken || TokenVal == GetDirNDJSONToken ||
         TokenVal == SendFileToken     || TokenVal == PostFileToken     ||
         TokenVal == CopyFileToken     || TokenVal == DeleteFileToken);
-+#ifdef VDrive_Any
-+   //VDrive running a C64 program: directory listings (so a client can browse for an image to mount) once the drive is quiet;
++#ifdef TDrive_Any
++   //TDrive running a C64 program: directory listings (so a client can browse for an image to mount) once the drive is quiet;
 +   //  ASIDAllowed is only read by the Busy! test below, so it doubles as "allowed while a program runs"
 +   if (VD_IsHandler(CurrentIOHandler) && (TokenVal == GetDirectoryToken || TokenVal == GetDirNDJSONToken))
 +   {
 +      char Msg[64];
-+      if (VDrive_RemoteQuiet(Msg, sizeof Msg))
++      if (TDrive_RemoteQuiet(Msg, sizeof Msg))
 +      {
 +         SendU16(FailToken);
 +         CmdChannel->printf("%s\n", Msg);
@@ -4970,15 +4970,15 @@ index e6c5128..7beba22 100644
     }
  }
  
-+#ifdef VDrive_Any
-+FLASHMEM void VDriveRemoteCommand(bool Set)
++#ifdef TDrive_Any
++FLASHMEM void TDriveRemoteCommand(bool Set)
 +{
-+   //   App: VDriveGetToken 0x64E3, Drive(1)                        Drive: as the file commands, USBDrive = 0, SD = 1
-+   //   App: VDriveSetToken 0x64E4, Drive(1), ImagePath (null term)  ImagePath: "/dir/IMAGE.D64" on that unit's card, "" = unmount
++   //   App: TDriveGetToken 0x64E3, Drive(1)                        Drive: as the file commands, USBDrive = 0, SD = 1
++   //   App: TDriveSetToken 0x64E4, Drive(1), ImagePath (null term)  ImagePath: "/dir/IMAGE.D64" on that unit's card, "" = unmount
 +   //Teensy: AckToken 0x64CC and one line of JSON (the unit's state after the change), or
 +   //        FailToken 0x9B7F and a line of text with the reason
-+   //   Works while the VDrive handler runs a C64 program (the handler-busy check lets it through).  With the TR menu showing (VDrive not
-+   //   running) the same commands report / rewrite the unit's remembered image (/.vdrive), which is what it mounts at the next start;
++   //   Works while the TDrive handler runs a C64 program (the handler-busy check lets it through).  With the TR menu showing (TDrive not
++   //   running) the same commands report / rewrite the unit's remembered image (/.tdrive), which is what it mounts at the next start;
 +   //   the JSON then has "running":false.  While it runs, a change of disk waits for a quiet moment on the C64's drive (no LOAD/SAVE in
 +   //   flight; up to 3 s) and closes the unit's open channels.
 +   uint32_t Drive;
@@ -5007,19 +5007,19 @@ index e6c5128..7beba22 100644
 +      CmdChannel->print("Drive must be USB (0) or SD (1)\n");
 +      return;
 +   }
-+   int Unit = (Drive == rmtSD) ? 0 : 1;   //VDrive's own numbering: 0 = SD, 1 = USB
++   int Unit = (Drive == rmtSD) ? 0 : 1;   //TDrive's own numbering: 0 = SD, 1 = USB
 +   bool Running = VD_IsHandler(CurrentIOHandler);
 +   char Msg[64];
 +   char Json[2 * MaxNamePathLength + 160];
 +   if (!Running)
-+   {  //TR menu showing: report / change what the unit will mount at the next start (its /.vdrive sidecar)
-+      if (Set && VDrive_RemoteIdleSet(Unit, Path, Msg, sizeof Msg) != 0)
++   {  //TR menu showing: report / change what the unit will mount at the next start (its /.tdrive sidecar)
++      if (Set && TDrive_RemoteIdleSet(Unit, Path, Msg, sizeof Msg) != 0)
 +      {
 +         SendU16(FailToken);
 +         CmdChannel->printf("%s\n", Msg);
 +         return;
 +      }
-+      if (VDrive_RemoteIdleStatus(Unit, Json, sizeof Json) == 0)
++      if (TDrive_RemoteIdleStatus(Unit, Json, sizeof Json) == 0)
 +      {
 +         SendU16(FailToken);
 +         CmdChannel->print("No such drive\n");
@@ -5029,13 +5029,13 @@ index e6c5128..7beba22 100644
 +      CmdChannel->printf("%s\n", Json);
 +      return;
 +   }
-+   if (Set && VDrive_RemoteSet(Unit, Path, Msg, sizeof Msg) != 0)
++   if (Set && TDrive_RemoteSet(Unit, Path, Msg, sizeof Msg) != 0)
 +   {
 +      SendU16(FailToken);
 +      CmdChannel->printf("%s\n", Msg);
 +      return;
 +   }
-+   if (VDrive_RemoteStatus(Unit, Json, sizeof Json) == 0)
++   if (TDrive_RemoteStatus(Unit, Json, sizeof Json) == 0)
 +   {
 +      SendU16(FailToken);
 +      CmdChannel->print("No such drive\n");
@@ -5808,14 +5808,14 @@ index 9bc9643..2db3509 100644
  #endif /* TEENSYROMC64_BIN_H */
 diff --git a/Source/Teensy/TRMenuFiles/ROMs/vdconfig.prg.h b/Source/Teensy/TRMenuFiles/ROMs/vdconfig.prg.h
 new file mode 100644
-index 0000000..8f09be0
+index 0000000..bebd935
 --- /dev/null
 +++ b/Source/Teensy/TRMenuFiles/ROMs/vdconfig.prg.h
 @@ -0,0 +1,513 @@
 +#ifndef VDCONFIG_PRG_H
 +#define VDCONFIG_PRG_H
 +
-+// VDrive Config (teensyrom-vdrive util/vdconfig.s), generated by tools/make_tr_patch.sh
++// TDrive Config (teensyrom-vdrive util/vdconfig.s), generated by tools/make_tr_patch.sh
 +PROGMEM static const unsigned char vdconfig_prg[] = {
 +	0x01, 0x08, 0x0b, 0x08, 0x0a, 0x00, 0x9e, 0x32, 0x30, 0x36, 0x31, 0x00,
 +	0x00, 0x00, 0x20, 0x7d, 0x0a, 0x20, 0xa9, 0x0a, 0x0e, 0x08, 0x00, 0x20,
@@ -5823,14 +5823,14 @@ index 0000000..8f09be0
 +	0x4e, 0x46, 0x49, 0x47, 0x2e, 0x2e, 0x2e, 0x0d, 0x00, 0xa2, 0x01, 0xbd,
 +	0x16, 0xde, 0xc9, 0x08, 0x90, 0x04, 0xc9, 0x1f, 0x90, 0x02, 0xa9, 0x00,
 +	0x9d, 0x6a, 0x4f, 0xca, 0x10, 0xed, 0xad, 0x6a, 0x4f, 0x0d, 0x6b, 0x4f,
-+	0xd0, 0x63, 0xa9, 0xff, 0x8d, 0x7f, 0x4f, 0x20, 0xa9, 0x0a, 0xd6, 0xc4,
++	0xd0, 0x63, 0xa9, 0xff, 0x8d, 0x7f, 0x4f, 0x20, 0xa9, 0x0a, 0xd4, 0xc4,
 +	0x52, 0x49, 0x56, 0x45, 0x20, 0x49, 0x53, 0x20, 0x4e, 0x4f, 0x54, 0x20,
 +	0x41, 0x43, 0x54, 0x49, 0x56, 0x45, 0x2e, 0x0d, 0xd3, 0x54, 0x41, 0x52,
 +	0x54, 0x20, 0x54, 0x48, 0x49, 0x53, 0x20, 0x50, 0x52, 0x4f, 0x47, 0x52,
 +	0x41, 0x4d, 0x20, 0x46, 0x52, 0x4f, 0x4d, 0x20, 0x54, 0x48, 0x45, 0x20,
 +	0xd4, 0x45, 0x45, 0x4e, 0x53, 0x59, 0xd2, 0xcf, 0xcd, 0x20, 0x4d, 0x45,
 +	0x4e, 0x55, 0x20, 0x57, 0x49, 0x54, 0x48, 0x20, 0x54, 0x48, 0x45, 0x20,
-+	0xd6, 0xc4, 0x52, 0x49, 0x56, 0x45, 0x20, 0xcb, 0xc5, 0xd2, 0xce, 0xc1,
++	0xd4, 0xc4, 0x52, 0x49, 0x56, 0x45, 0x20, 0xcb, 0xc5, 0xd2, 0xce, 0xc1,
 +	0xcc, 0x2e, 0x0d, 0x00, 0x60, 0xad, 0x20, 0xd0, 0x29, 0x0f, 0x8d, 0x89,
 +	0x4f, 0xad, 0x21, 0xd0, 0x29, 0x0f, 0x8d, 0x8a, 0x4f, 0xad, 0x86, 0x02,
 +	0x29, 0x0f, 0x8d, 0x8b, 0x4f, 0xad, 0x6a, 0x4f, 0xf0, 0x08, 0xaa, 0xa9,
@@ -6054,7 +6054,7 @@ index 0000000..8f09be0
 +	0xad, 0x9b, 0x4f, 0xa2, 0x00, 0x20, 0xc8, 0x0a, 0x4c, 0x9b, 0x0a, 0x20,
 +	0x7d, 0x0a, 0x20, 0xa9, 0x0a, 0x07, 0x93, 0x00, 0xa2, 0x00, 0x20, 0x48,
 +	0x0b, 0x20, 0xa9, 0x0a, 0x03, 0x12, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20,
-+	0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0xd6, 0xc4, 0x52, 0x49, 0x56,
++	0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0xd4, 0xc4, 0x52, 0x49, 0x56,
 +	0x45, 0x20, 0xc3, 0x4f, 0x4e, 0x46, 0x49, 0x47, 0x00, 0x20, 0x9b, 0x0a,
 +	0x20, 0xa9, 0x0a, 0x92, 0x00, 0xa9, 0xa0, 0x8d, 0x27, 0x04, 0xad, 0x00,
 +	0x16, 0x8d, 0x27, 0xd8, 0x20, 0x04, 0x14, 0x20, 0xb4, 0x14, 0x20, 0x30,
@@ -6326,16 +6326,16 @@ index 0000000..8f09be0
 +
 +#endif /* VDCONFIG_PRG_H */
 diff --git a/Source/Teensy/Teensy.ino b/Source/Teensy/Teensy.ino
-index 2a59a1e..2de840b 100644
+index 2a59a1e..44559dd 100644
 --- a/Source/Teensy/Teensy.ino
 +++ b/Source/Teensy/Teensy.ino
 @@ -616,6 +616,11 @@ FLASHMEM void SetEEPDefaults()
     EEPROM.write(eepAdMIDISettings, 0xff);  //see RegMIDISettingsMasks
     EEPROM.write(eepAdMIDISettings2, 0x0f); //see RegMIDISettingsMasks2
     
-+#ifdef VDrive_Any
-+   EEPROM.write(eepAdVDriveDevs, 0);   //VDrive device numbers: 0 = defaults (8/9)
-+   EEPROM.write(eepAdVDriveDevs+1, 0);
++#ifdef TDrive_Any
++   EEPROM.write(eepAdTDriveDevs, 0);   //TDrive device numbers: 0 = defaults (8/9)
++   EEPROM.write(eepAdTDriveDevs+1, 0);
 +#endif
 +
     //future use:

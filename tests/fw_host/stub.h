@@ -1,4 +1,4 @@
-// Minimal stand-ins for the Teensy/TeensyROM environment so firmware/IOH_VDrive.c can be
+// Minimal stand-ins for the Teensy/TeensyROM environment so firmware/IOH_TDrive.c can be
 // compiled and exercised on the host. NOT the real headers: this checks the glue's logic
 // and C++ validity, not the Teensy toolchain build.
 #pragma once
@@ -145,16 +145,16 @@ struct stcIOHandlers {
 
 struct EEPROMStub { uint8_t m[8192]; uint8_t read(int a) { return m[a]; } void write(int a, uint8_t v) { m[a] = v; } };
 extern EEPROMStub EEPROM;
-enum { eepAdVDriveDevs = 4235, eepAdNextIOHndlr = 6 };
+enum { eepAdTDriveDevs = 4235, eepAdNextIOHndlr = 6 };
 #ifndef PLAIN_TR                                      // -DPLAIN_TR: the plain TeensyROM (no Fab04_*: no KERNAL handlers, REU, Special button)
 #define Fab04_REU
-#define Fab04_VDrive
+#define Fab04_TDrive
 #ifndef VD_TEST_NO_DMA                                // run.py also builds the glue without it: the window LOAD only (no DMA hook)
-#define Fab04_VDriveDMALoad
+#define Fab04_TDriveDMALoad
 #endif
 #endif
-#define VDrive_Agent
-enum { IOH_None = 0, IOH_Swiftlink, IOH_REU, IOH_VDrive, IOH_VDriveSwift, IOH_VDriveSwiftREU, IOH_VDriveREU, IOH_VDriveAgent, IOH_Other };   // only the order within the real enum is irrelevant here
+#define TDrive_Agent
+enum { IOH_None = 0, IOH_Swiftlink, IOH_REU, IOH_TDrive, IOH_TDriveSwift, IOH_TDriveSwiftREU, IOH_TDriveREU, IOH_TDriveAgent, IOH_Other };   // only the order within the real enum is irrelevant here
 extern bool (*fBusSnoop)(uint16_t Address, bool R_Wn);
 bool KernalCheck(uint16_t Address, bool R_Wn);
 extern uint8_t HIRAM_State;
