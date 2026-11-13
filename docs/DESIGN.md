@@ -1305,3 +1305,10 @@ trace hooks, idle unless the button changes or at power-up), `IOH_VDrive.c` (cou
 print in PreStart) and `ISRs.c` (`VD_DmaSnoopedCycle`). The last is the only one on every bus cycle: logically idle without a
 pending DMA start, but it moves code inside `isrPHI2` (a removed alignment `nop`, two branches shortened), and serving the boot ROM
 from ROML/ROMH is timing work. An A/B build without it: `VD_ISR_FIX=0 tools/make_tr_patch.sh <tree>`.
+
+**A/B result (owner, 2026-11-13): without the `ISRs.c` edit everything works:** Exit to C128 BASIC again, and the Alt button's DMA
+flash in C64 BASIC and in a program, under the VDrive KERNAL and the agent. So the edit breaks the C128's boot (how is not known:
+it should be idle there, so its moving code inside `isrPHI2` is the suspect), and the DMA flash does not need it on this hardware.
+The snoop analysis above still describes a real gap in upstream's safe-freeze start, but it is not what crashed 0.9.0.64-0.9.0.67;
+that crash is not explained (0.9.0.69 changed nothing in the hold itself; asked: whether the Alt setting changed in between, since
+a setting other than "None" runs upstream's action, e.g. Reboot TR). Do not ship the `ISRs.c` edit.

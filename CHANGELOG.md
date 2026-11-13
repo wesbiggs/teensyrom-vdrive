@@ -15,7 +15,9 @@
 ### Build
 - `VD_ISR_FIX=0 tools/make_tr_patch.sh <tree>` leaves out the `ISRs.c` edit (`VD_DmaSnoopedCycle`), for an A/B hardware build: on
   hardware (owner, 2026-11-13) this build's Alt button works in C64 BASIC and a program under the VDrive KERNAL and the agent, but
-  Exit to C128 BASIC fills the screen with garbage before the C128's colours are set (`docs/DESIGN.md` section 60).
+  Exit to C128 BASIC fills the screen with garbage before the C128's colours are set (`docs/DESIGN.md` section 60). **Without the
+  edit everything works on hardware** (owner, 2026-11-13): Exit to C128 BASIC, and the DMA flash in C64 BASIC and a program under
+  the VDrive KERNAL and the agent. The `ISRs.c` edit is not to be shipped.
 
 ## v0.9.0.67 (experimental, branch `dma-border-isr`)
 
