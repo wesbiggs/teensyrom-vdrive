@@ -198,6 +198,9 @@ Firmware integration and usage: `firmware/README.md`.
   **This branch, `dma-border-isr`, is the experimental 0.9.0.67:** 0.9.0.65's DMA flash (`VD_BorderDMA()`, no `irq_border`, `$DE18` a gap again) plus `VD_DmaSnoopedCycle` in `ISRs.c`
   (a `make_tr_patch.sh` edit: snooped cycles step the DMA start's safe-freeze machine; main image only) and debug counters in the remote get's JSON (`"dbg"`). Builds; `isrPHI2`'s
   register saves and `KernalCheck` unchanged in the disassembly; **not on hardware**.
+  **0.9.0.67 still crashed at once in C64 BASIC on hardware (owner, 2026-11-13), the TR rebooting before anything could be read.** 0.9.0.69 (same branch, numbered past main's rename
+  0.9.0.68 but without it): a trace of every Alt-button step on serial and in the core's CrashReport breadcrumbs (kept across a reboot, printed at the next VDrive PreStart:
+  `VD_TraceBoot` in `setup()`, `VD_TraceButton` in `loop()`, both `make_tr_patch.sh` edits), and `!nodma` in the config file to switch without any hold. Builds; host tests; **not on hardware**.
 * Default device 8 for `LOAD`/`SAVE`/`VERIFY` without a number, as on the SX-64 (`P_E1DA` in `patches/vdrive.s`, docs/DESIGN.md 33). KERNAL only; VICE `basic` run; **not on hardware yet**. Rebuild `kernal-tr.bin`.
 * 0.9.0.32: bad sectors from the image's error table (the trailing error-info bytes): reads of a sector marked bad fail with its DOS code (`d64_t.errtab`, `D64_E_BADSEC`, `d64_t.bad`, `read_err()` in `vdrive.c`; the firmware keeps a RAM2 copy only when the table marks something bad; docs/DESIGN.md 35). Write errors (25/26/28) not emulated; a write does not repair a bad sector. Unit and glue host tests; VICE and hardware through VDSUITE `5` (reads only).
 * 0.9.0.34: SwiftLink Tx fix to upstream (was `firmware/swiftlink-tx-fix.patch`; merged upstream as PR #80 in `6518b966`, patch dropped). NativeEthernet's `client.write()` busy-waits for send-buffer space;

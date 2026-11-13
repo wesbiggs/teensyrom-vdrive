@@ -125,7 +125,14 @@ struct FsFile {
     bool close() { if (!f) return true; bool ok = sync(); fclose(f); f = nullptr; return ok; }
 };
 
-struct SerialStub { void println(const char *s) { puts(s); } template <class... A> void printf(const char *f, A... a) { ::printf(f, a...); } };
+struct SerialStub { void println(const char *s) { puts(s); } template <class... A> void printf(const char *f, A... a) { ::printf(f, a...); } void flush() { fflush(stdout); } };
+// the Alt-button trace's CrashReport breadcrumbs / fault record / reset reason (IOH_VDrive.c VD_Trace*): plain arrays here
+extern volatile uint32_t g_vd_bc[8], g_vd_fault[11];
+extern uint32_t g_vd_srsr;
+#define VD_TRACE_BC    (g_vd_bc)
+#define VD_TRACE_FAULT (g_vd_fault)
+#define VD_TRACE_SRSR  (g_vd_srsr)
+inline void arm_dcache_flush(void *, uint32_t) {}
 extern SerialStub Serial;
 uint32_t millis();
 uint32_t micros();

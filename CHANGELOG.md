@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.9.0.69 (experimental, branch `dma-border-isr`; numbered past main's 0.9.0.68 rename, but without it: still "VDrive")
+
+### Added
+- **A trace of every Alt-button step, kept across a TeensyROM reboot** (`docs/DESIGN.md` section 60). 0.9.0.67 still crashed at once in
+  C64 BASIC (owner, 2026-11-13), and the TeensyROM rebooted before anything could be read. Each step (which action the button press
+  goes to and the Alt setting, the tap, the switch, the image mounted, the flash, each border request, the hold, the VIC read, the
+  `$D020` write, the release) is printed on the serial console as it happens and kept in the Teensy core's CrashReport breadcrumbs.
+  The next VDrive launch prints what was kept (`VDrive trace from before the last reboot`), with the reset reason and any CPU
+  fault's return address, since the core's own boot-time report goes out before a serial monitor has reconnected. A line `!nodma` in
+  `/vdrive-config.txt` switches disks without the border flash (no DMA at all), to tell the switch and the hold apart.
+  Host tests (`tests/fw_host`); TR+ DMA firmware builds; **not on hardware**.
+
 ## v0.9.0.67 (experimental, branch `dma-border-isr`)
 
 ### Changed

@@ -96,6 +96,16 @@ edit(f"{C}/ISRs.c",
      "#else\n"
      "   if (fBusSnoop != NULL) if (fBusSnoop(Address, R_Wn)) return;\n"
      "#endif\n")
+# The Alt-button trace (experimental, docs/DESIGN.md 60; IOH_VDrive.c VD_Trace*): which action a press goes to, and the trace kept
+# across a reboot copied before upstream prints (and clears) the CrashReport, while no serial monitor is listening yet.
+edit("Source/Teensy/Teensy.ino",
+     "      if (fSpecialBtnChange != NULL) fSpecialBtnChange(SpecialBtnBounce.read());\n",
+     "#ifdef Fab04_VDrive\n      VD_TraceButton(SpecialBtnBounce.read());\n#endif\n"
+     "      if (fSpecialBtnChange != NULL) fSpecialBtnChange(SpecialBtnBounce.read());\n")
+edit("Source/Teensy/Teensy.ino",
+     "   if (CrashReport) Serial.print(CrashReport);\n",
+     "#ifdef Fab04_VDrive\n   VD_TraceBoot();\n#endif\n"
+     "   if (CrashReport) Serial.print(CrashReport);\n")
 import re
 base = re.search(r'#define TRVersion\s+"([^"]+)"', open(f"{C}/Common_Defs.h").read()).group(1)
 rev = open(sys.argv[2]).read().strip()                      # firmware/REV: bumped by hand on firmware-affecting commits

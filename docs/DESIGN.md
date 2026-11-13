@@ -1274,4 +1274,25 @@ timed out, not the VIC, `$D020` writes, `CloseDMA` failed, longest request in µ
 one, dropped as late, writes seen. A crash with `snoop` asserts > 0 points elsewhere; a long `maxUs` or `closeFail` > 0 means a
 release that had to wait out its 50 ms ceiling (possible if, while the CPU is held, the undriven bus reads as `$E000+` and the snoop keeps taking the cycle, so `StartDisable` is never reached).
 What to try: the Alt button in C64 BASIC, in a program, in C128 BASIC (128 mode: the agent, which this fix does not cover), then
-`trvdrive get`.
+the raw remote get (`trvdrive` itself has no `get` and prints only the usual fields; `tr.vdrive_get("sd")` from `trlib` shows `dbg`).
+
+**Hardware result (owner, 2026-11-13): 0.9.0.67 still crashes at once in C64 BASIC,** and the TeensyROM reboots before a remote get
+can run; nothing on the serial console. So the ISR fix alone is not enough, and something on the Teensy side ends in a reboot.
+
+**0.9.0.69 (experimental, same branch; builds, not on hardware): a trace of the whole path.** The steps, in order: Teensy.ino's
+loop sees the button change (`SpecialBtnBounce`) and calls `fSpecialBtnChange`, which is VDrive's `SpecialBtn_VDrive` only when the
+Alt setting is "None" (`VD_AltButtonInit`; otherwise upstream's AutoLaunch, Pause, TR menu or **Reboot TR** action runs, and the TR+'s
+EEPROM default is AutoLaunch); `SpecialBtn_VDrive` counts taps; `VD_AltPoll` (from the polling handler) waits out the tap window and
+calls `VD_SwitchNext` (quiet wait, config file, `VDrive_RemoteSet`), which starts `VD_Flash`; the sequencer's every phase calls
+`VD_BorderDMA` (`HoldC64`, 32-byte read, VIC check, 1-byte write, `CloseDMA`), retried from `VD_AltPoll` while I/O is banked out.
+Each step goes to the serial console as it happens (`VDrive trace <ms>: <step> <detail>`, flushed; never while the C64 is held, and
+for a retried request only the first and every 1000th attempt) and into the core's six CrashReport breadcrumbs at `0x2027FFC0`, which
+a reboot does not clear: last step and detail, its `millis()`, the last four steps, the Alt setting / who owns the button / `DMA_State`,
+border requests and `$D020` writes, snooped holds. `VD_TraceBoot()` (a `make_tr_patch.sh` edit ahead of upstream's
+`if (CrashReport) Serial.print(CrashReport)` in `setup()`, which clears the record and prints before a monitor reconnects) copies
+them and the core's fault record (CRC-checked as the core does) and clears the crumbs; the next `VDrive_PreStart` prints them with
+`SRC_SRSR` (the reset reason bits). The button hook (`VD_TraceButton`, another `Teensy.ino` edit) runs for every press, whatever
+the setting, so a press that goes to upstream's Reboot TR shows as the last step with "VDrive owns the button 0".
+`!nodma` alone on a line of the config file makes `VD_BorderDMA` return at once: if the crash stays with it, the hold is not the cause.
+Risk: the crumbs share RAM2's top 128 bytes with the core's fault record, inside the malloc heap's range (`_heap_end` is the top of
+RAM2), as the core's own breadcrumbs do; a heap that reaches the top (a full REU) could be overwritten by them.

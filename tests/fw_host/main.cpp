@@ -19,6 +19,8 @@ static void (*g_on_millis)() = nullptr;               // test hook: a busy C64 i
 bool g_led = true;                                    // on, as the TR leaves it while a program runs
 uint32_t millis() { g_ms += g_tick; if (g_on_millis) g_on_millis(); return g_ms; }
 uint32_t micros() { return g_ms * 1000u; }
+volatile uint32_t g_vd_bc[8], g_vd_fault[11];
+uint32_t g_vd_srsr = 0;
 static int g_fs_probes = 0;
 bool SDFullInit() { g_fs_probes++; return fs_::exists(SD.root); }
 bool USBFileSystemWait() { g_fs_probes++; return fs_::exists(firstPartition.root); }
@@ -1308,6 +1310,42 @@ int main(int argc, char **argv)
             snprintf(what, sizeof what, "%s flash: never while the host holds the C64", who); check(what, g_holds == 0);
             isFrozen = false; run(2000);
         }
+        // the Alt-button trace (experimental, DESIGN.md 60): breadcrumbs kept across a reboot, printed at the next PreStart
+        IO1[rwRegPwrUpDefaults2] = rpud2AltBtnNone; InitHndlr_VDrive();
+        for (int i = 0; i < 0x20; i++) g_c64_ram[0xD020 + i] = i <= 0x0E ? (uint8_t)(0xF0 | i) : 0xFF;   // the VIC, I/O mapped in
+        g_c64_ram[0xD020] = 0xF6;
+        memset((void *)g_vd_bc, 0, sizeof g_vd_bc); memset((void *)g_vd_fault, 0, sizeof g_vd_fault);
+        VD_TraceButton(false);
+        check("trace: the button press is a crumb (VDrive owns it, setting None)",
+              (g_vd_bc[0] & 0xF) == 0xF && g_vd_bc[1] >> 24 == VDT_Button && (g_vd_bc[1] & 0x4) && (g_vd_bc[4] & 0xFF) == rpud2AltBtnNone && (g_vd_bc[4] >> 8 & 1));
+        VD_Flash(5, 1, 250, 750);
+        for (int t = 0; t < 2000; t += 5) { g_ms += 5; PollingHndlr_VDrive(); }
+        check("trace: a flash leaves 'released' last, holds and writes counted", g_vd_bc[1] >> 24 == VDT_Released && (g_vd_bc[0] & 0x3F) == 0x3F &&
+              (g_vd_bc[5] >> 16) >= 3 && (g_vd_bc[5] & 0xFFFF) == 2);
+        uint32_t keep[8]; for (int i = 0; i < 8; i++) keep[i] = g_vd_bc[i];
+        VD_TraceBoot();
+        check("trace: the boot copy takes the crumbs and clears them", vdTraceBoot.valid && !vdTraceBoot.fault && vdTraceBoot.bc[0] == keep[1] && g_vd_bc[0] == 0);
+        prestart();
+        check("trace: printed once, at the next PreStart", !vdTraceBoot.valid);
+        // a CPU fault record as the core leaves it: len 11, CRC-32 over the first 10 words
+        g_vd_fault[0] = 11; g_vd_fault[2] = 0x8200; g_vd_fault[6] = 0x60001234;
+        { uint32_t crc = 0xFFFFFFFF; for (int w = 0; w < 10; w++) { crc ^= g_vd_fault[w]; for (int i = 0; i < 32; i++) crc = (crc >> 1) ^ (crc & 1) * 0xEDB88320; } g_vd_fault[10] = crc; }
+        VD_TraceBoot();
+        check("trace: a CPU fault record is recognised", vdTraceBoot.valid && vdTraceBoot.fault && vdTraceBoot.ret == 0x60001234);
+        g_vd_fault[10] ^= 1; VD_TraceBoot();
+        check("trace: ... and a bad CRC is not", !vdTraceBoot.fault);
+        vdTraceBoot.valid = false;
+        // "!nodma" in the list: the disk switches, the border is never touched
+        InitHndlr_VDrive();
+        std::ofstream(SD.root / "vdrive-config.txt", std::ios::binary) << "!nodma\n/GAME.D64,3,2\n/SUB/INNER.D64,7,1\n";
+        g_holds = 0; g_held_writes = 0;
+        SpecialBtn_VDrive(false); g_ms += 50; SpecialBtn_VDrive(true);
+        for (int t = 0; t < 4000; t += 5) { g_ms += 5; PollingHndlr_VDrive(); }
+        check("!nodma: the disk switched without a single hold", vdUnit[0].mounted && g_holds == 0 && g_held_writes == 0 && vdNoDma);
+        std::ofstream(SD.root / "vdrive-config.txt", std::ios::binary) << "/GAME.D64,3,1\n";
+        SpecialBtn_VDrive(false); g_ms += 50; SpecialBtn_VDrive(true);
+        for (int t = 0; t < 4000; t += 5) { g_ms += 5; PollingHndlr_VDrive(); }
+        check("... and without the line the flash holds again", !vdNoDma && g_holds > 0);
         IO1[rwRegPwrUpDefaults2] = 0; fSpecialBtnChange = nullptr;
     }
 
