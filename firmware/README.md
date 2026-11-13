@@ -58,8 +58,9 @@ writes and is refreshed at init. The mailbox registers are at IO2 `$DF00-$DF0A` 
   (`C128PrgBoot.asm`) calls INSTALL before it types RUN. The engine tells the C128's KERNAL from the C64's at INSTALL (`$FFD5`).
   Since 0.9.0.63 Exit to C128 BASIC goes through the boot ROM too when `TDrive_C128Launch()` chose the agent (no RUN typed for it).
   Since 0.9.0.65 that INSTALL also writes the drives into BASIC 7's start-up message (` ALL RIGHTS RESERVED  TDRIVE SD 8 USB 9`), after the bus scan.
-- **Alt button under the agent** (TR+, 0.9.0.63): `InitHndlr_TDriveAgent()` wires disk switching, without a border flash since 0.9.0.66
-  (0.9.0.63-0.9.0.65 flashed by DMA, `HoldC64()` per step, which crashed running programs on hardware; `docs/DESIGN.md` 60).
+- **Alt button under the agent** (TR+, 0.9.0.63): `InitHndlr_TDriveAgent()` wires disk switching; the border flash is `VD_BorderDMA()`
+  (in `IOH_TDrive.c`, shared with the KERNAL handlers), one `HoldC64()` per step, `$D020` written only when `$D020-$D03F` read as the VIC
+  (0.9.0.66-0.9.0.69: no flash under the agent; `docs/DESIGN.md` 60).
 
 `docs/DESIGN.md` sections 52-57.
 
@@ -71,7 +72,7 @@ area (`eepAdNext` moves from 4235 to 4237, reset-to-defaults zeroes them); `eepM
 ## Remote control
 `TDrive_RemoteStatus` / `TDrive_RemoteSet` in `IOH_TDrive.c` implement commands `0x64E3` / `0x64E4` on the TeensyROM remote-control port; the dispatcher text is
 `tdrive_remote.inc`, inserted into `SerUSBIO.ino`. Framing and details are in `docs/DESIGN.md` section 20.
-The Alt button disk switching (`SpecialBtn_TDrive`, `VD_SwitchNext`, `/tdrive-config.txt`, the border flash through the `BORDER` register) is in the same file; see `docs/DESIGN.md` sections 22 and 60.
+The Alt button disk switching (`SpecialBtn_TDrive`, `VD_SwitchNext`, `/tdrive-config.txt`, the border flash by DMA, `VD_BorderDMA`, and the step trace `VD_Trace*`) is in the same file; see `docs/DESIGN.md` sections 22, 58 and 60.
 
 ## What changed in the KERNAL (`patches/tdrive.s`)
 * The 8 serial entry points (`LISTEN TALK SECOND TKSA CIOUT ACPTR UNLSN UNTLK`) `JMP` into stubs that ask the mailbox
@@ -83,7 +84,7 @@ The Alt button disk switching (`SpecialBtn_TDrive`, `VD_SwitchNext`, `/tdrive-co
 * The first LISTEN / TALK / LOAD / SAVE of a run may be answered with the token `$3C`: `vcall` then runs the bus scan (`bus_scan`, ~100 bytes) and repeats the command.
   Since 0.9.0.35 the TR menu probes the bus before the launch (`firmware/tdrive_probe.asm` in `MainMenu.asm`, docs/DESIGN.md 37), so this is only the fallback.
 * The mailbox answer is a token (`$5A` / `$A5`); a bad or missing answer in the middle of a transfer aborts it with an error. Before any mailbox write `vcall` checks the ID register `$DE19` (`vd_here`, 4 tries); without a TDrive handler every call goes to the stock IEC code at once and nothing is written to IO1/IO2, so the image is harmless in a ROM socket, with another Special IO and under the TR menu (since 0.9.0.48; before, a ~1 s time-out per call). A handler that does not answer still falls back after the ~1 s time-out.
-* Smaller hooks: the IRQ routine's border flash for the Alt button (`irq_border`, `$EA32`, the `BORDER` register `$DE18`), the cold start
+* Smaller hooks: the cold start
   (`$FCE2`: `SYS64738` back to the TR menu), SHIFT+RUN/STOP (`$E5EE`: types `LOAD"*",8,1` and `RUN`), device 8 as the default for `LOAD`/`SAVE`/`VERIFY`
   (`$E1DA`), and the drive numbers in the power-on banner (`patches/vdbanner.s`, INITMS at `$E42D`/`$E43D`).
 * Space comes from the cassette code: `$F8E2-$FB8D` (the serial hooks and fast paths), `$F875-$F8CF` (`rst_hook`, `shift_run`) and `$FB97-$FCD0`

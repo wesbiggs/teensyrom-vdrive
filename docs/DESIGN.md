@@ -1256,5 +1256,39 @@ register `$DE18` (offset 8 again; ID0/ID1 stay at `$DE19/$DE1A`), the `vdBorderO
 That path is the hardware-verified one (0.9.0.17). The agent keeps disk switching but has no flash: its DMA writer is removed.
 `kernal-tr.bin` is byte-identical to 0.9.0.63's again (SHA-256 `ea5518f3...`). Tests: `make test-border` (py65) is back, `tests/fw_host`
 checks the KERNAL handler's register sequence and that the agent never holds the C64.
-**Next (0.9.0.67, experimental branch `dma-border-isr`).** The ISR fix for the cause above, and the DMA flash again, with a debug trace,
-to be tried on hardware.
+**0.9.0.67 and 0.9.0.69 (experimental branch `dma-border-isr`, before the rename).** 0.9.0.67: the DMA flash again (0.9.0.65's code)
+plus an `ISRs.c` edit, `VD_DmaSnoopedCycle`, that stepped the safe-freeze state machine for cycles the snoop takes. On hardware (owner,
+2026-11-13) it still crashed at once in C64 BASIC and the TR rebooted before anything could be read. 0.9.0.69 added a trace of every
+step (below). With it the Alt button worked in C64 BASIC and a program, under the VDrive KERNAL and the agent, but **Exit to C128
+BASIC** filled the screen with garbage before the C128's colours appeared, the TR still running. The only change since 0.9.0.65 on
+every bus cycle was the `ISRs.c` edit (idle without a pending DMA start, but it moved code inside `isrPHI2`: a removed alignment `nop`,
+two branches shortened). An A/B build without it (`VD_ISR_FIX=0`) **worked everywhere on hardware** (owner, 2026-11-13): Exit to C128
+BASIC, and the DMA flash in C64 BASIC and a program under the KERNAL handler and the agent. So the ISR edit is dropped: the snoop gap
+described above is real in upstream's safe-freeze start, but the flash does not need the edit, and the edit broke the C128's boot (why
+is not known). What crashed 0.9.0.64-0.9.0.67 is not known either: 0.9.0.69 changed nothing in the hold itself. One explanation that
+fits: an Alt setting other than "None", which runs upstream's action instead (Reboot TR reboots the TR; the TR+'s EEPROM default is
+AutoLaunch); not confirmed.
+
+**0.9.0.70 (on `main` after the rename; the branch's code without the ISR edit).** The border flash is the DMA one again under every
+handler (`VD_BorderDMA()`; `irq_border`, `P_EA32` and the `BORDER` register removed again, `$DE18` a gap that reads 0), so the agent
+(C128 mode included) flashes too. Kept from the branch:
+- Counters (`vdBorderDbg`): requests, `HoldC64` failed, a transfer timed out, not the VIC, `$D020` writes, `CloseDMA` failed, the longest
+  request in µs; in the remote get's JSON as `"dbg":{"brd":[...]}` (`trlib`'s `vdrive_get()` returns it; `trvdrive` prints only the
+  usual fields).
+- **The Alt-button trace.** The path: Teensy.ino's loop sees the button change (`SpecialBtnBounce`) and calls `fSpecialBtnChange`,
+  which is `SpecialBtn_TDrive` only when the Alt setting is "None" (`VD_AltButtonInit`; otherwise upstream's AutoLaunch, Pause, TR menu
+  or Reboot TR runs); `SpecialBtn_TDrive` counts taps; `VD_AltPoll` waits out the tap window and calls `VD_SwitchNext` (quiet wait,
+  config file, `TDrive_RemoteSet`), which starts `VD_Flash`; each phase calls `VD_BorderDMA` (`HoldC64`, 32-byte read, VIC check,
+  1-byte write, `CloseDMA`), retried from `VD_AltPoll` while I/O is banked out. Each step is printed on the serial console as it
+  happens (`TDrive trace <ms>: <step> <detail>`, flushed; never while the C64 is held; a retried request only on its 1st and every
+  1000th try) and kept in the Teensy core's six CrashReport breadcrumbs (`0x2027FFC0`, not cleared by a reboot): last step and detail,
+  its `millis()`, the last four steps, Alt setting / who owns the button / `DMA_State`, border requests and `$D020` writes, failed holds
+  and not-the-VIC reads. `VD_TraceBoot()` (a `make_tr_patch.sh` edit ahead of upstream's `if (CrashReport) Serial.print(CrashReport)`
+  in `setup()`, which clears the record and prints before a serial monitor reconnects) copies them and the core's fault record
+  (CRC-checked as the core does) and clears the crumbs; the next `TDrive_PreStart` prints them with `SRC_SRSR`. `VD_TraceButton()`
+  (a `loop()` edit) runs for every press, whatever the setting.
+- **`!nodma`** alone on a line of `/tdrive-config.txt` makes `VD_BorderDMA` return at once: the disk switches without any hold.
+Risk: the crumbs share RAM2's top 128 bytes with the core's fault record, inside the malloc heap's range (`_heap_end` is the top of
+RAM2), as the core's own breadcrumbs do; a heap that reaches the top (a full REU) could be overwritten by them.
+`kernal-tr.bin` changes again (new SHA-256 in the README). Tests: `tests/fw_host` (both handler kinds' flash, the trace, `!nodma`);
+`make test-border` and `tests/test_irq_border.py` removed again.

@@ -53,6 +53,16 @@ for old in ("#ifdef Fab04_GlobalKernalReplace\nextern volatile bool FnetLoopPoll
             "#ifdef Fab04_GlobalKernalReplace\n            if (FnetLoopPoll) NVIC_DISABLE_IRQ(IRQ_PIT);"):
     edit(f"{C}/IO_Handlers/IOH_Swiftlink.c", old,
          old.replace("#ifdef Fab04_GlobalKernalReplace", "#if defined(Fab04_GlobalKernalReplace) || defined(Fab04_TDrive)"))
+# The Alt-button trace (IOH_TDrive.c VD_Trace*, docs/DESIGN.md 60): which action a press goes to, and the trace kept across a
+# reboot copied before upstream prints (and clears) the CrashReport, while no serial monitor is listening yet.
+edit("Source/Teensy/Teensy.ino",
+     "      if (fSpecialBtnChange != NULL) fSpecialBtnChange(SpecialBtnBounce.read());\n",
+     "#ifdef Fab04_TDrive\n      VD_TraceButton(SpecialBtnBounce.read());\n#endif\n"
+     "      if (fSpecialBtnChange != NULL) fSpecialBtnChange(SpecialBtnBounce.read());\n")
+edit("Source/Teensy/Teensy.ino",
+     "   if (CrashReport) Serial.print(CrashReport);\n",
+     "#ifdef Fab04_TDrive\n   VD_TraceBoot();\n#endif\n"
+     "   if (CrashReport) Serial.print(CrashReport);\n")
 import re
 base = re.search(r'#define TRVersion\s+"([^"]+)"', open(f"{C}/Common_Defs.h").read()).group(1)
 rev = open(sys.argv[2]).read().strip()                      # firmware/REV: bumped by hand on firmware-affecting commits

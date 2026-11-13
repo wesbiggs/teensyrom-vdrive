@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.9.0.70
+
+### Changed
+- **The Alt button's border flash is done by DMA again, under every TDrive handler**, so it flashes under TDrive Agent and in C128
+  mode too (0.9.0.66-0.9.0.69 flashed only under the KERNAL handlers, through the KERNAL's IRQ routine). The KERNAL's `irq_border`
+  and the BORDER register `$DE18` are gone again. **Rebuild `kernal-tr.bin`** (new SHA-256 in the README). On hardware this is the
+  code of the experimental 0.9.0.69 built without its `ISRs.c` edit (owner, 2026-11-13, before the rename): the flash in C64 BASIC
+  and in a program under the KERNAL handler and the agent, and Exit to C128 BASIC, all work. The DMA flash of 0.9.0.63-0.9.0.65
+  crashed on hardware; why is not known (`docs/DESIGN.md` section 60). This build itself is **not on hardware** yet.
+
+### Added
+- **A trace of every Alt-button step**, on the serial console as it happens and kept across a TeensyROM reboot: which action the
+  press goes to and the Alt setting, the tap, the switch, the image mounted, the flash, each border request, the hold, the VIC read,
+  the `$D020` write, the release. After a reboot the next TDrive launch prints what was kept (`TDrive trace from before the last
+  reboot`) with the reset reason and any CPU fault's return address. The border flash's counters are also in the remote get's JSON
+  (`"dbg"`). A line `!nodma` in `/tdrive-config.txt` switches disks without the border flash (no DMA at all). Host tests
+  (`tests/fw_host`); **not on hardware** in this form (it was in 0.9.0.69).
+
 ## v0.9.0.69
 
 ### Fixed

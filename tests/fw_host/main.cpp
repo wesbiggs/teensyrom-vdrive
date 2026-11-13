@@ -18,6 +18,9 @@ static uint32_t g_ms = 0, g_tick = 0;               // g_tick > 0: every millis(
 static void (*g_on_millis)() = nullptr;               // test hook: a busy C64 issuing mailbox commands while the firmware waits
 bool g_led = true;                                    // on, as the TR leaves it while a program runs
 uint32_t millis() { g_ms += g_tick; if (g_on_millis) g_on_millis(); return g_ms; }
+uint32_t micros() { return g_ms * 1000u; }
+volatile uint32_t g_vd_bc[8], g_vd_fault[11];
+uint32_t g_vd_srsr = 0;
 static int g_fs_probes = 0;
 bool SDFullInit() { g_fs_probes++; return fs_::exists(SD.root); }
 bool USBFileSystemWait() { g_fs_probes++; return fs_::exists(firstPartition.root); }
@@ -50,7 +53,7 @@ bool PerformDMA(DMA_Trans_RnW RnW, uint16_t StartAddr, uint8_t *Buffer, uint32_t
     return true;
 }
 bool CloseDMA() { return true; }
-// held transfers (the agent's border flash): $D020-$D02E behave like the VIC's colour registers (the top nibble reads back set)
+// held transfers (the Alt button's border flash): $D020-$D02E behave like the VIC's colour registers (the top nibble reads back set)
 DmaStateStub DMA_State;
 bool isFrozen = false;
 static struct { bool rnw; uint16_t a; uint8_t *b; uint32_t n; } g_held;
@@ -866,6 +869,7 @@ int main(int argc, char **argv)
         check("remote get: USB unit is device 9", has(1, "\"storage\":\"usb\",\"device\":9"));
         check("remote get: no unit 2", TDrive_RemoteStatus(2, js, sizeof js) == 0 && TDrive_RemoteStatus(-1, js, sizeof js) == 0);
         check("remote get: output too small is refused, not truncated", TDrive_RemoteStatus(0, js, 20) == 0);
+        check("remote get: the border flash counters close the object", has(0, ",\"dbg\":{\"brd\":[") && has(0, "]}}"));
 
         g_tick = 1;                                           // let the waiting code see time pass
         check("remote set: mounts an image on SD", TDrive_RemoteSet(0, "/GAME.D64", msg, sizeof msg) == 0 && vdUnit[0].mounted);
@@ -1001,11 +1005,12 @@ int main(int argc, char **argv)
         fs_::remove(SD.root / ".tdrive"); fs_::remove(firstPartition.root / ".tdrive");
         IO1[rWRegCurrMenuWAIT] = rmtTeensy; DriveDirPath[0] = 0;
         prestart(); InitHndlr_TDrive();
-        check("border register idles at $80", vioHot.border == VIO_BRD_IDLE && r1(VIO_BORDER) == 0x80);
+        check("offset 8 (the old BORDER register) is unused: reads 0", r1(8) == 0);
+        check("border request idle", vdBorderReq == VIO_BRD_IDLE);
         g_ms += 5000;
 
-        auto run = [&](uint32_t ms) { Trace t; uint8_t last = vioHot.border; uint32_t t0 = g_ms;
-                                      for (uint32_t i = 0; i < ms; i += 5) { g_ms += 5; PollingHndlr_TDrive(); if (vioHot.border != last) { last = vioHot.border; t.push_back({g_ms - t0, last}); } }
+        auto run = [&](uint32_t ms) { Trace t; uint8_t last = vdBorderReq; uint32_t t0 = g_ms;
+                                      for (uint32_t i = 0; i < ms; i += 5) { g_ms += 5; PollingHndlr_TDrive(); if (vdBorderReq != last) { last = vdBorderReq; t.push_back({g_ms - t0, last}); } }
                                       return t; };
         auto near = [](uint32_t a, uint32_t b) { return a + 20 >= b && a <= b + 20; };
         auto tap = [&](int n) { for (int i = 0; i < n; i++) { SpecialBtn_TDrive(false); g_ms += 50; SpecialBtn_TDrive(true); g_ms += 100; } };
@@ -1092,7 +1097,7 @@ int main(int argc, char **argv)
         // a tap while a long flash is still running: the colour is given back first (saving mid-flash would remember the flash colour)
         put(SD, "tdrive-config.txt", "/SUB/INNER.D64,7,1\n/GAME.D64,3,3\n");
         tap(1); run(1000);
-        check("alt: the long sequence (GAME, 3 flashes) is under way", cur(0) == "/game.d64" && vioHot.border != VIO_BRD_IDLE);
+        check("alt: the long sequence (GAME, 3 flashes) is under way", cur(0) == "/game.d64" && vdBorderReq != VIO_BRD_IDLE);
         tap(1); t = run(8000);
         int lastSave = -1; for (int i = 0; i < (int)t.size(); i++) if (t[i].second == VIO_BRD_SAVE) lastSave = i;
         bool restoredBeforeSave = lastSave >= 1 && t[lastSave - 1].second == VIO_BRD_RESTORE && t[lastSave].first - t[lastSave - 1].first >= 100;
@@ -1285,19 +1290,80 @@ int main(int argc, char **argv)
           !TDrive_C128Launch() && IO1[rwRegNextIOHndlr] == IOH_Other && !vioReady);
     EEPROM.write(eepAdNextIOHndlr, IOH_None);
 
-    // ---- the Alt button under the agent (TR+): disk switching as under the KERNAL handlers, no border flash (DESIGN.md 57, 60) ----
+    // ---- the border flash by DMA ($D020), under the KERNAL handlers and the agent alike (TR+; DESIGN.md 57-58) ----
     {
         IO1[rwRegPwrUpDefaults2] = rpud2AltBtnNone; fSpecialBtnChange = nullptr;
+        for (int pass = 0; pass < 2; pass++) {
+            const bool agent = pass == 1;
+            const char *who = agent ? "agent" : "KERNAL handler";
+            char what[160];
+            fSpecialBtnChange = nullptr;
+            if (agent) InitHndlr_TDriveAgent(); else InitHndlr_TDrive();
+            snprintf(what, sizeof what, "%s: the Alt button switches disks", who);
+            check(what, fSpecialBtnChange == &SpecialBtn_TDrive);
+            auto vic = [](uint8_t border) {                         // what DMA reads at $D020-$D03F with I/O mapped in
+                for (int i = 0; i < 0x20; i++) g_c64_ram[0xD020 + i] = 0xFF;
+                for (int i = 0; i <= 0x0E; i++) g_c64_ram[0xD020 + i] = (uint8_t)(0xF0 | i);
+                g_c64_ram[0xD020] = border;
+            };
+            vic(0xF6);
+            std::vector<uint8_t> seen;
+            auto run = [&](int ms) { for (int t = 0; t < ms; t += 5) { g_ms += 5; if (agent) PollingHndlr_TDriveAgent(); else PollingHndlr_TDrive();
+                                     if (seen.empty() || seen.back() != g_c64_ram[0xD020]) seen.push_back(g_c64_ram[0xD020]); } };
+            g_holds = 0; g_held_writes = 0;
+            VD_Flash(5, 2, 250, 750);
+            run(2500);
+            snprintf(what, sizeof what, "%s flash: blue border -> green, back, green, back (two flashes), one hold per change", who); check(what,
+                  seen == std::vector<uint8_t>({0xF6, 0xF5, 0xF6, 0xF5, 0xF6}) && g_held_writes == 4 && g_holds == 5);
+            g_c64_ram[0xD031] = 0x00;                               // I/O banked out: RAM (or the character ROM) at $D000
+            g_held_writes = 0; seen.clear();
+            VD_Flash(2, 1, 250, 750);
+            run(400);
+            snprintf(what, sizeof what, "%s flash: I/O not mapped in: nothing written", who); check(what, g_held_writes == 0 && g_c64_ram[0xD020] == 0xF6);
+            vic(0xF6);
+            run(2000);
+            snprintf(what, sizeof what, "%s: once I/O is back, the flash still happens and ends on the saved colour", who); check(what, g_held_writes >= 1 && g_c64_ram[0xD020] == 0xF6);
+            isFrozen = true; g_holds = 0;
+            VD_Flash(2, 1, 250, 750); run(2000);
+            snprintf(what, sizeof what, "%s flash: never while the host holds the C64", who); check(what, g_holds == 0);
+            isFrozen = false; run(2000);
+        }
+        // the Alt-button trace (experimental, DESIGN.md 60): breadcrumbs kept across a reboot, printed at the next PreStart
+        IO1[rwRegPwrUpDefaults2] = rpud2AltBtnNone; InitHndlr_TDrive();
+        for (int i = 0; i < 0x20; i++) g_c64_ram[0xD020 + i] = i <= 0x0E ? (uint8_t)(0xF0 | i) : 0xFF;   // the VIC, I/O mapped in
+        g_c64_ram[0xD020] = 0xF6;
+        memset((void *)g_vd_bc, 0, sizeof g_vd_bc); memset((void *)g_vd_fault, 0, sizeof g_vd_fault);
+        VD_TraceButton(false);
+        check("trace: the button press is a crumb (TDrive owns it, setting None)",
+              (g_vd_bc[0] & 0xF) == 0xF && g_vd_bc[1] >> 24 == VDT_Button && (g_vd_bc[1] & 0x4) && (g_vd_bc[4] & 0xFF) == rpud2AltBtnNone && (g_vd_bc[4] >> 8 & 1));
+        VD_Flash(5, 1, 250, 750);
+        for (int t = 0; t < 2000; t += 5) { g_ms += 5; PollingHndlr_TDrive(); }
+        check("trace: a flash leaves 'released' last, holds and writes counted", g_vd_bc[1] >> 24 == VDT_Released && (g_vd_bc[0] & 0x3F) == 0x3F &&
+              (g_vd_bc[5] >> 16) >= 3 && (g_vd_bc[5] & 0xFFFF) == 2 && g_vd_bc[6] == 0);
+        uint32_t keep[8]; for (int i = 0; i < 8; i++) keep[i] = g_vd_bc[i];
+        VD_TraceBoot();
+        check("trace: the boot copy takes the crumbs and clears them", vdTraceBoot.valid && !vdTraceBoot.fault && vdTraceBoot.bc[0] == keep[1] && g_vd_bc[0] == 0);
+        prestart();
+        check("trace: printed once, at the next PreStart", !vdTraceBoot.valid);
+        // a CPU fault record as the core leaves it: len 11, CRC-32 over the first 10 words
+        g_vd_fault[0] = 11; g_vd_fault[2] = 0x8200; g_vd_fault[6] = 0x60001234;
+        { uint32_t crc = 0xFFFFFFFF; for (int w = 0; w < 10; w++) { crc ^= g_vd_fault[w]; for (int i = 0; i < 32; i++) crc = (crc >> 1) ^ (crc & 1) * 0xEDB88320; } g_vd_fault[10] = crc; }
+        VD_TraceBoot();
+        check("trace: a CPU fault record is recognised", vdTraceBoot.valid && vdTraceBoot.fault && vdTraceBoot.ret == 0x60001234);
+        g_vd_fault[10] ^= 1; VD_TraceBoot();
+        check("trace: ... and a bad CRC is not", !vdTraceBoot.fault);
+        vdTraceBoot.valid = false;
+        // "!nodma" in the list: the disk switches, the border is never touched
         InitHndlr_TDrive();
-        check("KERNAL handler: its IRQ routine flashes the border (no DMA writer)", vdBorderOut == nullptr);
-        fSpecialBtnChange = nullptr;
-        InitHndlr_TDriveAgent();
-        check("agent: the Alt button switches disks, no border writer (the DMA one crashed programs, DESIGN.md 60)",
-              fSpecialBtnChange == &SpecialBtn_TDrive && vdBorderOut == nullptr);
+        std::ofstream(SD.root / "tdrive-config.txt", std::ios::binary) << "!nodma\n/GAME.D64,3,2\n/SUB/INNER.D64,7,1\n";
         g_holds = 0; g_held_writes = 0;
-        VD_Flash(5, 2, 250, 750);
-        for (int t = 0; t < 2500; t += 5) { g_ms += 5; PollingHndlr_TDriveAgent(); }
-        check("agent flash: never holds the C64 (no DMA)", g_holds == 0 && g_held_writes == 0);
+        SpecialBtn_TDrive(false); g_ms += 50; SpecialBtn_TDrive(true);
+        for (int t = 0; t < 4000; t += 5) { g_ms += 5; PollingHndlr_TDrive(); }
+        check("!nodma: the disk switched without a single hold", vdUnit[0].mounted && g_holds == 0 && g_held_writes == 0 && vdNoDma);
+        std::ofstream(SD.root / "tdrive-config.txt", std::ios::binary) << "/GAME.D64,3,1\n";
+        SpecialBtn_TDrive(false); g_ms += 50; SpecialBtn_TDrive(true);
+        for (int t = 0; t < 4000; t += 5) { g_ms += 5; PollingHndlr_TDrive(); }
+        check("... and without the line the flash holds again", !vdNoDma && g_holds > 0);
         IO1[rwRegPwrUpDefaults2] = 0; fSpecialBtnChange = nullptr;
     }
 

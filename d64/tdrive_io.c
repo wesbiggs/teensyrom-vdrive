@@ -8,7 +8,6 @@ VD_COLD void vio_init(vio_t *v, vio_hot_t *hot)
     memset((void *)v, 0, sizeof *v);
     v->h = hot;
     hot->stat = VIO_OK;                   /* idle, nothing pending */
-    hot->border = VIO_BRD_IDLE;
     hot->id0 = VIO_ID0_VAL;
     hot->id1 = VIO_ID1_VAL;
     tdrive_init(&v->vd);

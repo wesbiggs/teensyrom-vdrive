@@ -18,7 +18,6 @@ MBX_DATA = MBX+2
 MBX_STAT = MBX+3
 MBX_ST   = MBX+4
 MBX_LEN  = MBX+5
-MBX_BORDER = MBX+8
 MBX_ID   = MBX+9
 VD_ID0   = $D6              ; VIO_ID0_VAL / VIO_ID1_VAL in d64/tdrive_io.h
 VD_ID1   = $64

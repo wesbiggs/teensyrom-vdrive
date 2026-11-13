@@ -73,7 +73,7 @@ The C64's ability to read the 8 KB of RAM under KERNAL ROM ($E000-$FFFF) is used
    | File | SHA-256 |
    |---|---|
    | stock `kernal-901227-03.bin` (input) | `83c60d47047d7beab8e5b7bf6f67f80daa088b7a6a27de0d7e016f6484042721` |
-   | `kernal-tr.bin` from this revision | `59ff4cd8f45a7ec476b4c0821d0dfcf2242af432b6e8e29cd6f5715df041d081` |
+   | `kernal-tr.bin` from this revision | `e07de56f6e1208b8d1fdbfffdc3fcb0b84723c13e2e68e31a6d8e1faa0ad651c` |
    | `kernal-tr.bin` last run on a real C64 (0.9.0.45, commit `02c6490`) | `62704caed1a4f02c795fd5f73bf8e1a428d776cf70fd63c0c739c2aa7719f5cc` |
 
    A different stock hash means a different ROM dump; the patches may not fit it. The "this revision" row is checked by `make test`.
@@ -297,7 +297,7 @@ and the TR+, whichever TDrive Special IO is the default. **VICE only so far** (`
   (any bank), `DOPEN`/`DCLOSE`/`APPEND`, `DS`/`DS$`, `HEADER` (`N:`), `SCRATCH`, `RENAME`, `COPY`, `CONCAT`, `COLLECT`, `BOOT`, and `LOAD`/`SAVE`/`OPEN`/`PRINT#`/`INPUT#` as on the C64.
   Paths, `CD:`, `U0>` and the other drive commands are the same.
 - **RUN/STOP+RESTORE** keeps the drives; a reset needs `SYS 56852` again.
-- **Alt button** (TR+, setting "None"): switches disks as on the C64, without the border flash (0.9.0.63-0.9.0.65 flashed it by DMA, which crashed running programs on hardware).
+- **Alt button** (TR+, setting "None"): switches disks as on the C64; the border flashes in 40 columns only (done by DMA since 0.9.0.70).
 - **FAST (2 MHz)** works in VICE; whether the TR's answers keep up at 2 MHz on real hardware is not known yet. Use `SLOW` if the drives misbehave in FAST mode.
 - Everything in the TR column above applies too (programs that call the serial routines directly, or `RESTOR`, do not see the drives), and memory under
   `$D000-$DFFF` in banks 0 and 1 cannot be loaded into. REU and SwiftLink combinations are not offered in 128 mode.
